@@ -1,0 +1,19 @@
+#cloud-config
+# Minimal cloud-init for an OwnBase Tier 2 test VM.
+#
+# Installs only what the OS does not ship by default: Podman (which includes
+# the Quadlet generator on Ubuntu 24.04) and enables linger for the default
+# user so the rootless user systemd session persists without a login.
+#
+# Deliberately minimal: everything else (the OwnBase daemon, hardening,
+# services) is installed by the OwnBase installer itself -- that is the whole
+# point of M5. Do not add packages here that should be tested via install.
+
+package_update: true
+packages:
+  - podman
+
+runcmd:
+  # Enable linger so the rootless user systemd session (needed by Quadlet)
+  # persists after the cloud-init run exits and across reboots.
+  - loginctl enable-linger ubuntu

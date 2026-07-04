@@ -1,0 +1,98 @@
+name: Release
+
+# Tag-triggered release: builds ownbasectl (darwin/linux × amd64/arm64) and
+# ownbased (linux × amd64/arm64), signs the daemon binaries with minisign,
+# publishes a GitHub Release + Homebrew formula via GoReleaser, and uploads
+# the signed daemon binaries to the releases.ownbase.ai/daemon layout that
+# install.sh downloads from.
+#
+# Required repository secrets:
+#   MINISIGN_SECRET_KEY        — contents of the minisign secret key file
+#   MINISIGN_PASSWORD          — passphrase for that key
+#   HOMEBREW_TAP_GITHUB_TOKEN  — token with push access to ownbase-ai/homebrew-tap
+#   RELEASES_BUCKET_*          — credentials for the releases.ownbase.ai origin
+#                                (see the "Publish daemon binaries" step)
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: GoReleaser
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # changelog needs full history
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run tests
+        run: go test ./...
+
+      - name: Install minisign
+        run: sudo apt-get update -q && sudo apt-get install -y -q minisign
+
+      - name: Write minisign secret key
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          umask 077
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > /tmp/minisign.key
+          echo "MINISIGN_SECRET_KEY_PATH=/tmp/minisign.key" >> "$GITHUB_ENV"
+
+      - name: GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+
+      # Publish the signed daemon binaries to the layout install.sh expects:
+      #   releases.ownbase.ai/daemon/<version>/ownbased-linux-<arch>[.minisig]
+      #   releases.ownbase.ai/daemon/latest/ownbased-linux-<arch>[.minisig]
+      #
+      # The bucket behind releases.ownbase.ai is provider-specific; this step
+      # uses the S3-compatible API. Point RELEASES_BUCKET_ENDPOINT at your
+      # provider (S3, R2, B2) and grant the key write access to the bucket.
+      - name: Publish daemon binaries to releases.ownbase.ai
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.RELEASES_BUCKET_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.RELEASES_BUCKET_SECRET_ACCESS_KEY }}
+          RELEASES_BUCKET: ${{ secrets.RELEASES_BUCKET_NAME }}
+          RELEASES_BUCKET_ENDPOINT: ${{ secrets.RELEASES_BUCKET_ENDPOINT }}
+        run: |
+          if [ -z "$RELEASES_BUCKET" ]; then
+            echo "RELEASES_BUCKET_NAME secret not set — skipping daemon publish."
+            echo "The GitHub Release still carries the signed binaries."
+            exit 0
+          fi
+          VERSION="${GITHUB_REF_NAME}"
+          # --endpoint-url is only for S3-compatible providers (R2, B2, ...);
+          # standard AWS S3 has no endpoint override, and passing an empty
+          # value makes the AWS CLI fail rather than defaulting sanely.
+          endpoint_flag=()
+          [ -n "$RELEASES_BUCKET_ENDPOINT" ] && endpoint_flag=(--endpoint-url "$RELEASES_BUCKET_ENDPOINT")
+          for arch in amd64 arm64; do
+            for f in "ownbased-linux-${arch}" "ownbased-linux-${arch}.minisig"; do
+              src=$(find dist -type f -name "$f" | head -1)
+              if [ -z "$src" ]; then
+                echo "ERROR: $f not found in dist/" >&2
+                find dist -type f >&2
+                exit 1
+              fi
+              aws s3 cp "$src" "s3://${RELEASES_BUCKET}/daemon/${VERSION}/${f}" "${endpoint_flag[@]}"
+              aws s3 cp "$src" "s3://${RELEASES_BUCKET}/daemon/latest/${f}" "${endpoint_flag[@]}"
+            done
+          done

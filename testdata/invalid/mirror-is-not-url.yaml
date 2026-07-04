@@ -1,0 +1,4 @@
+schema_version: v1
+services:
+  postgres:
+    mirror: docker-library/postgres

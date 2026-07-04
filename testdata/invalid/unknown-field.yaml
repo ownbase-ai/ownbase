@@ -1,0 +1,2 @@
+schema_version: v1
+unexpected_field: this_should_be_rejected

@@ -1,0 +1,30 @@
+schema_version: v1
+
+# OwnAuth integration proof (M9).
+# OwnAuth is mirrored from the upstream anonlogin repo into the Base's
+# local git host under services/auth, then built locally at the pinned ref.
+# Postgres is mirrored from docker-library/postgres.
+# No application image is pulled from a registry.
+
+services:
+  postgres:
+    mirror: https://github.com/docker-library/postgres
+    mode: pinned
+    ref: "17-alpine"
+    context: "17/alpine"
+    port: 5432
+
+  auth:
+    source: services/auth        # local mirror of the upstream anonlogin repo
+    mode: managed                # M7 opens ref:-bump PRs when the mirror advances
+    ref: v1.0.0
+    port: 8080
+    requires:
+      - postgres
+
+  app:
+    source: apps/hello
+    domain: app.example.com
+    port: 3000
+    requires:
+      - auth                     # depends on the capability, not the implementation

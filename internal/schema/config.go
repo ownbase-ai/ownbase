@@ -1,0 +1,362 @@
+// Package schema contains the typed contracts that every other package in the
+// OwnBase spine speaks. It owns OwnbaseConfig (ownbase.yaml), the action
+// taxonomy, and health-probe union. Nothing here touches the network, the
+// filesystem, or any runtime. Pure data + validation.
+package schema
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+)
+
+// CurrentSchemaVersion is the only version this binary understands.
+const CurrentSchemaVersion = "v1"
+
+// RepoMode is a deprecated field kept only for parsing backward compatibility.
+// It has no behavioral effect. Users should remove it from ownbase.yaml.
+type RepoMode string
+
+// OwnbaseConfig is the parsed, validated form of ownbase.yaml.
+//
+// All user services must be built from a Forgejo repo — either a local
+// source: path or a mirror: of an external git URL that OwnBase mirrors
+// into the local Forgejo instance. Registry images are never a valid
+// service source; core packages (Forgejo, Caddy) are managed by the
+// installer and configured via the core: block.
+type OwnbaseConfig struct {
+	SchemaVersion string                 `yaml:"schema_version"`
+	Core          CoreConfig             `yaml:"core,omitempty"`
+	Services      map[string]ServiceDecl `yaml:"services,omitempty"`
+}
+
+// CoreConfig holds configuration (not versions) for OwnBase core packages.
+// Core packages (Forgejo, Caddy) are managed by the OwnBase installer and
+// updater — not by ownbase.yaml. This block only configures them: set
+// domains, ports, TLS email. It does not control what version runs.
+type CoreConfig struct {
+	Forgejo ForgejoCoreConfig `yaml:"forgejo,omitempty"`
+	Caddy   CaddyCoreConfig   `yaml:"caddy,omitempty"`
+	Backup  BackupCoreConfig  `yaml:"backup,omitempty"`
+}
+
+// BackupCoreConfig configures the restic backup engine.
+// Credentials (restic password, cloud keys) are not stored here; they live
+// in the age-encrypted secret at /opt/ownbase/secrets/backup.yaml.age,
+// managed via ownbasectl secrets set backup.
+type BackupCoreConfig struct {
+	// Repo is the restic repository URL. When empty, backups are disabled.
+	// Examples:
+	//   s3:s3.amazonaws.com/my-bucket/ownbase
+	//   b2:bucket-name:ownbase
+	//   sftp:user@host:/path/to/repo
+	//   /opt/ownbase/backup  (local, dev/test)
+	Repo string `yaml:"repo,omitempty"`
+
+	// Interval is how often a backup snapshot is taken (e.g. "1h", "30m").
+	// Defaults to 1h when empty.
+	Interval string `yaml:"interval,omitempty"`
+
+	// VerifyInterval is how often the verified-restore drill runs (e.g. "24h").
+	// Defaults to 24h when empty.
+	VerifyInterval string `yaml:"verify_interval,omitempty"`
+}
+
+// DefaultBackupInterval is the snapshot cadence used when Interval is empty.
+const DefaultBackupInterval = time.Hour
+
+// DefaultVerifyInterval is the verified-restore cadence used when VerifyInterval is empty.
+const DefaultVerifyInterval = 24 * time.Hour
+
+// Enabled returns true when a backup repository is configured.
+func (b BackupCoreConfig) Enabled() bool {
+	return strings.TrimSpace(b.Repo) != ""
+}
+
+// EffectiveInterval returns the parsed Interval, or DefaultBackupInterval.
+// Returns an error only when Interval is set but unparseable.
+func (b BackupCoreConfig) EffectiveInterval() (time.Duration, error) {
+	if b.Interval == "" {
+		return DefaultBackupInterval, nil
+	}
+	d, err := time.ParseDuration(b.Interval)
+	if err != nil {
+		return 0, fmt.Errorf("core.backup.interval %q: %w", b.Interval, err)
+	}
+	return d, nil
+}
+
+// EffectiveVerifyInterval returns the parsed VerifyInterval, or DefaultVerifyInterval.
+// Returns an error only when VerifyInterval is set but unparseable.
+func (b BackupCoreConfig) EffectiveVerifyInterval() (time.Duration, error) {
+	if b.VerifyInterval == "" {
+		return DefaultVerifyInterval, nil
+	}
+	d, err := time.ParseDuration(b.VerifyInterval)
+	if err != nil {
+		return 0, fmt.Errorf("core.backup.verify_interval %q: %w", b.VerifyInterval, err)
+	}
+	return d, nil
+}
+
+// ForgejoCoreConfig configures the built-in git host.
+type ForgejoCoreConfig struct {
+	// Domain is the public hostname for the Forgejo UI.
+	// When set, Caddy proxies this domain to Forgejo.
+	// Example: "git.mysite.com"
+	Domain string `yaml:"domain,omitempty"`
+
+	// Port is the host port Forgejo listens on. Defaults to 3000.
+	Port int `yaml:"port,omitempty"`
+}
+
+// EffectivePort returns the Forgejo port, defaulting to 3000.
+func (f ForgejoCoreConfig) EffectivePort() int {
+	if f.Port > 0 {
+		return f.Port
+	}
+	return 3000
+}
+
+// EffectivePortOrZeroIfDomain returns 0 when a domain is configured (Caddy
+// proxies external traffic on 443; no direct port should be opened in UFW).
+// Returns the effective port when no domain is set (direct-access mode).
+func (f ForgejoCoreConfig) EffectivePortOrZeroIfDomain() int {
+	if f.Domain != "" {
+		return 0
+	}
+	return f.EffectivePort()
+}
+
+// CaddyCoreConfig configures the built-in reverse proxy.
+type CaddyCoreConfig struct {
+	// Email is used for ACME/Let's Encrypt certificate issuance.
+	// Required when using public domains with automatic TLS.
+	Email string `yaml:"email,omitempty"`
+}
+
+// ServiceDecl is one service instance entry in the services map.
+// The map key is the instance name (e.g. "crm", "crm-staging", "worker").
+//
+// Exactly one of Source or Mirror must be set:
+//   - source-built: Source is a local Forgejo repo path built directly.
+//   - mirror-built: Mirror is an external git URL; OwnBase creates a Forgejo
+//     pull-mirror at mirrors/<basename> and builds from it.
+//
+// Registry images (image:) are never a valid user service source. Core
+// packages (Forgejo, Caddy) are installed by the OwnBase installer and
+// configured via the top-level core: block.
+type ServiceDecl struct {
+	// Source is the Forgejo repo path, e.g. "services/auth" or "org/crm".
+	// Always a local Forgejo path — never a URL. Use mirror: for external repos.
+	Source string `yaml:"source,omitempty"`
+
+	// Mirror is an external git URL to pull-mirror into Forgejo, e.g.
+	// "https://github.com/docker-library/postgres". The agent creates and
+	// maintains the Forgejo pull-mirror automatically. The derived Forgejo
+	// path is mirrors/<basename-of-url>. Mutually exclusive with Source.
+	Mirror string `yaml:"mirror,omitempty"`
+
+	// Mode is deprecated and has no behavioral effect. It is kept here so that
+	// existing ownbase.yaml files that declare mode: managed or mode: pinned
+	// continue to parse without error. Remove it from your config.
+	Mode RepoMode `yaml:"mode,omitempty"`
+
+	// Ref is the branch, tag, or commit SHA to build from.
+	// When empty, the agent resolves the default-branch HEAD commit SHA and
+	// commits it back to ownbase.yaml automatically (update.pin_ref action).
+	Ref string `yaml:"ref,omitempty"`
+
+	// Dockerfile is the path to the Dockerfile within the repo, relative to
+	// Context. Defaults to "Dockerfile". Use "Containerfile" if the repo
+	// follows the Podman convention.
+	Dockerfile string `yaml:"dockerfile,omitempty"`
+
+	// Context is a subdirectory within the repo to use as the build context.
+	// Useful for monorepos or versioned directories like docker-library/postgres
+	// where each version lives under e.g. "17/alpine".
+	// Empty means the repo root.
+	Context string `yaml:"context,omitempty"`
+
+	// Port is the primary port the container listens on. Used to generate the
+	// Caddy reverse-proxy route when Domain is set.
+	Port int `yaml:"port,omitempty"`
+
+	// Domain is the public hostname for this service's primary endpoint.
+	// If empty, the service has no Caddy route (internal-only).
+	Domain string `yaml:"domain,omitempty"`
+
+	// Requires lists capabilities (service keys) this service depends on.
+	// Each name must match a key in the services map — the compiler joins
+	// this container to that provider's network.
+	Requires []string `yaml:"requires,omitempty"`
+
+	// Database is the name of the Postgres database to provision. The agent
+	// creates the database and injects credentials as environment variables.
+	Database string `yaml:"database,omitempty"`
+
+	// HealthProbe configures how the agent verifies the service is up before
+	// marking a reconcile step as complete.
+	HealthProbe *HealthProbeDecl `yaml:"health_probe,omitempty"`
+
+	// DataPath is the mount path for the service's persistent data volume
+	// inside the container. Defaults to "/data".
+	// The volume itself is always named "ownbase-<name>-data".
+	// Ignored when Volumes is set.
+	DataPath string `yaml:"data_path,omitempty"`
+
+	// Volumes declares the named volumes for this service.
+	// When set, DataPath is ignored by both the compiler and the backup engine.
+	// When empty, a single volume "ownbase-<name>-data" is created, mounted at
+	// DataPath (default "/data"), and automatically included in backups —
+	// preserving the behaviour of all existing configs.
+	Volumes []VolumeDecl `yaml:"volumes,omitempty"`
+
+	// Env is a list of static environment variables to inject, in KEY=VALUE
+	// format. Values appear in plaintext in ownbase.yaml; use
+	// ownbasectl secrets set for sensitive values.
+	Env []string `yaml:"env,omitempty"`
+
+	// User is the UID or username to run the container process as (e.g. "1000"
+	// or "appuser"). Empty means the image default. Prefer a non-root UID where
+	// the image allows — OwnBase always emits DropCapability=ALL regardless.
+	User string `yaml:"user,omitempty"`
+
+	// AddCapabilities lists Linux capabilities to add back after DropCapability=ALL.
+	// Only use when the service genuinely requires them (e.g. ["NET_BIND_SERVICE"]
+	// for a service binding port 80/443). Leave empty for normal apps.
+	AddCapabilities []string `yaml:"add_capabilities,omitempty"`
+
+	// SecurityOpt passes --security-opt flags to Podman for this container.
+	// Use sparingly — each entry widens the security boundary.
+	// Example: ["apparmor=unconfined"] for services (like postgres) that fork
+	// child processes and require inter-process signaling, which the default
+	// containers-default AppArmor profile blocks when no-new-privileges is set.
+	SecurityOpt []string `yaml:"security_opt,omitempty"`
+}
+
+// VolumeDecl declares one named Podman volume for a service.
+// The Podman volume name is "ownbase-<service>-<name>".
+type VolumeDecl struct {
+	// Name is the short name for this volume (e.g. "config", "media", "cache").
+	// The Podman volume is named "ownbase-<service>-<name>".
+	Name string `yaml:"name"`
+
+	// Mount is where the volume is mounted inside the container (e.g. "/config").
+	Mount string `yaml:"mount"`
+
+	// Backup is a list of paths within this volume to include in restic snapshots,
+	// relative to Mount. Use "." to back up the entire volume.
+	// Examples: ["."], ["./config", "./data/db"], ["./music", "./photos"]
+	// Omit (or leave empty) to exclude this volume from backups entirely.
+	Backup []string `yaml:"backup,omitempty"`
+}
+
+// HealthProbeDecl describes how the agent verifies a service is healthy.
+// Only HTTP probes are supported in V1.
+type HealthProbeDecl struct {
+	// HTTP is the path to GET on localhost:Port. The probe succeeds when the
+	// server returns a 2xx status within the timeout. Example: "/-/health"
+	HTTP string `yaml:"http,omitempty"`
+}
+
+// Validate returns the first structural error in the config, or nil.
+func (c *OwnbaseConfig) Validate() error {
+	if c.SchemaVersion == "" {
+		return errors.New("schema_version is required")
+	}
+	if c.SchemaVersion != CurrentSchemaVersion {
+		return fmt.Errorf("unsupported schema_version %q (this binary understands %q)",
+			c.SchemaVersion, CurrentSchemaVersion)
+	}
+	if err := c.Core.Backup.validate(); err != nil {
+		return err
+	}
+	for name, svc := range c.Services {
+		if err := svc.validate(name, c.Services); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Warnings returns non-fatal issues worth surfacing to the user.
+func (c *OwnbaseConfig) Warnings() []string {
+	var warns []string
+	for name, svc := range c.Services {
+		if strings.TrimSpace(svc.Ref) == "" {
+			warns = append(warns, fmt.Sprintf(
+				"service %q has no ref: — the agent will auto-pin to the default-branch HEAD commit", name))
+		}
+		if svc.Mode != "" {
+			warns = append(warns, fmt.Sprintf(
+				"service %q: mode: is deprecated and has no effect; remove it from ownbase.yaml", name))
+		}
+	}
+	return warns
+}
+
+func (s ServiceDecl) validate(name string, allServices map[string]ServiceDecl) error {
+	hasSource := strings.TrimSpace(s.Source) != ""
+	hasMirror := strings.TrimSpace(s.Mirror) != ""
+
+	if !hasSource && !hasMirror {
+		return fmt.Errorf("service %q: either source or mirror is required", name)
+	}
+	if hasSource && hasMirror {
+		return fmt.Errorf("service %q: source and mirror are mutually exclusive", name)
+	}
+	if hasSource && (strings.HasPrefix(s.Source, "http://") || strings.HasPrefix(s.Source, "https://")) {
+		return fmt.Errorf("service %q: source must be a Forgejo repo path (e.g. \"services/auth\"), not a URL — "+
+			"use mirror: for external repos instead", name)
+	}
+	if hasMirror && !isGitURL(s.Mirror) {
+		return fmt.Errorf("service %q: mirror must be a git URL (e.g. \"https://github.com/org/repo\")", name)
+	}
+	if s.Port < 0 || s.Port > 65535 {
+		return fmt.Errorf("service %q: port %d is out of range", name, s.Port)
+	}
+	for _, cap := range s.Requires {
+		if _, ok := allServices[cap]; !ok {
+			return fmt.Errorf("service %q: required capability %q does not match any service key",
+				name, cap)
+		}
+	}
+	seenVolNames := make(map[string]bool)
+	for i, v := range s.Volumes {
+		if strings.TrimSpace(v.Name) == "" {
+			return fmt.Errorf("service %q: volumes[%d]: name is required", name, i)
+		}
+		if strings.TrimSpace(v.Mount) == "" {
+			return fmt.Errorf("service %q: volumes[%d] (%q): mount is required", name, i, v.Name)
+		}
+		if seenVolNames[v.Name] {
+			return fmt.Errorf("service %q: duplicate volume name %q", name, v.Name)
+		}
+		seenVolNames[v.Name] = true
+	}
+	return nil
+}
+
+func (b BackupCoreConfig) validate() error {
+	if !b.Enabled() {
+		return nil
+	}
+	if _, err := b.EffectiveInterval(); err != nil {
+		return err
+	}
+	if _, err := b.EffectiveVerifyInterval(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// isGitURL returns true when s looks like a remote git URL.
+func isGitURL(s string) bool {
+	return strings.HasPrefix(s, "https://") ||
+		strings.HasPrefix(s, "http://") ||
+		strings.HasPrefix(s, "git://") ||
+		strings.HasPrefix(s, "ssh://") ||
+		strings.HasPrefix(s, "git@")
+}

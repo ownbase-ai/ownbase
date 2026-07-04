@@ -1,0 +1,1130 @@
+// Command ownbased is the on-Base daemon: reconcile, watch, explain,
+// recover. It implements the "thermostat loop" from the Reconstruction Model:
+//
+//	desired = compile(checkout, secrets)
+//	current = query(podman, systemd)
+//	reconcile(desired, current)
+//
+// Two triggers fire this loop:
+//  1. A SIGUSR1 signal from the post-receive hook after a git push.
+//  2. A periodic timer backstop that catches drift between commits.
+//
+// The hook sends SIGUSR1 to the PID written to /opt/ownbase/daemon.pid.
+// Both paths call the identical reconcileLoop so there is never a divergence
+// between event-driven and timer-driven convergence.
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/ownbase/ownbase/internal/authz"
+	"github.com/ownbase/ownbase/internal/backup"
+	"github.com/ownbase/ownbase/internal/compiler"
+	"github.com/ownbase/ownbase/internal/core"
+	"github.com/ownbase/ownbase/internal/explain"
+	"github.com/ownbase/ownbase/internal/githost"
+	"github.com/ownbase/ownbase/internal/install"
+	"github.com/ownbase/ownbase/internal/reconcile"
+	"github.com/ownbase/ownbase/internal/runtime"
+	"github.com/ownbase/ownbase/internal/schema"
+	"github.com/ownbase/ownbase/internal/secrets"
+	"github.com/ownbase/ownbase/internal/secwatch"
+	"github.com/ownbase/ownbase/internal/update"
+	"github.com/ownbase/ownbase/internal/vulnscan"
+)
+
+const (
+	// DefaultCheckoutPath is where the agent reads ownbase.yaml.
+	DefaultCheckoutPath = githost.DefaultCheckoutPath
+
+	// DefaultRepoPath is the bare repo the agent bootstraps and the hook targets.
+	DefaultRepoPath = githost.DefaultRepoPath
+
+	// DefaultPIDPath is where the agent writes its PID for hook signaling.
+	DefaultPIDPath = githost.DefaultPIDPath
+
+	// DefaultTickInterval is the drift-backstop reconcile interval.
+	DefaultTickInterval = 5 * time.Minute
+
+	// DefaultUpdateInterval is how often the agent polls for service version updates.
+	DefaultUpdateInterval = update.DefaultCheckInterval
+
+	// DefaultVulnScanInterval is how often the vulnerability scanner runs.
+	// Daily is appropriate: the trivy DB updates are also daily.
+	DefaultVulnScanInterval = 24 * time.Hour
+
+	// DefaultStatusAddr is the address the status API server listens on.
+	// Bind to loopback only — the status API contains sensitive data
+	// (audit records, security posture, service topology) and must not be
+	// reachable from the network without auth. Relying solely on UFW is
+	// insufficient (docs/decisions.md); the same rule applies here. Forgejo
+	// webhooks reach the agent via SIGUSR1 directly (not via the status
+	// port), so loopback is correct.
+	DefaultStatusAddr = "127.0.0.1:7070"
+)
+
+func main() {
+	fs := flag.NewFlagSet("ownbased", flag.ExitOnError)
+	checkoutPath := fs.String("checkout", DefaultCheckoutPath,
+		"path to the ownbase checkout (contains ownbase.yaml)")
+	repoPath := fs.String("repo", DefaultRepoPath,
+		"path to the bare git repo")
+	auditLogPath := fs.String("audit-log", authz.DefaultAuditLogPath,
+		"path to the audit log file")
+	pidPath := fs.String("pid", DefaultPIDPath,
+		"path to write the agent PID for hook signaling")
+	tickInterval := fs.Duration("tick", DefaultTickInterval,
+		"drift-backstop reconcile interval")
+	dryRun := fs.Bool("dry-run", false,
+		"preview what the agent would do without making changes")
+	once := fs.Bool("once", false,
+		"run the reconcile loop exactly once and exit")
+	skipBootstrap := fs.Bool("skip-bootstrap", false,
+		"skip bare-repo bootstrap (use when repo already initialized)")
+	skipPassZero := fs.Bool("skip-pass-zero", false,
+		"skip host hardening pass zero (for dev/macOS where Linux steps don't apply)")
+	sshPort := fs.Int("ssh-port", 22,
+		"SSH port to allow through the firewall (pass zero)")
+	// --backup-repo is only used during --rebuild on a bare machine that has no
+	// ownbase.yaml yet. Steady-state backup config comes from core.backup: in
+	// ownbase.yaml; credentials come from /opt/ownbase/secrets/backup.yaml.age.
+	backupRepo := fs.String("backup-repo", "",
+		"restic repository URL — only used with --rebuild on a bare machine")
+	// Rebuild flag (M6). --force-rebuild added in M12.
+	rebuild := fs.Bool("rebuild", false,
+		"restore latest backup then exit (agent runs reconcile on the next start)")
+	forceRebuild := fs.Bool("force-rebuild", false,
+		"restore from an unverified backup snapshot (skips the Restorable guard — use deliberately)")
+	// Update flags (M7 / M10). Forgejo connection is derived by convention;
+	// these flags are overrides.
+	forgejoURL := fs.String("forgejo-url", "http://localhost:3000",
+		"base URL of the on-Base Forgejo instance")
+	forgejoToken := fs.String("forgejo-token", "",
+		"Forgejo API token (default: read from /opt/ownbase/forgejo-token)")
+	forgejoUser := fs.String("forgejo-user", "ownbase",
+		"Forgejo user that owns the config repository")
+	repoName := fs.String("repo-name", githost.DefaultForgejoRepoName,
+		"Forgejo repository name that holds ownbase.yaml")
+	updateInterval := fs.Duration("update-interval", DefaultUpdateInterval,
+		"how often to poll for service version updates (source ref and bundled-image digest)")
+	vulnScanInterval := fs.Duration("vuln-scan-interval", DefaultVulnScanInterval,
+		"how often to run the trivy vulnerability scan (host OS packages + service images)")
+	// Status API flags. Bind to loopback by default — code and
+	// docs/decisions.md agree the status API must never be reachable from
+	// the network without going through the SSH tunnel.
+	statusAddr := fs.String("status-addr", DefaultStatusAddr,
+		"address the status API server listens on (empty = disabled)")
+	apiToken := fs.String("api-token", "",
+		"Bearer token required to access the agent API (empty = no authentication)")
+	_ = fs.Parse(os.Args[1:])
+
+	if err := run(agentConfig{
+		checkoutPath:     *checkoutPath,
+		repoPath:         *repoPath,
+		auditLogPath:     *auditLogPath,
+		pidPath:          *pidPath,
+		tickInterval:     *tickInterval,
+		dryRun:           *dryRun,
+		once:             *once,
+		skipBootstrap:    *skipBootstrap,
+		skipPassZero:     *skipPassZero,
+		sshPort:          *sshPort,
+		backupRepo:       *backupRepo,
+		rebuild:          *rebuild,
+		forceRebuild:     *forceRebuild,
+		forgejoURL:       *forgejoURL,
+		forgejoToken:     *forgejoToken,
+		forgejoUser:      *forgejoUser,
+		repoName:         *repoName,
+		updateInterval:   *updateInterval,
+		vulnScanInterval: *vulnScanInterval,
+		statusAddr:       *statusAddr,
+		apiToken:         *apiToken,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "ownbased: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+type agentConfig struct {
+	checkoutPath     string
+	repoPath         string
+	auditLogPath     string
+	pidPath          string
+	tickInterval     time.Duration
+	dryRun           bool
+	once             bool
+	skipBootstrap    bool
+	skipPassZero     bool
+	sshPort          int
+	backupRepo       string
+	rebuild          bool
+	forceRebuild     bool
+	forgejoURL       string
+	forgejoToken     string
+	forgejoUser      string
+	repoName         string
+	updateInterval   time.Duration
+	vulnScanInterval time.Duration
+	statusAddr       string
+	apiToken         string
+}
+
+// reconcileState holds the state produced during a single reconcile cycle and
+// passed to the explain gather step after the cycle completes.
+type reconcileState struct {
+	Config      *schema.OwnbaseConfig // nil when ownbase.yaml failed to parse
+	DriftEvents []reconcile.DriftEvent
+	Current     runtime.CurrentState
+}
+
+// MinVulnScanInterval is the lowest accepted value for --vuln-scan-interval.
+// time.NewTicker panics on zero or negative durations; 1 minute is a sensible
+// lower bound even in test environments.
+const MinVulnScanInterval = time.Minute
+
+func run(cfg agentConfig) error {
+	if cfg.vulnScanInterval <= 0 {
+		cfg.vulnScanInterval = DefaultVulnScanInterval
+		fmt.Fprintf(os.Stderr, "ownbased: vuln-scan-interval <= 0; using default %s\n", DefaultVulnScanInterval)
+	} else if cfg.vulnScanInterval < MinVulnScanInterval {
+		cfg.vulnScanInterval = MinVulnScanInterval
+		fmt.Fprintf(os.Stderr, "ownbased: vuln-scan-interval too small; clamped to %s\n", MinVulnScanInterval)
+	}
+
+	// Rebuild mode: restore latest backup then exit. The next agent start
+	// runs pass zero + reconcile as normal, completing the rebuild path.
+	if cfg.rebuild {
+		fmt.Fprintln(os.Stderr, "ownbased: rebuild mode — restoring latest backup ...")
+		// Credentials (RESTIC_PASSWORD, AWS_*) come from the operator's
+		// environment — standard restic behaviour. No PasswordFile needed.
+		return backup.Rebuild(context.Background(), backup.RebuildConfig{
+			BackupConfig: backup.Config{
+				Repository: cfg.backupRepo,
+			},
+			DryRun:       cfg.dryRun,
+			ForceRebuild: cfg.forceRebuild,
+		})
+	}
+
+	// Pass zero: harden the host and install the container runtime.
+	// Runs on every start (each step is idempotent). Skip on macOS / dev.
+	if !cfg.skipPassZero {
+		fmt.Fprintln(os.Stderr, "ownbased: running pass zero (host hardening) ...")
+		// Read ownbase.yaml before pass zero so the firewall rules can be tuned
+		// to the current config (e.g. omit port-3000 when a Forgejo domain is set).
+		pzCoreCfg := readCoreConfigFromDisk(cfg.checkoutPath)
+		// On first install, ownbase.yaml does not exist yet. Merge the domain from
+		// first-run.env so port 3000 stays closed from the very first boot when a
+		// domain was provided at install time.
+		if pzCoreCfg.Forgejo.Domain == "" {
+			if firstRun := install.ReadFirstRunEnv(install.FirstRunEnvPath); firstRun.ForgejoDomain != "" {
+				pzCoreCfg.Forgejo.Domain = firstRun.ForgejoDomain
+			}
+		}
+		report, err := install.PassZero(context.Background(), install.PassZeroConfig{
+			DryRun:      cfg.dryRun,
+			SSHPort:     cfg.sshPort,
+			ForgejoPort: pzCoreCfg.Forgejo.EffectivePortOrZeroIfDomain(),
+		})
+		if err != nil {
+			return fmt.Errorf("pass zero: %w", err)
+		}
+		if report.OK() {
+			fmt.Fprintln(os.Stderr, "ownbased: pass zero complete — host is hardened")
+		} else {
+			fmt.Fprintln(os.Stderr, "ownbased: pass zero: some steps incomplete (will retry on next start)")
+		}
+	}
+
+	// Bootstrap: ensure the bare repo and checkout exist.
+	if !cfg.skipBootstrap {
+		if err := githost.Bootstrap(cfg.repoPath, cfg.checkoutPath); err != nil {
+			return fmt.Errorf("bootstrap: %w", err)
+		}
+		if err := githost.InstallHook(cfg.repoPath); err != nil {
+			return fmt.Errorf("install hook: %w", err)
+		}
+	}
+
+	// Ensure the age secrets key exists before anything (secrets, backups)
+	// might need it. Generated once on first boot; idempotent on every
+	// subsequent start. The private key never leaves this file.
+	if !cfg.skipBootstrap {
+		if _, err := os.Stat(secrets.DefaultKeyPath); os.IsNotExist(err) {
+			if err := os.MkdirAll(filepath.Dir(secrets.DefaultKeyPath), 0o700); err != nil {
+				return fmt.Errorf("create age key dir: %w", err)
+			}
+			if _, err := secrets.GenerateAndSave(secrets.DefaultKeyPath); err != nil {
+				return fmt.Errorf("generate age key: %w", err)
+			}
+			fmt.Fprintln(os.Stderr, "ownbased: generated age secrets key at "+secrets.DefaultKeyPath)
+		} else if err != nil {
+			return fmt.Errorf("stat age key: %w", err)
+		}
+	}
+
+	// Bootstrap core packages (Forgejo + Caddy) as Quadlet units.
+	// Reads the core: block from ownbase.yaml if present, otherwise uses defaults.
+	// Idempotent: safe to call on every startup.
+	{
+		coreCfg := schema.CoreConfig{} // defaults apply
+		if cfgOnDisk, err := schema.ParseConfigFile(
+			filepath.Join(cfg.checkoutPath, "ownbase.yaml"),
+		); err == nil {
+			coreCfg = cfgOnDisk.Core
+		}
+		if err := bootstrapCore(context.Background(), cfg, coreCfg); err != nil {
+			return fmt.Errorf("bootstrap core: %w", err)
+		}
+	}
+
+	// Discover the Forgejo container IP (if running) and prefer it over
+	// localhost:3000 so all internal HTTP calls bypass unreliable port
+	// forwarding. This replaces cfg.forgejoURL for everything downstream.
+	cfg.forgejoURL = discoverForgejoURL(cfg.forgejoURL)
+
+	// Write PID file so the post-receive hook can signal us via SIGUSR1.
+	if err := githost.WritePIDFile(cfg.pidPath); err != nil {
+		fmt.Fprintf(os.Stderr, "ownbased: write pid file: %v (hook signaling disabled)\n", err)
+	}
+
+	// Open the audit log (nop in dry-run).
+	var auditLog authz.AuditLogger
+	if cfg.dryRun {
+		auditLog = authz.NopAuditLog()
+	} else {
+		al, err := authz.NewAuditLog(cfg.auditLogPath)
+		if err != nil {
+			return fmt.Errorf("open audit log: %w", err)
+		}
+		defer al.Close()
+		auditLog = al
+	}
+
+	checkpoint := authz.NewTrivialCheckpoint()
+
+	// Populate cfg.forgejoToken from the installer-written file when no flag
+	// was provided. This must happen before newApplier so the Applier carries
+	// the token for git clone operations (source-built services).
+	if cfg.forgejoToken == "" {
+		if token, err := install.ReadForgejoToken(install.DefaultTokenPath); err == nil {
+			cfg.forgejoToken = token
+			fmt.Fprintln(os.Stderr, "ownbased: using Forgejo token from /opt/ownbase/forgejo-token")
+		}
+	}
+
+	// Populate cfg.apiToken from the installer-written file when no flag
+	// was provided. The file is written by install.sh with mode 0600.
+	if cfg.apiToken == "" {
+		if data, err := os.ReadFile(explain.DefaultAPITokenPath); err == nil {
+			cfg.apiToken = strings.TrimSpace(string(data))
+			fmt.Fprintln(os.Stderr, "ownbased: using API token from "+explain.DefaultAPITokenPath)
+		}
+	}
+
+	// newApplier is provided by applier_default.go (noop) or
+	// applier_integration.go (real Podman) depending on build tags.
+	// The Applier carries Forgejo credentials so it can clone source-built
+	// service repos and run `podman build` before starting Quadlet units.
+	applier := newApplier(cfg)
+
+	// Webhook signal: Forgejo pushes to this channel when a push event fires
+	// the /api/v1/hook/push endpoint. Treated identically to SIGUSR1.
+	// Created before the HTTP server starts so the handler closure captures it.
+	webhookSig := make(chan struct{}, 4)
+
+	// Build the Forgejo/update config here (moved up from below) so the
+	// ConfigureBackup API closure and reconcileOnce can both capture it.
+	updateCfg := update.Config{
+		CheckoutPath: cfg.checkoutPath,
+		ForgejoURL:   cfg.forgejoURL,
+		ForgejoToken: cfg.forgejoToken,
+		ForgejoUser:  cfg.forgejoUser,
+		RepoName:     cfg.repoName,
+		DryRun:       cfg.dryRun,
+	}
+
+	// Status server (M8): serves the JSON status API consumed by the briefing.
+	// The webhook handler shares the same mux so both routes are on one port.
+	statusSrv := explain.NewStatusServer()
+
+	// triggerScan is set below (after ctx and vulnResultCh are declared) so
+	// the closure can reference them. The API handler captures the variable by
+	// pointer — any call after the assignment will invoke the real function.
+	var triggerScan func()
+
+	if cfg.statusAddr != "" {
+		mux := http.NewServeMux()
+		// Mount status routes (exact paths so the webhook route below takes priority).
+		statusHandler := statusSrv.Handler(cfg.apiToken)
+		mux.Handle("/status", statusHandler)
+		mux.Handle("/health", statusHandler)
+		// Mount management API (secrets, credentials, token reset) — M15.
+		explain.MountAPI(mux, explain.APIConfig{
+			SecretsDir: explain.DefaultSecretsDir,
+			StatusSrv:  statusSrv,
+			// TriggerScan delegates to triggerScan, which is assigned below
+			// once ctx and vulnResultCh are available. Returns false if the daemon
+			// is still initialising and the scan goroutine is not yet wired.
+			TriggerScan: func() bool {
+				if triggerScan != nil {
+					triggerScan()
+					return true
+				}
+				return false
+			},
+			// UpgradeCore pulls the latest pinned images for Forgejo and Caddy
+			// and restarts them. Progress is written to w for streaming to the client.
+			UpgradeCore: func(w io.Writer) error {
+				upgradeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+				defer cancel()
+
+				m := core.Current
+				for _, pkg := range []struct {
+					name      string
+					container string
+					image     string
+					digest    string
+				}{
+					{"Forgejo", core.ForgejoContainerName, m.ForgejoImage, m.ForgejoDigest},
+					{"Caddy", core.CaddyContainerName, m.CaddyImage, m.CaddyDigest},
+				} {
+					imageRef := pkg.image
+					if pkg.digest != "" {
+						imageRef = pkg.image + "@" + pkg.digest
+					}
+					fmt.Fprintf(w, "==> Pulling %s (%s)...\n", pkg.name, imageRef)
+					cmd := exec.CommandContext(upgradeCtx, "podman", "pull", imageRef)
+					cmd.Stdout = w
+					cmd.Stderr = w
+					if err := cmd.Run(); err != nil {
+						return fmt.Errorf("pull %s: %w", pkg.name, err)
+					}
+					fmt.Fprintf(w, "==> Restarting %s...\n", pkg.name)
+					cmd = exec.CommandContext(upgradeCtx, "podman", "restart", pkg.container)
+					cmd.Stdout = w
+					cmd.Stderr = w
+					if err := cmd.Run(); err != nil {
+						fmt.Fprintf(w, "    warning: restart %s: %v (continuing)\n", pkg.name, err)
+					}
+				}
+				return nil
+			},
+			// CoreStatus reports the pinned image/digest and running state of
+			// the core packages for `ownbasectl upgrade` (check-only).
+			CoreStatus: func() []explain.CorePackageStatus {
+				m := core.Current
+				var out []explain.CorePackageStatus
+				for _, pkg := range []struct {
+					name      string
+					container string
+					image     string
+					digest    string
+				}{
+					{"Forgejo", core.ForgejoContainerName, m.ForgejoImage, m.ForgejoDigest},
+					{"Caddy", core.CaddyContainerName, m.CaddyImage, m.CaddyDigest},
+				} {
+					running := false
+					if state, err := exec.Command(
+						"podman", "inspect", "--format", "{{.State.Running}}", pkg.container,
+					).Output(); err == nil {
+						running = strings.TrimSpace(string(state)) == "true"
+					}
+					out = append(out, explain.CorePackageStatus{
+						Name:      pkg.name,
+						Container: pkg.container,
+						Image:     pkg.image,
+						Digest:    pkg.digest,
+						Running:   running,
+					})
+				}
+				return out
+			},
+			// ConfigureBackup commits core.backup.repo (and optionally
+			// interval/verify_interval) to ownbase.yaml through the Forgejo
+			// front door. The independent backup scheduler (see
+			// backup_scheduler.go) picks up the change on its next poll —
+			// no restart needed. Requires a Forgejo token; on a bare
+			// machine that hasn't finished bootstrapping yet, this returns
+			// an error asking the caller to retry.
+			ConfigureBackup: func(repo, interval, verifyInterval string) error {
+				if updateCfg.ForgejoToken == "" {
+					return fmt.Errorf("forgejo not ready yet — retry in a moment")
+				}
+				cfgPath := filepath.Join(cfg.checkoutPath, "ownbase.yaml")
+				original, err := os.ReadFile(cfgPath)
+				if err != nil {
+					return fmt.Errorf("read ownbase.yaml: %w", err)
+				}
+				updated := backup.SetCoreBackupConfig(string(original), repo, interval, verifyInterval)
+				if _, err := schema.ParseConfig(strings.NewReader(updated)); err != nil {
+					return fmt.Errorf("resulting ownbase.yaml would be invalid: %w", err)
+				}
+				commitCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				msg := fmt.Sprintf("chore(backup): configure backup repo %s", repo)
+				if err := update.CommitFile(commitCtx, updateCfg, "ownbase.yaml", updated, msg); err != nil {
+					return fmt.Errorf("commit ownbase.yaml: %w", err)
+				}
+				// Wake the reconcile loop immediately (same signal the Forgejo
+				// push webhook uses) so the commit above — made directly
+				// against Forgejo, bypassing the bare repo — propagates into
+				// the checkout without waiting for the 5-minute backstop
+				// ticker. `ownbasectl backup setup` runs an immediate
+				// backup right after this call and needs the config on disk.
+				signalReconcile(webhookSig)
+				return nil
+			},
+			// RunBackup triggers one backup cycle immediately (ownbasectl
+			// backup run) rather than waiting for the scheduler.
+			RunBackup: func() (explain.BackupRunStatus, error) {
+				runCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+				defer cancel()
+				status, err := runBackupNow(runCtx, cfg, auditLog)
+				// Refresh the cached /status payload either way — even a
+				// failed run updates LastError, which ownbasectl surfaces.
+				signalReconcile(webhookSig)
+				if err != nil {
+					return explain.BackupRunStatus{}, err
+				}
+				out := explain.BackupRunStatus{
+					LatestSnapshot: status.LatestSnapshot,
+					Restorable:     status.Restorable,
+					LastError:      status.LastError,
+				}
+				if !status.LastBackup.IsZero() {
+					out.LastBackup = status.LastBackup.Format(time.RFC3339)
+				}
+				return out, nil
+			},
+		})
+		// Mount Forgejo push webhook.
+		mux.HandleFunc("/api/v1/hook/push", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			select {
+			case webhookSig <- struct{}{}:
+			default: // channel full — reconcile already queued
+			}
+			w.WriteHeader(http.StatusOK)
+		})
+		httpSrv := &http.Server{
+			Addr:    cfg.statusAddr,
+			Handler: mux,
+		}
+		go func() {
+			fmt.Fprintf(os.Stderr,
+				"ownbased: status API listening on %s (auth: %v)\n",
+				cfg.statusAddr, cfg.apiToken != "")
+			if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				fmt.Fprintf(os.Stderr, "ownbased: status server: %v\n", err)
+			}
+		}()
+	}
+
+	mode := "dry-run"
+	if !cfg.dryRun {
+		mode = applierMode(applier)
+	}
+	fmt.Fprintf(os.Stderr,
+		"ownbased: starting (mode=%s, tick=%s, checkout=%s, repo=%s)\n",
+		mode, cfg.tickInterval, cfg.checkoutPath, cfg.repoPath)
+
+	// secProbeInterval is the minimum time between expensive secwatch probes
+	// (ss + ufw + fail2ban + journald). Reconcile can fire frequently on busy
+	// repos; we don't want to shell out on every push.
+	const secProbeInterval = 5 * time.Minute
+	var lastSecProbe time.Time
+	var lastExposure secwatch.ExposureResult
+	var lastAccess secwatch.AccessResult
+	var lastUnexpectedCount = -1 // -1 = first run; used for transition detection
+
+	// lastVulnStatus holds the most recent trivy scan result. It is only ever
+	// read and written on the main select loop (via vulnResultCh below), so
+	// no mutex is needed.
+	// Pre-seed TrivyInstalled so the initial status (before the first 5-minute
+	// scan fires) distinguishes "trivy present, scan pending" from "trivy not
+	// installed" — both are Available=false but only one should prompt the
+	// operator to install trivy.
+	lastVulnStatus := vulnscan.VulnStatus{TrivyInstalled: vulnscan.TrivyAvailable()}
+
+	// vulnResultCh carries completed scan results from background goroutines
+	// back to the main select loop. Buffer 1: a second scan that completes
+	// while one result is already waiting is silently dropped (daily scans
+	// are low-frequency and overlapping results are equivalent).
+	vulnResultCh := make(chan vulnscan.VulnStatus, 1)
+
+	// lastReconcileState is the state from the most recent reconcile cycle.
+	// It is used by the vuln result handler to push a fresh status snapshot
+	// to the status server and OWNBASE.md immediately after a scan completes,
+	// rather than waiting up to one tick interval for the next reconcile.
+	var lastReconcileState reconcileState
+
+	// afterReconcile gathers status from the completed cycle, updates the
+	// status server, and writes OWNBASE.md to the checkout.
+	afterReconcile := func(state reconcileState) {
+		ctx := context.Background()
+
+		// Run security probes at most once per secProbeInterval.
+		// Skip when config is nil (parse failure): the expected-port allowlist
+		// would be incomplete, producing false port.exposed audit events until
+		// the config is repaired and the next probe runs with valid state.
+		if time.Since(lastSecProbe) >= secProbeInterval && state.Config != nil {
+			lastExposure = secwatch.GatherExposure(ctx, state.Config, cfg.sshPort)
+			lastAccess = secwatch.GatherAccess(ctx)
+			lastSecProbe = time.Now()
+
+			// Emit a port.exposed audit record on transition into/out of unexpected
+			// exposure. On the first scan after startup (lastUnexpectedCount == -1),
+			// emit immediately if unexpected exposure is already present — skipping
+			// the first scan would silently miss exposure that predates the restart.
+			if lastExposure.Available && lastExposure.UnexpectedCount != lastUnexpectedCount {
+				if lastUnexpectedCount >= 0 || lastExposure.UnexpectedCount > 0 {
+					action, _ := schema.NewAction(schema.ActionPortExposed, fmt.Sprintf("%d unexpected port(s)", lastExposure.UnexpectedCount))
+					_ = auditLog.Record(action, authz.OutcomeApplied, "")
+				}
+				lastUnexpectedCount = lastExposure.UnexpectedCount
+			}
+		}
+
+		backupStatus, _ := backup.LoadStatus(backup.DefaultStatusPath)
+		status := explain.Gather(explain.GatherInput{
+			Config:            state.Config,
+			RunningContainers: state.Current.RunningContainers,
+			BackupStatus:      backupStatus,
+			DriftEvents:       state.DriftEvents,
+			AuditLogPath:      cfg.auditLogPath,
+			Exposure:          lastExposure,
+			Access:            lastAccess,
+			Vulns:             lastVulnStatus,
+		})
+		statusSrv.Update(status)
+		if state.Config != nil {
+			if err := explain.WriteOwnbaseMD(cfg.checkoutPath, state.Config, status); err != nil {
+				fmt.Fprintf(os.Stderr, "ownbased: write OWNBASE.md: %v\n", err)
+			}
+		}
+	}
+
+	reconcileOnce := func(reason string) {
+		fmt.Fprintf(os.Stderr, "ownbased: reconcile triggered (%s)\n", reason)
+		state, err := reconcileLoop(cfg.checkoutPath, cfg.repoPath, checkpoint, applier, auditLog, cfg.dryRun, updateCfg)
+		if err != nil {
+			if isConfigError(err) {
+				fmt.Fprintf(os.Stderr, "ownbased: config error (fix ownbase.yaml and push): %v\n", err)
+			} else {
+				fmt.Fprintf(os.Stderr, "ownbased: reconcile error: %v\n", err)
+			}
+			// When the checkout is incomplete (ownbase.yaml not yet present),
+			// bootstrap may not have fully seeded it. Retry once so the next
+			// tick finds the file without waiting for the 5-minute backstop.
+			if isCheckoutMissingError(err) {
+				coreCfg := schema.CoreConfig{}
+				if cfgOnDisk, parseErr := schema.ParseConfigFile(
+					filepath.Join(cfg.checkoutPath, "ownbase.yaml"),
+				); parseErr == nil {
+					coreCfg = cfgOnDisk.Core
+				}
+				if bErr := bootstrapCore(context.Background(), cfg, coreCfg); bErr != nil {
+					fmt.Fprintf(os.Stderr, "ownbased: bootstrap retry (non-fatal): %v\n", bErr)
+				}
+			}
+		}
+		afterReconcile(state)
+		lastReconcileState = state
+	}
+
+	// Run immediately on start.
+	reconcileOnce("startup")
+
+	if cfg.once {
+		return nil
+	}
+
+	// SIGUSR1 is sent by the post-receive hook after every git push.
+	// SIGTERM / SIGINT signal graceful shutdown.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
+	// Now that ctx and vulnResultCh are available, wire up the scan trigger
+	// used by /security/fix and /security/scan.
+	triggerScan = func() {
+		go func() {
+			result := vulnscan.GatherVulns(ctx, vulnscan.RunningContainers(ctx))
+			sendVulnResult(vulnResultCh, result)
+		}()
+	}
+
+	hookSig := make(chan os.Signal, 4) // buffer so the hook never blocks
+	signal.Notify(hookSig, syscall.SIGUSR1)
+
+	ticker := time.NewTicker(cfg.tickInterval)
+	defer ticker.Stop()
+
+	// Backup + verified-restore-drill scheduling runs as an independent
+	// goroutine (backup_scheduler.go) rather than a ticker wired into this
+	// select loop. It re-reads core.backup: from ownbase.yaml on every poll,
+	// so backups activate as soon as `ownbasectl backup setup` commits
+	// a repo — no daemon restart required — and credential rotations via
+	// `ownbasectl secrets set <base> backup` take effect on the next poll too.
+	go runBackupScheduler(ctx, cfg, auditLog, webhookSig)
+
+	// Update ticker: blank-ref resolution and drift reporting.
+	// Only active when a Forgejo token is configured.
+	var updateTicker <-chan time.Time
+	if updateCfg.ForgejoToken != "" {
+		ut := time.NewTicker(cfg.updateInterval)
+		defer ut.Stop()
+		updateTicker = ut.C
+		fmt.Fprintf(os.Stderr,
+			"ownbased: update loop enabled (forgejo=%s, interval=%s, resolves blank refs + reports drift)\n",
+			updateCfg.ForgejoURL, cfg.updateInterval)
+	}
+
+	// Vulnerability scan ticker: runs trivy against the host OS packages and
+	// each service's container image on a configurable interval (default 24h).
+	// The ticker is always active; trivy degrades gracefully when not installed.
+	vulnTicker := time.NewTicker(cfg.vulnScanInterval)
+	defer vulnTicker.Stop()
+	fmt.Fprintf(os.Stderr,
+		"ownbased: vuln scan enabled (interval=%s, trivy=%v)\n",
+		cfg.vulnScanInterval, vulnscan.TrivyAvailable())
+
+	// Run an initial vulnerability scan shortly after startup so the first
+	// status report includes CVE data. Delay to let the initial reconcile
+	// complete and images be built before scanning them.
+	// Result is sent to vulnResultCh (not written directly) so all updates
+	// to lastVulnStatus happen on the main loop — no synchronization needed.
+	go func() {
+		select {
+		case <-time.After(5 * time.Minute):
+			result := vulnscan.GatherVulns(ctx, vulnscan.RunningContainers(ctx))
+			sendVulnResult(vulnResultCh, result)
+		case <-ctx.Done():
+		}
+	}()
+
+	for {
+		select {
+		case <-hookSig:
+			reconcileOnce("post-receive hook")
+		case <-webhookSig:
+			reconcileOnce("forgejo push webhook")
+		case <-ticker.C:
+			reconcileOnce("timer backstop")
+		case <-updateTicker:
+			runRefResolveAndDrift(ctx, cfg.checkoutPath, updateCfg, auditLog, statusSrv)
+		case <-vulnTicker.C:
+			// Run the scan in a goroutine — trivy can take minutes on first run
+			// (DB download) and must not block the main reconcile/backup loop.
+			// Result is sent to vulnResultCh so lastVulnStatus is only ever
+			// written on the main loop, eliminating the need for a mutex.
+			go func() {
+				result := vulnscan.GatherVulns(ctx, vulnscan.RunningContainers(ctx))
+				sendVulnResult(vulnResultCh, result)
+			}()
+		case result := <-vulnResultCh:
+			// Discard this result if a newer scan already finished. ScannedAt
+			// is always set by GatherVulns (even on failure) so that overlapping
+			// goroutines — the startup scan and a ticker-triggered scan — cannot
+			// let a slow older scan overwrite a faster newer one.
+			if result.ScannedAt.Before(lastVulnStatus.ScannedAt) {
+				fmt.Fprintln(os.Stderr, "ownbased: vuln scan: discarding stale result (newer scan already applied)")
+				break
+			}
+			// Always update — even Available=false must replace a stale
+			// Available=true result (e.g. trivy removed after last scan).
+			lastVulnStatus = result
+			fmt.Fprintf(os.Stderr,
+				"ownbased: vuln scan complete (available=%v, host: %dC/%dH/%dM, %d image(s))\n",
+				result.Available, result.Host.Critical, result.Host.High, result.Host.Medium,
+				len(result.Images))
+			// Push updated status immediately — don't wait for the next reconcile.
+			afterReconcile(lastReconcileState)
+		case <-ctx.Done():
+			fmt.Fprintln(os.Stderr, "ownbased: shutting down")
+			// Remove the PID file so the hook does not signal a dead process.
+			_ = os.Remove(cfg.pidPath)
+			return nil
+		}
+	}
+}
+
+// runRefResolveAndDrift reads the current ownbase.yaml, resolves any blank
+// ref: fields by committing the default-branch HEAD SHA to the Forgejo config
+// repo, and then computes drift for all services with concrete refs. The drift
+// snapshot is pushed into the status server so ownbasectl updates can read it.
+// Non-fatal — a transient error for one service is logged and skipped.
+func runRefResolveAndDrift(ctx context.Context, checkoutPath string, cfg update.Config, al authz.AuditLogger, statusSrv *explain.StatusServer) {
+	cfgPath := filepath.Join(checkoutPath, "ownbase.yaml")
+	oc, err := schema.ParseConfigFile(cfgPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ownbased: update: parse ownbase.yaml: %v\n", err)
+		return
+	}
+
+	services := update.ServicesFromConfig(oc)
+
+	// Resolve blank refs: commit default-branch HEAD SHA for any service with
+	// no ref: set. These commits trigger the hook → reconcile → build path.
+	update.ResolveBlankRefs(ctx, cfg, services, al)
+
+	// Re-read config after blank-ref resolution so drift sees updated refs.
+	if oc2, err := schema.ParseConfigFile(cfgPath); err == nil {
+		services = update.ServicesFromConfig(oc2)
+	}
+
+	// Compute drift and cache in the status server.
+	drift := update.ComputeDrift(ctx, cfg, services)
+	if statusSrv != nil {
+		driftStatus := explain.UpdateStatus{}
+		for _, d := range drift {
+			driftStatus.Drift = append(driftStatus.Drift, explain.ServiceDrift{
+				Service:       d.Service,
+				Ref:           d.Ref,
+				Branch:        d.Branch,
+				CommitsBehind: d.CommitsBehind,
+				NewestTag:     d.NewestTag,
+				UpToDate:      d.UpToDate,
+			})
+		}
+		statusSrv.SetUpdates(driftStatus)
+	}
+
+	behind := 0
+	for _, d := range drift {
+		if !d.UpToDate {
+			behind++
+		}
+	}
+	if behind == 0 {
+		fmt.Fprintln(os.Stderr, "ownbased: update: all services current")
+	} else {
+		fmt.Fprintf(os.Stderr, "ownbased: update: %d service(s) behind — run ownbasectl updates for details\n", behind)
+	}
+}
+
+// ensureMirrors ensures that a Forgejo pull-mirror exists for each mirror:
+// service declared in cfg. Idempotent and non-fatal — transient Forgejo errors
+// are logged and skipped. The compiler derives the Forgejo path from the URL
+// (mirrors/<basename>); here we ensure the corresponding repo exists as a
+// pull-mirror before trying to build from it.
+func ensureMirrors(ctx context.Context, cfg *schema.OwnbaseConfig, updateCfg update.Config) {
+	_ = ctx
+	fgCfg := githost.ForgejoConfig{
+		BaseURL:    updateCfg.ForgejoURL,
+		AdminToken: updateCfg.ForgejoToken,
+		RepoOwner:  updateCfg.ForgejoUser,
+	}
+	for name, svc := range cfg.Services {
+		if svc.Mirror == "" {
+			continue
+		}
+		basename := githost.MirrorForgejoRepoName(svc.Mirror)
+		if err := githost.CreateForgejoMirror(fgCfg, svc.Mirror, basename, ""); err != nil {
+			fmt.Fprintf(os.Stderr,
+				"ownbased: ensure mirror for %s (%s): %v (non-fatal)\n",
+				name, svc.Mirror, err)
+		}
+	}
+}
+
+// readCoreConfigFromDisk reads the core: block from ownbase.yaml if it exists.
+// Returns a zero-value CoreConfig (with all defaults applied by the schema) when
+// the file is missing or cannot be parsed — so pass zero always has safe defaults.
+func readCoreConfigFromDisk(checkoutPath string) schema.CoreConfig {
+	cfgPath := filepath.Join(checkoutPath, "ownbase.yaml")
+	cfg, err := schema.ParseConfigFile(cfgPath)
+	if err != nil {
+		return schema.CoreConfig{}
+	}
+	return cfg.Core
+}
+
+// loadBackupConfig builds a backup.Config for one run. It parses ownbase.yaml
+// fresh on every call (so volume declarations are always current), decrypts
+// credentials from the conventional age-encrypted secret, and resolves all
+// Podman volume mountpoints via BuildPaths. Credentials are refreshed on every
+// call so a `ownbasectl secrets set backup` rotation takes effect without
+// restart. Falls back gracefully when the config or volumes cannot be resolved.
+func loadBackupConfig(cfg agentConfig, repo string, auditLog authz.AuditLogger) backup.Config {
+	creds, err := secrets.IssueMap(
+		secrets.FileKeyCustody{},
+		filepath.Join(explain.DefaultSecretsDir, "backup.yaml.age"),
+	)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ownbased: backup: load credentials: %v (falling back to env)\n", err)
+		creds = nil
+	}
+
+	var paths []string
+	oc, err := schema.ParseConfigFile(filepath.Join(cfg.checkoutPath, "ownbase.yaml"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ownbased: backup: parse ownbase.yaml: %v (falling back to default paths)\n", err)
+	} else {
+		resolved, err := backup.BuildPaths(context.Background(), oc, backup.PodmanVolumeResolver{})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ownbased: backup: resolve volume paths: %v (falling back to default paths)\n", err)
+		} else {
+			paths = resolved
+		}
+	}
+
+	return backup.Config{
+		Repository:  repo,
+		Paths:       paths,
+		Credentials: creds,
+		DryRun:      cfg.dryRun,
+		AuditLog:    auditLog,
+	}
+}
+
+// reconcileLoop runs one full: update checkout → compile → drift check →
+// diff → apply cycle. It is identical whether triggered by the hook or the
+// timer, satisfying the Reconstruction Model's "same code path" requirement.
+//
+// It returns a reconcileState populated with whatever it successfully computed,
+// so the caller can gather status even when an error occurred mid-cycle.
+func reconcileLoop(
+	checkoutPath, repoPath string,
+	checkpoint authz.Checkpoint,
+	applier reconcile.Applier,
+	auditLog authz.AuditLogger,
+	dryRun bool,
+	updateCfg update.Config,
+) (reconcileState, error) {
+	var state reconcileState
+
+	// 0. Sync Forgejo → bare repo (M10 front-door model).
+	// The user pushes to Forgejo; this step propagates those commits into the
+	// local bare repo before UpdateCheckout runs. Non-fatal: if Forgejo is not
+	// configured or is temporarily unreachable, the agent continues with
+	// whatever is already in the bare repo.
+	if updateCfg.ForgejoToken != "" && updateCfg.ForgejoURL != "" {
+		if err := githost.SyncBareRepoFromForgejo(
+			repoPath,
+			updateCfg.ForgejoURL,
+			updateCfg.ForgejoToken,
+			updateCfg.ForgejoUser,
+			updateCfg.RepoName,
+		); err != nil {
+			fmt.Fprintf(os.Stderr, "ownbased: sync from forgejo: %v\n", err)
+		}
+	}
+
+	// 1. Pull latest from the bare repo into the checkout.
+	if err := githost.UpdateCheckout(repoPath, checkoutPath); err != nil {
+		// Non-fatal on empty repo (no commits yet).
+		fmt.Fprintf(os.Stderr, "ownbased: update checkout: %v\n", err)
+	}
+
+	// 2. Parse ownbase.yaml from the checkout.
+	cfgPath := filepath.Join(checkoutPath, "ownbase.yaml")
+	cfg, err := schema.ParseConfigFile(cfgPath)
+	if err != nil {
+		return state, fmt.Errorf("parse %s: %w", cfgPath, err)
+	}
+	state.Config = cfg
+	for _, w := range cfg.Warnings() {
+		fmt.Fprintf(os.Stderr, "ownbased: warning: %s\n", w)
+	}
+
+	// 3. Ensure Forgejo pull-mirrors exist for all mirror: services.
+	// This is idempotent and non-fatal — if Forgejo is not reachable,
+	// the reconcile continues with source services as before.
+	if updateCfg.ForgejoToken != "" {
+		ensureMirrors(context.Background(), cfg, updateCfg)
+	}
+
+	// 4. Compile desired state.
+	desired := compiler.Compile(compiler.Input{Config: cfg})
+
+	// 4a. Write the informational snapshot files (Caddyfile, docker-compose.yml)
+	// before drift detection so they are always present when the detector runs.
+	// These files are unconditionally regenerated from the compiler on every
+	// cycle, so writing them here does not hide meaningful drift — it only
+	// prevents a false-positive "missing_file" on first boot (when
+	// bootstrapCore already started containers but the agent has never written
+	// the snapshot yet).
+	runtimeDir := filepath.Join(checkoutPath, "runtime")
+	if _, err := compiler.WriteOutput(desired, checkoutPath); err != nil {
+		fmt.Fprintf(os.Stderr, "ownbased: write runtime snapshot (pre-drift): %v (non-fatal)\n", err)
+	}
+
+	// 5. Drift detection: compare compiler output to runtime/ on disk.
+	driftEvents, err := reconcile.DetectDrift(desired, runtimeDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ownbased: drift check error: %v\n", err)
+	} else if len(driftEvents) > 0 {
+		fmt.Fprint(os.Stderr, "ownbased: DRIFT DETECTED:\n")
+		fmt.Fprint(os.Stderr, reconcile.RenderDriftReport(driftEvents))
+	}
+	state.DriftEvents = driftEvents
+
+	// 6. Read current runtime snapshots for precise diffing.
+	// These are non-fatal: if the files don't exist yet (first boot), the diff
+	// falls back to simpler logic (no restart/Caddyfile-only-reload actions).
+	currentCaddyfile, _ := os.ReadFile(filepath.Join(runtimeDir, "Caddyfile"))
+
+	// 6b. Read currently-installed Quadlet unit files from the actual quadlet
+	// directory (e.g. /etc/containers/systemd/). This is the authoritative
+	// source for both:
+	//   (a) Restart detection: comparing desired unit content against what is
+	//       actually deployed on disk. Previously, currentUnits was read from
+	//       runtime/ which compiler.WriteOutput had just overwritten with the
+	//       desired content, making the comparison always equal and preventing
+	//       restarts from ever being triggered.
+	//   (b) Network/volume presence: detecting when a Quadlet file is missing
+	//       from the quadlet dir even though the Podman object still exists.
+	// Falls back to runtime/ in noop/dev builds (installedQuadletDir() == "").
+	currentUnits := readRuntimeUnits(runtimeDir) // dev fallback
+	var installedUnits map[string]bool
+	if qd := installedQuadletDir(); qd != "" {
+		currentUnits = readRuntimeUnits(qd) // actual quadlet dir
+		installedUnits = make(map[string]bool, len(currentUnits))
+		for filename := range currentUnits {
+			installedUnits[filename] = true
+		}
+		// Also include any network/volume units not yet in currentUnits
+		// (readRuntimeUnits only reads ownbase-prefixed files, which is correct).
+	}
+
+	// 7. Query actual running state.
+	current, err := runtime.QueryCurrentState()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ownbased: query state: %v (using empty state)\n", err)
+		current = runtime.EmptyCurrentState()
+	}
+	state.Current = current
+
+	// 8. Diff desired vs current.
+	plan, err := reconcile.Diff(desired, current, reconcile.DiffOptions{
+		CurrentCaddyfile: string(currentCaddyfile),
+		CurrentUnits:     currentUnits,
+		InstalledUnits:   installedUnits,
+	})
+	if err != nil {
+		return state, fmt.Errorf("diff: %w", err)
+	}
+
+	if plan.IsEmpty() {
+		fmt.Fprintln(os.Stderr, "ownbased: already converged — no changes needed")
+		return state, nil
+	}
+
+	fmt.Fprint(os.Stderr, "ownbased: plan:\n")
+	fmt.Fprint(os.Stderr, reconcile.RenderPlanText(plan))
+
+	// 9. Apply (or dry-run preview).
+	if dryRun {
+		return state, reconcile.ApplyDryRun(plan, checkpoint)
+	}
+	if err := reconcile.Apply(plan, checkpoint, applier, auditLog); err != nil {
+		return state, err
+	}
+	// After a successful apply, sync ALL compiler output into runtime/ so
+	// the drift detector sees the full desired snapshot on the next tick.
+	// This covers files that have no corresponding action (e.g. docker-compose.yml)
+	// and unit files that were skipped because the resource already existed.
+	if _, err := compiler.WriteOutput(desired, checkoutPath); err != nil {
+		fmt.Fprintf(os.Stderr, "ownbased: write runtime snapshot: %v (non-fatal)\n", err)
+	}
+	return state, nil
+}
+
+// isCheckoutMissingError returns true when the reconcile error is caused by a
+// missing ownbase.yaml, indicating that the checkout was not yet seeded by
+// bootstrapCore (e.g. the initial push has not happened yet).
+func isCheckoutMissingError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "ownbase.yaml") &&
+		(strings.Contains(msg, "no such file") || strings.Contains(msg, "not exist"))
+}
+
+// isConfigError returns true when the reconcile error originates from parsing
+// ownbase.yaml (a permanent config problem that the operator must fix), rather
+// than a transient infrastructure error.
+func isConfigError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "parse") && strings.Contains(msg, "ownbase.yaml")
+}
+
+// readRuntimeUnits reads all Quadlet unit files from runtimeDir and returns
+// a map of filename → content. Used by Diff to detect when a running
+// container's unit content has changed (triggering a restart). Non-fatal:
+// returns nil when the directory does not yet exist.
+func readRuntimeUnits(runtimeDir string) map[string]string {
+	entries, err := os.ReadDir(runtimeDir)
+	if err != nil {
+		return nil
+	}
+	units := make(map[string]string)
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		switch {
+		case strings.HasSuffix(name, ".container"),
+			strings.HasSuffix(name, ".network"),
+			strings.HasSuffix(name, ".volume"):
+			data, err := os.ReadFile(filepath.Join(runtimeDir, name))
+			if err == nil {
+				units[name] = string(data)
+			}
+		}
+	}
+	return units
+}
+
+// sendVulnResult sends result to ch, replacing any already-queued result when
+// this one is newer. This prevents a slow older goroutine from overwriting a
+// faster newer scan whose result is already in the buffer waiting to be read.
+//
+// ch must have a buffer size of exactly 1.
+func sendVulnResult(ch chan vulnscan.VulnStatus, result vulnscan.VulnStatus) {
+	for {
+		select {
+		case ch <- result:
+			return
+		default:
+		}
+		// Channel full. Try to swap out the queued value if ours is newer.
+		select {
+		case queued := <-ch:
+			if !result.ScannedAt.After(queued.ScannedAt) {
+				// Queued result is same age or newer — restore it and drop ours.
+				// Safe non-blocking: we hold the only item that was in the buffer.
+				select {
+				case ch <- queued:
+				default:
+				}
+				return
+			}
+			// Ours is newer — loop to send it.
+		default:
+			// Channel was drained by the main loop between the two selects.
+			// Loop to retry the initial send.
+		}
+	}
+}

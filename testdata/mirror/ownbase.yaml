@@ -1,0 +1,27 @@
+schema_version: v1
+
+# Test fixture: mirror: service alongside a source: service.
+# Used to verify that mirror services resolve to a Forgejo path and compile
+# correctly (build from mirrors/<basename>, not a registry image).
+
+core:
+  forgejo:
+    domain: git.example.com
+    port: 3000
+
+services:
+  postgres:
+    mirror: https://github.com/docker-library/postgres
+    mode: managed
+    context: "17/alpine"
+    port: 5432
+    health_probe:
+      http: /health
+
+  myapp:
+    source: services/myapp
+    ref: v1.0.0
+    port: 8080
+    domain: app.example.com
+    requires:
+      - postgres

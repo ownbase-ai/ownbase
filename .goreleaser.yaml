@@ -1,0 +1,133 @@
+# GoReleaser configuration for OwnBase releases.
+#
+# Two artifact families per tagged release (vX.Y.Z):
+#
+#   ownbasectl — the customer-facing CLI. darwin/linux × amd64/arm64
+#     tar.gz archives attached to the GitHub Release, plus a Homebrew
+#     formula pushed to ownbase-ai/homebrew-tap.
+#
+#   ownbased — the on-Base daemon. linux × amd64/arm64 plain binaries
+#     named ownbased-linux-<arch>, each with a minisign signature
+#     (.minisig). The release workflow publishes these to the
+#     releases.ownbase.ai/daemon/<version>/ layout that install.sh
+#     downloads from (and to .../latest/).
+#
+# Local dry run:  goreleaser release --snapshot --clean --skip=sign,publish
+
+version: 2
+
+project_name: ownbase
+
+builds:
+  - id: ownbasectl
+    main: ./cmd/ownbasectl
+    binary: ownbasectl
+    env: [CGO_ENABLED=0]
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+      # .Tag (not .Version) so the injected version keeps the "v" prefix —
+      # it must match GITHUB_REF_NAME, which the release workflow uses
+      # verbatim as the releases.ownbase.ai/daemon/<version>/ path segment
+      # that `create`/install.sh request the matching daemon from.
+      - -X main.version={{ .Tag }}
+      - -X main.commit={{ .ShortCommit }}
+      - -X main.date={{ .Date }}
+
+  - id: ownbased
+    main: ./cmd/ownbased
+    binary: ownbased
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+
+archives:
+  # CLI: tar.gz archives for GitHub Releases / direct download.
+  - id: ownbasectl-archives
+    ids: [ownbasectl]
+    formats: [tar.gz]
+    name_template: "ownbasectl_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files: [README.md]
+
+  # Daemon: plain binaries in the exact names install.sh expects
+  # (ownbased-linux-amd64 / ownbased-linux-arm64).
+  - id: ownbased-binaries
+    ids: [ownbased]
+    formats: [binary]
+    name_template: "ownbased-linux-{{ .Arch }}"
+
+# Minisign signatures for the daemon binaries. install.sh verifies these
+# against the OwnBase release public key before installing.
+#
+# Requires in the release environment:
+#   MINISIGN_SECRET_KEY_PATH — path to the minisign secret key file
+#   MINISIGN_PASSWORD        — passphrase for that key (piped to stdin)
+#
+# NOTE: install.sh currently pins the development public key. Replacing it
+# with the production public key is part of cutting the first real release —
+# generate with `minisign -G` and update MINISIGN_PUBLIC_KEY in install.sh.
+signs:
+  - id: daemon-minisign
+    ids: [ownbased-binaries]
+    artifacts: binary
+    cmd: minisign
+    args:
+      - "-S"
+      - "-s"
+      - "{{ .Env.MINISIGN_SECRET_KEY_PATH }}"
+      - "-m"
+      - "${artifact}"
+      - "-x"
+      - "${signature}"
+    signature: "${artifact}.minisig"
+    stdin: "{{ .Env.MINISIGN_PASSWORD }}"
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-dev"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+homebrew_casks:
+  - name: ownbasectl
+    ids: [ownbasectl-archives]
+    repository:
+      owner: ownbase-ai
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Casks
+    homepage: https://ownbase.ai
+    description: "Set up, operate, and own your Base — the OwnBase CLI"
+    # The binaries are not Apple-notarized; strip the quarantine attribute on
+    # install so macOS Gatekeeper does not block the CLI.
+    hooks:
+      post:
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/ownbasectl"]
+          end
+
+release:
+  github:
+    owner: ownbase-ai
+    name: ownbase
+  draft: false
+  footer: |
+    ## Install ownbasectl
+
+    ```sh
+    brew install --cask ownbase-ai/tap/ownbasectl
+    ```
+
+    Or download the archive for your platform above.

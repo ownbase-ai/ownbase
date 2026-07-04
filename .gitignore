@@ -1,0 +1,10 @@
+.DS_Store
+__pycache__/
+/ownbased
+/ownbasectl
+/ownbased-linux-amd64
+/ownbased-linux-arm64
+/ownbase-agent
+/ownbase-agent-linux-amd64
+/ownbase-agent-linux-arm64
+/dist/

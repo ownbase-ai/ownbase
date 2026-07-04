@@ -1,0 +1,19 @@
+schema_version: v1
+
+core:
+  forgejo:
+    domain: git.example.com
+
+services:
+  auth:
+    source: services/auth
+    mode: managed
+    ref: v2.1.0
+    port: 8080
+
+  hello:
+    source: apps/hello
+    domain: hello.example.com
+    port: 3000
+    requires:
+      - auth

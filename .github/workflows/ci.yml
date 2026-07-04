@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  # Tier 1 — host-portable: runs on every push, no Linux VM required.
+  tier1:
+    name: Tier 1 (lint + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "The following files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+      - name: go test
+        run: go test ./...
+
+  # Tier 2 — real Ubuntu with Podman + Quadlet + systemd. Runs on push to
+  # main and on pull requests targeting main; also runnable manually.
+  # Required from M3 onward; harmless before (no integration tests yet).
+  tier2:
+    name: Tier 2 (integration)
+    runs-on: ubuntu-24.04
+    if: github.ref == 'refs/heads/main' || github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Enable linger (rootless user systemd session)
+        run: sudo loginctl enable-linger "$USER"
+
+      - name: Wait for user systemd session
+        run: |
+          # XDG_RUNTIME_DIR is not set in non-interactive CI shells; set it
+          # explicitly so systemctl --user can reach the session D-Bus socket.
+          export XDG_RUNTIME_DIR=/run/user/$(id -u)
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          # Wait up to 30 s for the user session bus to appear (loginctl
+          # enable-linger starts the session asynchronously).
+          for i in $(seq 1 30); do
+            if systemctl --user is-system-running 2>/dev/null | grep -qE "^(running|degraded)$"; then
+              echo "user systemd session ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          systemctl --user status --no-pager 2>&1 | head -10 || true
+
+      - name: Pre-pull test image (avoids 15 s timeout on first container start)
+        run: podman pull docker.io/library/alpine:latest
+
+      - name: Install test tools (skopeo for image-digest tests, restic for backup tests)
+        run: sudo apt-get install -y skopeo restic
+
+      - name: go test (integration)
+        run: go test -tags=integration -timeout 30m ./...
+
+  # Tier 2 root — same Ubuntu 24.04 VM but runs install + bootstrap tests as
+  # root. These tests use rootful Podman (install-level operations, UFW, the
+  # ownbase-core-forgejo bootstrap container). Each job gets a fresh VM so
+  # there is no conflict with the rootless tier2 job above.
+  tier2-root:
+    name: Tier 2 root (install + bootstrap)
+    runs-on: ubuntu-24.04
+    if: github.ref == 'refs/heads/main' || github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Pre-pull Forgejo image (rootful Podman storage)
+        run: sudo podman pull codeberg.org/forgejo/forgejo:15.0.3
+
+      - name: go test (integration, root)
+        # -p 1 forces sequential execution so PassZero (install) finishes
+        # before secwatch probes for ufw/fail2ban.
+        run: sudo env "PATH=$PATH" go test -tags=integration -timeout 30m -p 1 ./internal/install/... ./internal/secwatch/... -v
