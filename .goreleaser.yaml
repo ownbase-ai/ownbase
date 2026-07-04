@@ -2,7 +2,7 @@
 #
 # Two artifact families per tagged release (vX.Y.Z):
 #
-#   ownbasectl — the customer-facing CLI. darwin/linux × amd64/arm64
+#   ownbasectl — the user-facing CLI. darwin/linux × amd64/arm64
 #     tar.gz archives attached to the GitHub Release, plus a Homebrew
 #     formula pushed to ownbase-ai/homebrew-tap.
 #

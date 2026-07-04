@@ -5,7 +5,7 @@
 // Layout on a running Base:
 //
 //	/opt/ownbase/
-//	  repo/        # bare git repo — the irreducible, customer-owned source of truth
+//	  repo/        # bare git repo — the irreducible, user-owned source of truth
 //	  checkout/    # working clone the daemon reads ownbase.yaml from
 //	  runtime/     # compiler output written by the daemon (never by hand)
 //	  logs/        # audit log and other daemon logs

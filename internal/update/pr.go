@@ -4,7 +4,7 @@ package update
 // Forgejo config repo (used by blank-ref resolution) and YAML-editing utilities.
 //
 // The PR-generation path (OpenUpdatePR, branch creation, PR body templates)
-// has been removed. Updates are now driven by the customer editing ref: and
+// has been removed. Updates are now driven by the user editing ref: and
 // committing directly — see docs/decisions.md ("Updates and drift").
 
 import (

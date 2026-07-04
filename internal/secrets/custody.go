@@ -1,6 +1,6 @@
 // Package secrets implements the OwnBase secrets model:
 //
-//   - Secrets are encrypted at rest in the customer's repo under secrets/
+//   - Secrets are encrypted at rest in the user's repo under secrets/
 //     using filippo.io/age (age-encrypt / age-decrypt CLI-compatible format).
 //   - The age private key lives only on the Base at /opt/ownbase/age/key.age,
 //     never in the repo, never anywhere off the Base.

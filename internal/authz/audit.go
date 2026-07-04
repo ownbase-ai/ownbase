@@ -46,7 +46,7 @@ type AuditLogger interface {
 }
 
 // AuditLog is the production AuditLogger: an append-only JSON Lines file on
-// the Base. The log is customer-owned and human/machine readable.
+// the Base. The log is user-owned and human/machine readable.
 //
 // AuditLog is safe for concurrent use.
 type AuditLog struct {

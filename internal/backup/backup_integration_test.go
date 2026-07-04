@@ -157,7 +157,7 @@ func TestVerifyRestore_Pass(t *testing.T) {
 	cfg, dir := makeTestCfg(t)
 	dataDir := filepath.Join(dir, "data")
 	_ = os.MkdirAll(dataDir, 0o755)
-	_ = os.WriteFile(filepath.Join(dataDir, "important.txt"), []byte("customer data"), 0o644)
+	_ = os.WriteFile(filepath.Join(dataDir, "important.txt"), []byte("user data"), 0o644)
 	cfg.Paths = []string{dataDir}
 
 	// First take a backup.

@@ -140,7 +140,7 @@ ownbasectl status mybase --json       # full BaseStatus JSON (schema v3 — see 
 
 ### `updates <name>`
 
-Per-service drift table: pinned `ref:`, commits behind the default branch, newest semver tag. Updates are customer-driven — edit `ref:` in `ownbase.yaml` and commit.
+Per-service drift table: pinned `ref:`, commits behind the default branch, newest semver tag. Updates are user-driven — edit `ref:` in `ownbase.yaml` and commit.
 
 ```bash
 ownbasectl updates mybase

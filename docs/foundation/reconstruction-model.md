@@ -64,7 +64,7 @@ The consequence is the most important property in the model: **recovery is not a
 
 ## What "reconcile" means
 
-A reconciler is a **thermostat for a server.** The repo declares the target — these apps, these services, this config should be running. The daemon continuously reads what is *actually* running, compares it to the target, and makes the machine match: it starts what is missing, stops what should not be there, and repairs what drifted. The customer never pushes a change or runs a deploy script by hand; they change the target (edit `ownbase.yaml`, commit) and the loop converges.
+A reconciler is a **thermostat for a server.** The repo declares the target — these apps, these services, this config should be running. The daemon continuously reads what is *actually* running, compares it to the target, and makes the machine match: it starts what is missing, stops what should not be there, and repairs what drifted. The user never pushes a change or runs a deploy script by hand; they change the target (edit `ownbase.yaml`, commit) and the loop converges.
 
 ### The trigger is a commit, not a clock
 
@@ -96,12 +96,12 @@ secrets (enc)--+--> compile() --> runtime/   (generated; never hand-edited)
 
 ## The source of truth lives on owned hardware
 
-The ownership promise collapses if the authoritative repository lives on someone else's servers. So the authoritative copy of the customer's repo lives **on the Base itself** — on the Base's own Forgejo instance. This is what makes the commit-driven loop above possible: a commit to the source of truth is an *internal* event, not a remote poll.
+The ownership promise collapses if the authoritative repository lives on someone else's servers. So the authoritative copy of the user's repo lives **on the Base itself** — on the Base's own Forgejo instance. This is what makes the commit-driven loop above possible: a commit to the source of truth is an *internal* event, not a remote poll.
 
 - **A filesystem bare repo is the irreducible truth.** The on-Base Git host is itself a reconciled service; to avoid a chicken-and-egg, the daemon holds a bare repo on the local filesystem first and the hosted Forgejo service becomes a remote of it.
 - **External mirrors are optional and never authoritative.** A Base may push-mirror to an external host so tooling that assumes GitHub can work against it — but the authoritative copy stays on the Base and the update loop runs locally regardless.
 
-This is the deepest expression of [architecture-principles.md](architecture-principles.md), principles 1 and 2: not just "Git is the source of truth," but *the source of truth is an artifact the customer physically owns.*
+This is the deepest expression of [architecture-principles.md](architecture-principles.md), principles 1 and 2: not just "Git is the source of truth," but *the source of truth is an artifact the user physically owns.*
 
 ## Secrets are an owned, recoverable, scoped asset
 
@@ -117,7 +117,7 @@ The pure function exists so that recovery is the default. The proof that it work
 
 ## The standard this model must meet
 
-> Given only the repo, the secrets, and the latest verified backup — all artifacts the customer physically owns — a working Base can be reconstructed on a fresh machine without OwnBase or any vendor:
+> Given only the repo, the secrets, and the latest verified backup — all artifacts the user physically owns — a working Base can be reconstructed on a fresh machine without OwnBase or any vendor:
 > `restore(backups)` → `reconcile(compile(repo, secrets), current)`
 
 Any design that breaks this property is wrong, no matter how convenient.

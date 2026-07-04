@@ -6,7 +6,7 @@ package backup
 //	running = reconcile(compile(repo, secrets), current)
 //
 // This is the acid test made executable: given only the repo, the secrets,
-// and the latest verified backup — all artifacts the customer physically owns
+// and the latest verified backup — all artifacts the user physically owns
 // — a working Base can be reconstructed on a fresh machine.
 //
 // The rebuild command is exposed via the agent's --rebuild flag. It:

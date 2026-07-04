@@ -2,7 +2,7 @@
 
 > The canonical lifecycle of a Base. Every CLI command and daemon capability maps onto one of these stages. If a proposed feature does not serve a stage, question whether it belongs at all.
 
-A Base is a living thing the customer owns. It is created, secured, lived in, maintained, and — if the customer chooses — left intact. The stages are not strictly linear: the middle (Build, Deploy, Observe, Update, Recover) is a loop the customer lives in for years; Create/Secure at the start and Export/Retire at the close are bounded. **Export and Retire are first-class stages**, not afterthoughts — they are where the [service-constitution.md](service-constitution.md) promise "you can leave anytime" becomes real.
+A Base is a living thing the user owns. It is created, secured, lived in, maintained, and — if the user chooses — left intact. The stages are not strictly linear: the middle (Build, Deploy, Observe, Update, Recover) is a loop the user lives in for years; Create/Secure at the start and Export/Retire at the close are bounded. **Export and Retire are first-class stages**, not afterthoughts — they are where the [service-constitution.md](service-constitution.md) promise "you can leave anytime" becomes real.
 
 ```mermaid
 flowchart LR
@@ -20,15 +20,15 @@ flowchart LR
 
 ### 1. Create
 
-The customer brings infrastructure they own (or a local VM for testing) and a Base comes into existence. A customer-owned Git repo and the `ownbase.yaml` control file are established as the source of truth.
+The user brings infrastructure they own (or a local VM for testing) and a Base comes into existence. A user-owned Git repo and the `ownbase.yaml` control file are established as the source of truth.
 
-- **Driven by:** the customer, one command.
+- **Driven by:** the user, one command.
 - **Daemon job:** reconcile (bootstrap the Base toward the repo).
 - **CLI:** `ownbasectl create <base> [--remote user@host]`
 
 ### 2. Secure
 
-The boring, critical hardening happens without the customer having to understand it: firewall, automatic security updates, intrusion protection, TLS, no exposed databases. The Base is safe before anything is built on it.
+The boring, critical hardening happens without the user having to understand it: firewall, automatic security updates, intrusion protection, TLS, no exposed databases. The Base is safe before anything is built on it.
 
 - **Driven by:** the daemon.
 - **Daemon job:** reconcile + watch.
@@ -36,9 +36,9 @@ The boring, critical hardening happens without the customer having to understand
 
 ### 3. Build
 
-The customer (often via their AI) creates an app. The AI reads `OWNBASE.md` and the service manifests and builds against existing capabilities (auth, jobs, a database, storage) instead of reinventing them.
+The user (often via their AI) creates an app. The AI reads `OWNBASE.md` and the service manifests and builds against existing capabilities (auth, jobs, a database, storage) instead of reinventing them.
 
-- **Driven by:** customer + AI.
+- **Driven by:** user + AI.
 - **Daemon job:** explain (expose capabilities the AI can build against).
 - **CLI:** none — this is editing `ownbase.yaml` and pushing to the Base's Forgejo.
 
@@ -60,9 +60,9 @@ The everyday stage. The Base watches itself and reports in plain language: healt
 
 ### 6. Update
 
-The Base stays current without the customer becoming a maintainer. User services update by editing `ref:` in `ownbase.yaml` and committing. Core packages (Forgejo, Caddy) update via a dedicated command.
+The Base stays current without the user becoming a maintainer. User services update by editing `ref:` in `ownbase.yaml` and committing. Core packages (Forgejo, Caddy) update via a dedicated command.
 
-- **Driven by:** the customer or their AI (editing `ref:`); `ownbasectl` for core packages.
+- **Driven by:** the user or their AI (editing `ref:`); `ownbasectl` for core packages.
 - **Daemon job:** reconcile.
 - **CLI:** `ownbasectl updates <base>` (drift report), `ownbasectl upgrade <base> [--apply]` (core packages).
 
@@ -70,29 +70,29 @@ The Base stays current without the customer becoming a maintainer. User services
 
 When something breaks or is at risk, the Base heals: rollback, restart, rotate secrets, close unsafe ports, and — when a machine is lost — rebuild from the repo plus the latest verified backup. This is where the durability promise (see [architecture-principles.md](architecture-principles.md), principle 12) is made real: no data loss and a fast, rehearsed return.
 
-- **Driven by:** the daemon (routine) or the customer (rebuild).
+- **Driven by:** the daemon (routine) or the user (rebuild).
 - **Daemon job:** recover.
 - **CLI:** `ownbasectl backup status <base>` (verify restorability), `ownbasectl restore <base> --repo ... --password ...` (rebuild).
 
 ### 8. Export
 
-At any moment, the customer can take everything — code, data, services, config, backups — out in standard, documented formats. This is not a special "offboarding" mode; export is always available because the source of truth already lives in the customer's repo and data lives in open formats. See [uninstall.md](../uninstall.md).
+At any moment, the user can take everything — code, data, services, config, backups — out in standard, documented formats. This is not a special "offboarding" mode; export is always available because the source of truth already lives in the user's repo and data lives in open formats. See [uninstall.md](../uninstall.md).
 
-- **Driven by:** the customer.
+- **Driven by:** the user.
 - **Daemon job:** explain (where everything is).
 - **CLI:** standard `git clone` / `pg_dump` / restic tooling — see [uninstall.md](../uninstall.md). Export must never require a special feature. See [service-constitution.md](service-constitution.md), rule 4.
 
 ### 9. Retire
 
-The customer can fully decommission a Base, or remove OwnBase while keeping the machine running. Because a Base is just Ubuntu they own, retiring OwnBase leaves a working system behind — nothing is held hostage.
+The user can fully decommission a Base, or remove OwnBase while keeping the machine running. Because a Base is just Ubuntu they own, retiring OwnBase leaves a working system behind — nothing is held hostage.
 
-- **Driven by:** the customer.
+- **Driven by:** the user.
 - **Daemon job:** reconcile (clean removal).
 - **CLI:** `ownbasectl delete <base>` (forget locally); see [uninstall.md](../uninstall.md) for fully removing OwnBase from the machine.
 
 ## Why the ends matter as much as the middle
 
-Most platforms invest everything in Create through Update and treat Export and Retire as friction to discourage. OwnBase inverts that. A customer who knows they can leave with everything intact, anytime, is a customer who trusts the system with production workloads. The grace of the exit is the strength of the entrance.
+Most platforms invest everything in Create through Update and treat Export and Retire as friction to discourage. OwnBase inverts that. A user who knows they can leave with everything intact, anytime, is a user who trusts the system with production workloads. The grace of the exit is the strength of the entrance.
 
 ## How to use this document
 

@@ -20,7 +20,7 @@
 
 | Decision | Choice | Why |
 |---|---|---|
-| Authoritative repo | Bare git repo at `/opt/ownbase/repo` | Customer-owned, no third-party dependency |
+| Authoritative repo | Bare git repo at `/opt/ownbase/repo` | User-owned, no third-party dependency |
 | Git UX layer | **Forgejo**, a core package bootstrapped by the installer (not declared in `ownbase.yaml`) | Forgejo must always be present; making it a user service creates a chicken-and-egg problem |
 | Sync model | Daemon pushes bare→Forgejo after reconcile; a webhook (and a `post-receive` hook via `SIGUSR1`) triggers reconcile on push | Users interact with Forgejo; the bare repo stays the final authority; two signal paths into the same reconcile code |
 | Forgejo API token | Scopes: `write:user,write:repository,write:issue,read:organization,write:admin`; stored at `/opt/ownbase/forgejo-token` (0600) | Minimum required for repo creation/management/admin password updates; internal daemon credential, never a user secret |
@@ -34,7 +34,7 @@
 | No-registry rule | `image:`/`digest:` do not exist on `ServiceDecl` | Enforced at the schema level, not just convention |
 | Core packages | Forgejo + Caddy are installed by the installer, configured via the `core:` block, upgraded via `ownbasectl upgrade` — never declared as `ownbase.yaml` services | Decouples infrastructure lifecycle from user service lifecycle; `core:` configures, never sets versions |
 | `mirror:` mechanics | `mirror: <url>` → daemon creates a Forgejo pull-mirror at `mirrors-<basename>` and builds from it | Declarative external mirrors |
-| Update model | Customer edits `ref:` and commits; a blank `ref:` auto-pins to the source's HEAD SHA on the next reconcile. There is no agent-opened PR flow — that mechanism was tried and removed because it added process without adding safety | Direct `ref:` commits fit the existing push→reconcile path |
+| Update model | User edits `ref:` and commits; a blank `ref:` auto-pins to the source's HEAD SHA on the next reconcile. There is no agent-opened PR flow — that mechanism was tried and removed because it added process without adding safety | Direct `ref:` commits fit the existing push→reconcile path |
 | `mode:` field | Parsed but has no effect (deprecated no-op); a warning is emitted when present | Removing it outright would break existing files that reject unknown fields |
 | App image build | `localhost/ownbase-<name>:local`, built by the daemon from the repo at `ref:` | No external registry references; deterministic per ref |
 | Compiler output | Deterministic, byte-identical for the same input | Golden-testable, diff-readable, no compiler state |
@@ -85,7 +85,7 @@
 | Decision | Choice | Why |
 |---|---|---|
 | Status API | Served by the daemon at `--status-addr` (default `127.0.0.1:7070`), bearer-token auth via `--api-token` | Daemon already runs as one process; loopback-only by default |
-| `OWNBASE.md` | Written to `<checkout>/OWNBASE.md` after every reconcile, from a template embedded via `//go:embed` | Always in the customer-owned repo; diffs show in `git log` |
+| `OWNBASE.md` | Written to `<checkout>/OWNBASE.md` after every reconcile, from a template embedded via `//go:embed` | Always in the user-owned repo; diffs show in `git log` |
 | Status contract version | `schema_version` field (currently v3) guards against breaking changes | Consumers check the version before parsing |
 
 ## Integration contract

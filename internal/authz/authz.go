@@ -1,6 +1,6 @@
 // Package authz implements the authorization checkpoint and audit log.
 // The V1 checkpoint is trivially permissive (all-autonomous); post-V1 it
-// evaluates the customer's governance policy. M3 wires the real audit log;
+// evaluates the user's governance policy. M3 wires the real audit log;
 // this file establishes the first-class seam from M0.5 forward.
 //
 // Architecture Principle 15: the checkpoint is a first-class component, not

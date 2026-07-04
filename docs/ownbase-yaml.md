@@ -80,7 +80,7 @@ The daemon calls `<forgejo-url>/api/v1/repos/<org>/<repo>` to clone the repo at 
 
 ## Updates: the `ref:` model
 
-Updates are customer-driven — edit `ref:` and commit:
+Updates are user-driven — edit `ref:` and commit:
 
 ```yaml
 services:

@@ -96,7 +96,7 @@ Build          daemon clones the repo at ref:; runs podman build -t localhost/ow
 Start          systemctl start ownbase-<name>.service (Quadlet unit)
 Health-gate    daemon probes health_probe.http until 2xx
 Reconcile      on every git push or timer tick
-Update         customer edits ref: in ownbase.yaml and commits; ownbasectl updates shows drift
+Update         user edits ref: in ownbase.yaml and commits; ownbasectl updates shows drift
 Backup         data volume included in the restic snapshot on every backup interval
 Restore        verified restore drill confirms data is recoverable
 Explain        service appears in OWNBASE.md and the status API
@@ -109,9 +109,9 @@ Explain        service appears in OWNBASE.md and the status API
 Every service must satisfy all five rules of the [Service Constitution](foundation/service-constitution.md):
 
 1. **Removable** — removing from `ownbase.yaml` stops and tears down the service
-2. **Forkable** — source is in a Forgejo repo the customer owns and can modify
+2. **Forkable** — source is in a Forgejo repo the user owns and can modify
 3. **Replaceable** — apps depend on the capability name (`requires:` key), not the service
-4. **Data accessible** — data is in a standard Podman volume the customer can access
+4. **Data accessible** — data is in a standard Podman volume the user can access
 5. **Works standalone** — image is built locally; nothing to reach outside the Base at runtime
 
 ---

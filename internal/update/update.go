@@ -3,12 +3,12 @@
 //
 // The loop (Principle 9):
 //
-//	customer edits ref: -> commits -> hook -> reconcile -> BUILD from repo@ref -> deploy
+//	user edits ref: -> commits -> hook -> reconcile -> BUILD from repo@ref -> deploy
 //	agent (periodic):  resolve blank refs -> commit -> reconcile -> build
 //	agent (periodic):  compute drift -> report via ownbasectl updates
 //
 // Updates are never silent in-place mutations. Every service change is a
-// commit to the customer-owned repo — either by the customer directly, or by
+// commit to the user-owned repo — either by the user directly, or by
 // the agent filling in a blank ref:.
 //
 // # Blank-ref resolution

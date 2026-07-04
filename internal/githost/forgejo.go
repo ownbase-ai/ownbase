@@ -442,7 +442,7 @@ func ConfigureForgejoWebhook(cfg ForgejoConfig, webhookURL string) error {
 // a commented template to start from.
 //
 // Idempotent: if ownbase.yaml already has user content (non-template), this
-// is a no-op to avoid overwriting the customer's configuration.
+// is a no-op to avoid overwriting the user's configuration.
 func SeedBaseRepo(cfg ForgejoConfig, ownbaseYAML string) error {
 	repoName := cfg.RepoName
 	if repoName == "" {

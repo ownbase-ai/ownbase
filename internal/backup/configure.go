@@ -2,7 +2,7 @@ package backup
 
 // configure.go provides a text-preserving edit of the core.backup: block in
 // ownbase.yaml, used by the daemon's /backup/configure API so that
-// `ownbasectl backup setup` can turn on backups without the customer
+// `ownbasectl backup setup` can turn on backups without the user
 // hand-editing YAML. Follows the same line-surgery approach as
 // internal/update.BumpRef so unrelated formatting and comments in the rest
 // of the file are left untouched.

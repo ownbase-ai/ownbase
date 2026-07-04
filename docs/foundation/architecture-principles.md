@@ -5,29 +5,29 @@
 The mental model for the whole system:
 
 > A **managed GitOps installation**, not a black-box platform.
-> The customer's server is the runtime.
-> The customer's Git repo is the source of truth.
+> The user's server is the runtime.
+> The user's Git repo is the source of truth.
 > OwnBase is the operator that keeps it secure, updated, backed up, and understandable.
 
 ## The principles
 
 ### 1. Git is the source of truth
 
-The desired state of a Base lives in a Git repository the customer owns (on their own Forgejo instance, running on their own machine). The server reconciles itself toward that repo. Nothing important exists only in a vendor database. If OwnBase disappeared, the repo plus the machine is a complete, working system.
+The desired state of a Base lives in a Git repository the user owns (on their own Forgejo instance, running on their own machine). The server reconciles itself toward that repo. Nothing important exists only in a vendor database. If OwnBase disappeared, the repo plus the machine is a complete, working system.
 
 More precisely: the **ownership invariant** is `reconstructable = (repo, secrets, backups)` — own these three and you can reconstruct anything. The **operational model** is `reconcile(compile(repo, secrets), current)`, where for a rebuild `current` begins as `restore(backups)` rather than the running state. This is what makes install, update, recover, and rebuild the same `reconcile` call from different starting conditions. See [reconstruction-model.md](reconstruction-model.md).
 
 ### 2. The repo beats a database
 
-Where state could live in a vendor database or in the customer's repo, it lives in the repo. Caches and indexes are allowed but must be *derivable* and non-authoritative. The authoritative copy of config, app definitions, and service code is always the customer's.
+Where state could live in a vendor database or in the user's repo, it lives in the repo. Caches and indexes are allowed but must be *derivable* and non-authoritative. The authoritative copy of config, app definitions, and service code is always the user's.
 
 ### 3. Plain files over proprietary formats
 
-Configuration and state are human-readable files (YAML, plain text, standard formats) — never opaque blobs only our tools can open. A customer (or their AI) should be able to open any file and understand what it does. See [service-constitution.md](service-constitution.md), rule 4.
+Configuration and state are human-readable files (YAML, plain text, standard formats) — never opaque blobs only our tools can open. A user (or their AI) should be able to open any file and understand what it does. See [service-constitution.md](service-constitution.md), rule 4.
 
 ### 4. Reversible over irreversible
 
-Prefer decisions a customer can undo. The customer controls updates by editing `ref:` and committing — no service changes without a commit they authored. Risky actions snapshot first. Anything destructive is gated, logged, and recoverable.
+Prefer decisions a user can undo. The user controls updates by editing `ref:` and committing — no service changes without a commit they authored. Risky actions snapshot first. Anything destructive is gated, logged, and recoverable.
 
 ### 5. Legible layout over magical locations
 
@@ -45,13 +45,13 @@ The system lives where you would look for it, organized so a human or AI can und
   age/         # the secret decryption key
 ```
 
-And a representative customer-owned repo:
+And a representative user-owned repo:
 
 ```text
 ownbase/
   system/      # hardening, firewall, monitoring, backups, caddy, container runtime
   services/    # service templates (auth, jobs, the on-Base git host, ...)
-  apps/        # the customer's own apps
+  apps/        # the user's own apps
   secrets/     # never committed in plaintext — see ownbase-yaml.md, "Secrets"
   ownbase.yaml # the control file
   OWNBASE.md   # the AI-and-human operating guide
@@ -59,7 +59,7 @@ ownbase/
 
 ### 6. One control file is the contract
 
-A single file, `ownbase.yaml`, is the contract between the CLI, the daemon, and any AI. The customer (or their AI) edits intent at a high level; the daemon compiles the boring details.
+A single file, `ownbase.yaml`, is the contract between the CLI, the daemon, and any AI. The user (or their AI) edits intent at a high level; the daemon compiles the boring details.
 
 Everything on a Base is a **repo**: a Postgres instance, an auth service, and a custom CRM are all repos on the Base's own Forgejo, either created fresh or mirrored from an upstream GitHub repository. There is no catalog of pre-built images — everything is built locally from source. See [ownbase-yaml.md](../ownbase-yaml.md) for the full schema.
 
@@ -71,21 +71,21 @@ Apps depend on capabilities (`auth`, `jobs`, `storage`) rather than on specific 
 
 ### 8. Compose-shaped, systemd-owned; never Kubernetes
 
-A single-machine container primitive is the right one for this customer: simple, inspectable, AI-editable, widely understood, easy to recover. The runtime is **Compose-shaped, systemd-owned via Podman Quadlet** — rootless, daemonless containers whose lifecycle (restart, dependency ordering, health) systemd owns.
+A single-machine container primitive is the right one for this user: simple, inspectable, AI-editable, widely understood, easy to recover. The runtime is **Compose-shaped, systemd-owned via Podman Quadlet** — rootless, daemonless containers whose lifecycle (restart, dependency ordering, health) systemd owns.
 
 The human or AI never edits the generated units — they edit `ownbase.yaml` (principle 6). Kubernetes and general-purpose orchestrators are explicitly out of scope; this prohibition is absolute.
 
-### 9. The customer drives updates; the daemon reports drift
+### 9. The user drives updates; the daemon reports drift
 
-The customer (or their AI) updates a service by editing `ref:` in `ownbase.yaml` and committing. No service changes without a commit they authored. The daemon never opens unsolicited update PRs.
+The user (or their AI) updates a service by editing `ref:` in `ownbase.yaml` and committing. No service changes without a commit they authored. The daemon never opens unsolicited update PRs.
 
 The daemon does two things to support this:
 
-1. **Resolve blank refs.** When a service has no `ref:`, the daemon commits the default-branch HEAD SHA back to `ownbase.yaml` — a concrete, reproducible pin. After that, the ref is frozen until the customer changes it.
+1. **Resolve blank refs.** When a service has no `ref:`, the daemon commits the default-branch HEAD SHA back to `ownbase.yaml` — a concrete, reproducible pin. After that, the ref is frozen until the user changes it.
 2. **Report drift.** On its update interval, the daemon computes how far behind each service's pinned ref is from its source and surfaces this in `ownbasectl updates`. The daemon does not act on this information — it only informs.
 
 ```text
-customer edits ref: -> commits -> hook -> reconcile -> BUILD from repo@ref -> deploy
+user edits ref: -> commits -> hook -> reconcile -> BUILD from repo@ref -> deploy
                                                   daemon: resolve blank -> commit -> hook -> reconcile -> deploy
 daemon (periodic):  compute drift -> report via ownbasectl updates
 ```
@@ -105,7 +105,7 @@ Reconcile is **event-driven**: a commit to the source of truth is the trigger, a
 
 ### 11. The AI interface is a first-class artifact
 
-Every Base ships an `OWNBASE.md` so any AI can operate it without guessing. It lists every repo, what it provides, what it requires, and how to reach it. This interface is part of the product, maintained with the same care as any customer-facing surface.
+Every Base ships an `OWNBASE.md` so any AI can operate it without guessing. It lists every repo, what it provides, what it requires, and how to reach it. This interface is part of the product, maintained with the same care as any user-facing surface.
 
 ### 12. Durable by design, not highly available
 
@@ -119,7 +119,7 @@ A Base is one machine, and one machine is a single point of failure: a disk, a p
 
 ### 13. Isolation limits blast radius
 
-Every app the customer deploys — especially AI-generated code — runs with the minimum surface area necessary. Colocation on one machine is a performance and cost advantage, but it also means a compromised or misbehaving app could reach the database, the secrets vault, or other apps if left unchecked. We manage that risk structurally, not by trusting the code:
+Every app the user deploys — especially AI-generated code — runs with the minimum surface area necessary. Colocation on one machine is a performance and cost advantage, but it also means a compromised or misbehaving app could reach the database, the secrets vault, or other apps if left unchecked. We manage that risk structurally, not by trusting the code:
 
 - **Rootless, per-app containers, least privilege.** Each app runs in its own rootless container (no privileged daemon, no shared runtime socket) with no more Linux capabilities than it needs. No app mounts volumes from another app or from system directories.
 - **Scoped secrets.** Each app receives only the secrets it is declared to need. No app can enumerate or read another app's secrets. Secrets are age-encrypted and injected at start — see [ownbase-yaml.md](../ownbase-yaml.md), "Secrets".
@@ -129,10 +129,10 @@ If any principle here would be violated by a proposed change, redesign the chang
 
 ### 14. Every daemon action is taxonomy-checked and audited
 
-Every action the daemon takes is drawn from a closed taxonomy (`internal/schema/taxonomy.go`) and pre-classified into a risk tier — **autonomous** (act immediately), **notify** (act and tell the owner), or **approve** (suspend until approved). Today every tier resolves to autonomous in practice — there is no external approval device yet — but the taxonomy and the checkpoint the daemon passes every action through already exist, so tightening the policy later is additive, not a rewrite. Every action is recorded in an audit log the customer owns and can export or delete at any time. An action type that isn't in the taxonomy cannot be executed.
+Every action the daemon takes is drawn from a closed taxonomy (`internal/schema/taxonomy.go`) and pre-classified into a risk tier — **autonomous** (act immediately), **notify** (act and tell the owner), or **approve** (suspend until approved). Today every tier resolves to autonomous in practice — there is no external approval device yet — but the taxonomy and the checkpoint the daemon passes every action through already exist, so tightening the policy later is additive, not a rewrite. Every action is recorded in an audit log the user owns and can export or delete at any time. An action type that isn't in the taxonomy cannot be executed.
 
 ## The standard against which to judge any design
 
-> If OwnBase disappeared tomorrow, the customer would still have a working, understandable Ubuntu machine with all their code, data, and services intact — and could keep running everything without us.
+> If OwnBase disappeared tomorrow, the user would still have a working, understandable Ubuntu machine with all their code, data, and services intact — and could keep running everything without us.
 
 Any architecture that cannot honestly make that claim is wrong, no matter how convenient it is.

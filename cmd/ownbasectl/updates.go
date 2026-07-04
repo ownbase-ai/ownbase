@@ -7,7 +7,7 @@ package main
 // each service is from its source repo's default branch, and the newest
 // semver tag available.
 //
-// Updates are driven by the customer: edit ref: in ownbase.yaml and commit.
+// Updates are driven by the user: edit ref: in ownbase.yaml and commit.
 // The agent fills in blank ref: fields automatically (update.pin_ref).
 
 import (
@@ -26,7 +26,7 @@ func newUpdatesCmd() *cobra.Command {
 		Short: "Show how far behind each service is from its source repo",
 		Long: `Read the drift state from the Base's status API and print a per-service
 table: pinned ref, commits behind the default branch, and the newest
-semver tag available. Updates are customer-driven — edit ref: in
+semver tag available. Updates are user-driven — edit ref: in
 ownbase.yaml and commit.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

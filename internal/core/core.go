@@ -194,7 +194,7 @@ func ForgejoEnvForContainer(port int, domain string) []string {
 		"FORGEJO__database__PATH=/data/gitea/forgejo.db",
 		"FORGEJO__log__LEVEL=warn",
 		// OwnBase is a single-owner system. Disable public registration so
-		// a visitor cannot create an account on the customer's git server.
+		// a visitor cannot create an account on the user's git server.
 		"FORGEJO__service__DISABLE_REGISTRATION=true",
 		// Require sign-in to browse repos; no anonymous read access.
 		"FORGEJO__service__REQUIRE_SIGNIN_VIEW=true",

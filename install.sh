@@ -24,7 +24,7 @@
 #
 # Signed binary decision (M5):
 #   Signatures are created with minisign (https://jedisct1.github.io/minisign/).
-#   The public key below is the OwnBase release key. Customers who fork OwnBase
+#   The public key below is the OwnBase release key. Users who fork OwnBase
 #   substitute their own public key and re-sign the binary.
 #
 #   To verify manually:

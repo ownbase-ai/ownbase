@@ -7,7 +7,7 @@ package backup
 //  3. Tear down the ephemeral directory.
 //  4. Set Status.Restorable = true only on a full pass.
 //
-// The key property: "restorable" is demonstrated on the customer's real data,
+// The key property: "restorable" is demonstrated on the user's real data,
 // not claimed because backups ran. A backup that has never been verified is
 // not restorable by definition.
 //

@@ -108,7 +108,7 @@ A dev build (version `dev`) behaves differently in exactly one way: `create` wit
 
 ## Developer: verifying a fresh install end-to-end
 
-The steps above are what a customer runs. This section is for verifying the installer itself still works correctly after changing `install.sh`, the daemon's bootstrap path, or `internal/vmhost` — it is separate from the automated test suite described in [AGENTS.md](AGENTS.md), because the fresh-install path (pass zero → Quadlet bootstrap → Forgejo → reconcile loop) cannot be fully exercised by unit or integration tests; it requires a real installer run on a clean machine.
+The steps above are what a user runs. This section is for verifying the installer itself still works correctly after changing `install.sh`, the daemon's bootstrap path, or `internal/vmhost` — it is separate from the automated test suite described in [AGENTS.md](AGENTS.md), because the fresh-install path (pass zero → Quadlet bootstrap → Forgejo → reconcile loop) cannot be fully exercised by unit or integration tests; it requires a real installer run on a clean machine.
 
 ### Run it
 

@@ -204,7 +204,7 @@ func Run(ctx context.Context, cfg Config) (Status, error) {
 		fmt.Fprintf(os.Stderr, "backup: save status: %v (non-fatal)\n", err)
 	}
 
-	// Emit audit record so the customer-owned log is exhaustive.
+	// Emit audit record so the user-owned log is exhaustive.
 	if c.AuditLog != nil {
 		action, _ := schema.NewAction(schema.ActionBackupRun, "base")
 		_ = c.AuditLog.Record(action, authz.OutcomeApplied, "")

@@ -1,27 +1,27 @@
 # AGENTS.md
 
-> Guide for AI agents working with OwnBase — either **operating** a customer's Base, or **modifying the OwnBase code itself** (the daemon and `ownbasectl`).
+> Guide for AI agents working with OwnBase — either **operating** a user's Base, or **modifying the OwnBase code itself** (the daemon and `ownbasectl`).
 
 ## One sentence
 
 > AI makes it easy to build software. OwnBase makes it easy to own it.
 
-OwnBase turns a customer-controlled Ubuntu machine (their **Base**) into a secure, self-maintaining home for AI-built apps and services. The daemon and its stewardship are the product; the customer owns everything it touches.
+OwnBase turns a user-controlled Ubuntu machine (their **Base**) into a secure, self-maintaining home for AI-built apps and services. The daemon and its stewardship are the product; the user owns everything it touches.
 
 ## Hard constraints
 
-Do not violate these without the customer's explicit direction.
+Do not violate these without the user's explicit direction.
 
 | Constraint | Detail |
 |---|---|
-| Customer owns everything | Code, server, data, config, secrets, backups, domains. Never trap a user. |
+| User owns everything | Code, server, data, config, secrets, backups, domains. Never trap a user. |
 | Nothing is mysterious | Plain files, Git as source of truth, human- and AI-readable layouts. No black boxes. |
-| Operations disappear | If a customer must learn Linux, Docker, nginx, or certs because of this system, it failed. |
+| Operations disappear | If a user must learn Linux, Docker, nginx, or certs because of this system, it failed. |
 | Every service is ownable | Removable, forkable, replaceable, data accessible, runs without any OwnBase-operated cloud. |
 | Boring technology wins | Ubuntu, Podman, Postgres, Git, Caddy. Never Kubernetes. |
 | No pre-built application images | Every service is built locally from source at a pinned `ref:`. |
 
-When in doubt: does the change make the customer **more of an owner** and **less of a sysadmin**? If not, it is probably the wrong change. See [docs/foundation/](docs/foundation/) for the full reasoning behind each constraint, and [docs/decisions.md](docs/decisions.md) for locked implementation choices — check both before "fixing" something that looks wrong.
+When in doubt: does the change make the user **more of an owner** and **less of a sysadmin**? If not, it is probably the wrong change. See [docs/foundation/](docs/foundation/) for the full reasoning behind each constraint, and [docs/decisions.md](docs/decisions.md) for locked implementation choices — check both before "fixing" something that looks wrong.
 
 ---
 
@@ -71,4 +71,4 @@ Tier-2 (integration) tests require an Ubuntu VM (Multipass) and exercise real Po
 
 ### Merge gate
 
-All changes must keep `go test ./...` and `golangci-lint run ./...` green. Breaking a hard constraint above requires the customer's explicit sign-off first, not a workaround.
+All changes must keep `go test ./...` and `golangci-lint run ./...` green. Breaking a hard constraint above requires the user's explicit sign-off first, not a workaround.

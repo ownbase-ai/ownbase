@@ -45,7 +45,7 @@ func Compile(in Input) RuntimeOutput {
 }
 
 // CompileToModel returns the typed RuntimeModel without rendering to text.
-// This is the AI-preview interface: a structured value the customer's AI can
+// This is the AI-preview interface: a structured value the user's AI can
 // inspect to understand what a commit would change before it is applied.
 func CompileToModel(in Input) RuntimeModel {
 	return build(in)
