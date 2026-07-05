@@ -83,7 +83,7 @@ sudo cat /opt/ownbase/forgejo-admin-pass
 - **`multipass: command not found`** — install it: `brew install --cask multipass` (macOS) or see [multipass.run/install](https://multipass.run/install).
 - **Launch hangs or times out** — first launch downloads an Ubuntu image; give it time. If Multipass itself is wedged: `multipass restart <name>`, or restart the Multipass daemon (macOS: `sudo launchctl kickstart -k system/com.canonical.multipassd`).
 - **VM exists but `list` shows "(unregistered)"** — the VM has no matching profile (created by hand, or profile removed). `ownbasectl delete <name>` cleans up both; re-running `create <name>` asks before replacing it.
-- **VM state is `Stopped`** — `multipass start <name>`. Profiles store the VM's IP at create time; if the IP changed after a restart, update the profile host (`multipass info <name>` shows the current IP, then `ownbasectl adopt <name> --host <new-ip> --token <token>`).
+- **VM state is `Stopped`** — see [Pausing a local VM](../INSTALL.md#pausing-a-local-vm) to resume it and re-point the profile if the IP changed.
 
 ---
 

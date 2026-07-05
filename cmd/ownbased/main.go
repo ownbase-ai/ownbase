@@ -256,6 +256,13 @@ func run(cfg agentConfig) error {
 		if err := githost.InstallHook(cfg.repoPath); err != nil {
 			return fmt.Errorf("install hook: %w", err)
 		}
+		// Remove any stale OWNBASE.md left by a previous daemon version that
+		// wrote a generated status file to the checkout. The file is no longer
+		// produced; leaving it would mislead operators with outdated status.
+		staleFile := filepath.Join(cfg.checkoutPath, "OWNBASE.md")
+		if err := os.Remove(staleFile); err != nil && !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "ownbased: remove stale OWNBASE.md (non-fatal): %v\n", err)
+		}
 	}
 
 	// Ensure the age secrets key exists before anything (secrets, backups)

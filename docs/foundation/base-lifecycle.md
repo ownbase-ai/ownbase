@@ -74,6 +74,8 @@ When something breaks or is at risk, the Base heals: rollback, restart, rotate s
 - **Daemon job:** recover.
 - **CLI:** `ownbasectl backup status <base>` (verify restorability), `ownbasectl restore <base> --repo ... --password ...` (rebuild).
 
+Pausing a local VM's underlying machine (`multipass stop`/`start`) is a dev-environment concern, not a Base lifecycle stage — see [INSTALL.md](../../INSTALL.md#pausing-a-local-vm). The stages above describe the Base's *declared* state, not the host machine's power state.
+
 ### 8. Export
 
 At any moment, the user can take everything — code, data, services, config, backups — out in standard, documented formats. This is not a special "offboarding" mode; export is always available because the source of truth already lives in the user's repo and data lives in open formats. See [uninstall.md](../uninstall.md).
