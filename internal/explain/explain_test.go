@@ -2,11 +2,9 @@ package explain_test
 
 import (
 	"encoding/json"
-	"flag"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -18,8 +16,6 @@ import (
 	"github.com/ownbase/ownbase/internal/reconcile"
 	"github.com/ownbase/ownbase/internal/schema"
 )
-
-var updateGolden = flag.Bool("update", false, "update golden files")
 
 // ---------------------------------------------------------------------------
 // Gather — unit tests
@@ -221,209 +217,6 @@ func TestGather_AuditSummary_EmptyWhenNoLog(t *testing.T) {
 	s := explain.Gather(explain.GatherInput{AuditLogPath: "/nonexistent/audit.log"})
 	if s.Audit.TotalSeen != 0 {
 		t.Errorf("TotalSeen = %d, want 0 for missing log", s.Audit.TotalSeen)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// RenderOwnbaseMD — content checks
-// ---------------------------------------------------------------------------
-
-func TestRenderOwnbaseMD_ContainsServiceInfo(t *testing.T) {
-	cfg := &schema.OwnbaseConfig{
-		SchemaVersion: "v1",
-		Services: map[string]schema.ServiceDecl{
-			"crm": {
-				Source: "services/crm",
-				Ref:    "v2.0.0",
-				Domain: "crm.example.com",
-			},
-		},
-	}
-	status := explain.Gather(explain.GatherInput{Config: cfg})
-	out, err := explain.RenderOwnbaseMD(cfg, status)
-	if err != nil {
-		t.Fatalf("RenderOwnbaseMD: %v", err)
-	}
-
-	checks := []string{
-		"crm",
-		"services/crm",
-		"v2.0.0",
-		"crm.example.com",
-		"## Services",
-		"## Current status",
-		"## Security posture",
-	}
-	for _, want := range checks {
-		if !strings.Contains(out, want) {
-			t.Errorf("OWNBASE.md missing %q", want)
-		}
-	}
-}
-
-func TestRenderOwnbaseMD_MirrorService(t *testing.T) {
-	cfg := &schema.OwnbaseConfig{
-		SchemaVersion: "v1",
-		Services: map[string]schema.ServiceDecl{
-			"postgres": {Mirror: "https://github.com/docker-library/postgres"},
-		},
-	}
-	out, err := explain.RenderOwnbaseMD(cfg, nil)
-	if err != nil {
-		t.Fatalf("RenderOwnbaseMD: %v", err)
-	}
-	if !strings.Contains(out, "Mirror:") {
-		t.Errorf("OWNBASE.md missing Mirror: field for mirror service\nOutput:\n%s", out)
-	}
-}
-
-func TestRenderOwnbaseMD_SecuritySection_Restorable(t *testing.T) {
-	status := &explain.BaseStatus{
-		SchemaVersion: explain.StatusSchemaVersion,
-		Security: explain.SecurityStatus{
-			BackupRestorable: true,
-			LastVerified:     time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC),
-		},
-	}
-	cfg := &schema.OwnbaseConfig{
-		SchemaVersion: "v1",
-		Services:      map[string]schema.ServiceDecl{},
-	}
-	out, err := explain.RenderOwnbaseMD(cfg, status)
-	if err != nil {
-		t.Fatalf("RenderOwnbaseMD: %v", err)
-	}
-	if !strings.Contains(out, "verified restorable") {
-		t.Errorf("OWNBASE.md should say verified restorable\nOutput:\n%s", out)
-	}
-	if !strings.Contains(out, "2025-06-01") {
-		t.Errorf("OWNBASE.md should include last verified date\nOutput:\n%s", out)
-	}
-}
-
-func TestRenderOwnbaseMD_SecuritySection_DriftDetected(t *testing.T) {
-	status := &explain.BaseStatus{
-		SchemaVersion: explain.StatusSchemaVersion,
-		Security: explain.SecurityStatus{
-			DriftDetected: true,
-			DriftCount:    2,
-		},
-	}
-	cfg := &schema.OwnbaseConfig{
-		SchemaVersion: "v1",
-		Services:      map[string]schema.ServiceDecl{},
-	}
-	out, err := explain.RenderOwnbaseMD(cfg, status)
-	if err != nil {
-		t.Fatalf("RenderOwnbaseMD: %v", err)
-	}
-	if !strings.Contains(out, "tamper signal") {
-		t.Errorf("OWNBASE.md should mention tamper signal\nOutput:\n%s", out)
-	}
-	if !strings.Contains(out, "2 file(s)") {
-		t.Errorf("OWNBASE.md should report drift count\nOutput:\n%s", out)
-	}
-}
-
-func TestRenderOwnbaseMD_RequiresField(t *testing.T) {
-	cfg := &schema.OwnbaseConfig{
-		SchemaVersion: "v1",
-		Services: map[string]schema.ServiceDecl{
-			"auth": {Source: "services/auth"},
-			"app":  {Source: "apps/app", Requires: []string{"auth"}},
-		},
-	}
-	out, err := explain.RenderOwnbaseMD(cfg, nil)
-	if err != nil {
-		t.Fatalf("RenderOwnbaseMD: %v", err)
-	}
-	if !strings.Contains(out, "Requires:") || !strings.Contains(out, "`auth`") {
-		t.Errorf("OWNBASE.md should include Requires field\nOutput:\n%s", out)
-	}
-}
-
-func TestRenderOwnbaseMD_NilStatusSafe(t *testing.T) {
-	cfg := &schema.OwnbaseConfig{
-		SchemaVersion: "v1",
-		Services: map[string]schema.ServiceDecl{
-			"auth": {Source: "services/auth"},
-		},
-	}
-	// nil status must not panic.
-	out, err := explain.RenderOwnbaseMD(cfg, nil)
-	if err != nil {
-		t.Fatalf("RenderOwnbaseMD with nil status: %v", err)
-	}
-	if !strings.Contains(out, "stopped") {
-		t.Errorf("OWNBASE.md with nil status should show services as stopped")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Golden test for OWNBASE.md
-// ---------------------------------------------------------------------------
-
-func TestRenderOwnbaseMD_Golden(t *testing.T) {
-	// Use the minimal fixture so the golden is stable and small.
-	f, err := os.Open("../../testdata/minimal/ownbase.yaml")
-	if err != nil {
-		t.Fatalf("open minimal fixture: %v", err)
-	}
-	defer f.Close()
-	cfg, err := schema.ParseConfig(f)
-	if err != nil {
-		t.Fatalf("parse minimal fixture: %v", err)
-	}
-
-	// Render with an empty status (deterministic: no running containers, no
-	// backup, no drift) so the golden never changes due to runtime state.
-	got, err := explain.RenderOwnbaseMD(cfg, nil)
-	if err != nil {
-		t.Fatalf("RenderOwnbaseMD: %v", err)
-	}
-
-	goldenPath := "../../testdata/golden/explain/OWNBASE.md"
-	if *updateGolden {
-		if err := os.MkdirAll(filepath.Dir(goldenPath), 0o755); err != nil {
-			t.Fatalf("mkdir golden dir: %v", err)
-		}
-		if err := os.WriteFile(goldenPath, []byte(got), 0o644); err != nil {
-			t.Fatalf("write golden: %v", err)
-		}
-		t.Logf("updated golden: %s", goldenPath)
-		return
-	}
-
-	golden, err := os.ReadFile(goldenPath)
-	if err != nil {
-		t.Fatalf("read golden %s: %v\n(run: go test ./internal/explain/... -update)", goldenPath, err)
-	}
-	if string(golden) != got {
-		t.Errorf("OWNBASE.md does not match golden\ngot:\n%s\nwant:\n%s", got, string(golden))
-	}
-}
-
-// ---------------------------------------------------------------------------
-// WriteOwnbaseMD
-// ---------------------------------------------------------------------------
-
-func TestWriteOwnbaseMD_CreatesFile(t *testing.T) {
-	dir := t.TempDir()
-	cfg := &schema.OwnbaseConfig{
-		SchemaVersion: "v1",
-		Services: map[string]schema.ServiceDecl{
-			"auth": {Source: "services/auth"},
-		},
-	}
-	if err := explain.WriteOwnbaseMD(dir, cfg, nil); err != nil {
-		t.Fatalf("WriteOwnbaseMD: %v", err)
-	}
-	content, err := os.ReadFile(filepath.Join(dir, "OWNBASE.md"))
-	if err != nil {
-		t.Fatalf("read OWNBASE.md: %v", err)
-	}
-	if !strings.Contains(string(content), "# OWNBASE.md") {
-		t.Errorf("unexpected OWNBASE.md content: %s", content)
 	}
 }
 

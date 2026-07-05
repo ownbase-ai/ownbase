@@ -486,6 +486,99 @@ func SeedBaseRepo(cfg ForgejoConfig, ownbaseYAML string) error {
 	return nil
 }
 
+// autoInitReadmeMarker identifies the stub README that Forgejo's auto_init
+// creates from the repo description. Only that stub is ever replaced.
+const autoInitReadmeMarker = "OwnBase authoritative configuration repository"
+
+// SeedRepoReadme replaces the auto-init stub README.md in the config repo
+// with the full operating guide. Idempotent and conservative:
+//   - README.md missing            → create it.
+//   - README.md is the auto stub   → replace it.
+//   - README.md already seeded, or edited by the user → no-op.
+func SeedRepoReadme(cfg ForgejoConfig, readme string) error {
+	repoName := cfg.RepoName
+	if repoName == "" {
+		repoName = DefaultForgejoRepoName
+	}
+
+	sha, existing, err := forgejoGetFileWithContent(cfg, repoName, "README.md", "main")
+	if err != nil {
+		return fmt.Errorf("seed readme: read existing: %w", err)
+	}
+	if sha != "" {
+		isStub := len(existing) < 200 && strings.Contains(existing, autoInitReadmeMarker)
+		if !isStub {
+			return nil // already seeded or user-edited — never overwrite
+		}
+	}
+
+	payload := map[string]any{
+		"message": "init: seed repo operating guide (README.md)",
+		"content": encodeBase64Content([]byte(readme)),
+		"branch":  "main",
+	}
+	method := "POST"
+	if sha != "" {
+		method = "PUT" // update requires the current blob SHA
+		payload["sha"] = sha
+	}
+	body, _ := json.Marshal(payload)
+
+	url := fmt.Sprintf("%s/api/v1/repos/%s/%s/contents/README.md", cfg.BaseURL, cfg.RepoOwner, repoName)
+	req, err := http.NewRequest(method, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("seed readme: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "token "+cfg.AdminToken)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("seed readme: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("seed readme: status %d: %s", resp.StatusCode, b)
+	}
+	return nil
+}
+
+// forgejoGetFileWithContent returns the blob SHA and decoded content of a file
+// in the repo, or ("", "", nil) when the file does not exist.
+func forgejoGetFileWithContent(cfg ForgejoConfig, repoName, path, ref string) (string, string, error) {
+	url := fmt.Sprintf("%s/api/v1/repos/%s/%s/contents/%s?ref=%s",
+		cfg.BaseURL, cfg.RepoOwner, repoName, path, ref)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return "", "", err
+	}
+	req.Header.Set("Authorization", "token "+cfg.AdminToken)
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return "", "", nil
+	}
+	var result struct {
+		SHA     string `json:"sha"`
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", "", err
+	}
+	decoded, err := b64.StdEncoding.DecodeString(result.Content)
+	if err != nil {
+		return result.SHA, "", nil // content undecodable — treat as unknown, not stub
+	}
+	return result.SHA, string(decoded), nil
+}
+
 func forgejoListWebhooks(cfg ForgejoConfig, repoName string) ([]string, error) {
 	url := fmt.Sprintf("%s/api/v1/repos/%s/%s/hooks",
 		cfg.BaseURL, cfg.RepoOwner, repoName)

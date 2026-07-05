@@ -36,7 +36,7 @@ The boring, critical hardening happens without the user having to understand it:
 
 ### 3. Build
 
-The user (often via their AI) creates a service. The AI reads `OWNBASE.md` — which lists every existing service, the capability it provides, and how to reach it — and builds against those capabilities (auth, jobs, a database, storage) instead of reinventing them.
+The user (often via their AI) creates a service. The AI reads the config repo — the seeded README carries the operating contract and `ownbase.yaml` lists every existing service, the capability it provides, and how to reach it — and builds against those capabilities (auth, jobs, a database, storage) instead of reinventing them.
 
 - **Driven by:** user + AI.
 - **Daemon job:** explain (expose capabilities the AI can build against).

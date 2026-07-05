@@ -180,6 +180,12 @@ func BootstrapCore(ctx context.Context, cfg CoreBootstrapConfig) error {
 		if err := githost.SeedBaseRepo(fgCfg, tmpl); err != nil {
 			return fmt.Errorf("bootstrap core: seed base repo: %w", err)
 		}
+		// Replace the auto-init stub README with the operating guide.
+		// This is the file a human or AI reads first when they open the repo.
+		if err := githost.SeedRepoReadme(fgCfg, baseRepoReadme); err != nil {
+			// Non-fatal: the repo works without it; ownbase.yaml is the contract.
+			fmt.Printf("bootstrap core: seed readme (non-fatal): %v\n", err)
+		}
 	}
 
 	// Step 5: Configure push webhook.
@@ -345,3 +351,53 @@ services: {}
 #     domain: myapp.example.com
 `
 }
+
+// baseRepoReadme is the operating guide seeded as README.md in the config
+// repo. It is the first thing a human or AI sees when they open the repo, so
+// it carries the full operating contract. It is static: seeded once at
+// bootstrap, never regenerated (live status belongs to ownbasectl and the
+// status API, not to git).
+const baseRepoReadme = `# This Base's configuration repository
+
+This repo is the source of truth for everything running on this Base.
+` + "`ownbase.yaml`" + ` declares every service; the OwnBase daemon watches this repo
+and reconciles the machine to match it. Any tool that can read a file and
+make a commit — human or AI — can operate this Base safely from here.
+
+## How to make a change
+
+1. Edit ` + "`ownbase.yaml`" + ` to add, remove, or reconfigure a service.
+2. To update a service, change its ` + "`ref:`" + ` to the new branch, tag, or commit.
+3. Commit and push. The daemon detects the push and converges the machine
+   automatically — build from source, health-gated start, seconds not minutes.
+4. **Never edit generated files under ` + "`runtime/`" + ` on the Base** — they are
+   compiler output; any hand-edit is overwritten and flagged as a tamper signal.
+5. To add a new service: create its repo on this Forgejo (or declare a
+   ` + "`mirror:`" + ` of an external git URL), make sure it has a Dockerfile, then add
+   an entry under ` + "`services:`" + `. The Dockerfile is the only build interface.
+
+## Reading a service entry
+
+` + "```yaml" + `
+services:
+  myapp:
+    source: services/myapp   # Forgejo repo this service is built from
+    ref: v1.0.0              # the exact version running (edit + push to update)
+    port: 8080               # container port; public traffic routes here
+    domain: myapp.example.com # public hostname (TLS is automatic)
+    requires:
+      - postgres             # reachable at hostname "postgres" from this service
+` + "```" + `
+
+A service reaches each capability it ` + "`requires:`" + ` by using the capability name
+as the hostname (e.g. connect to ` + "`postgres:5432`" + `).
+
+## What does not live in this repo
+
+- **Live status** (running/stopped, health, security posture, update drift):
+  run ` + "`ownbasectl status <base>`" + ` or ` + "`ownbasectl checkup <base>`" + `.
+- **Secrets**: never commit them here. They are stored encrypted on the Base
+  and injected at container start — manage with ` + "`ownbasectl secrets`" + `.
+
+This file was seeded by OwnBase at install time and is yours to edit.
+`

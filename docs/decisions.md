@@ -80,12 +80,12 @@
 | Commit-SHA refs | Skipped in drift comparison | A 40-char hex ref is already maximally pinned |
 | Blank-ref resolution | Autonomous-tier action (`update.pin_ref`) | Safe to do without asking — it only records what the source repo already is; it does not change what's running |
 
-## Explain (status, `OWNBASE.md`)
+## Explain (status)
 
 | Decision | Choice | Why |
 |---|---|---|
 | Status API | Served by the daemon at `--status-addr` (default `127.0.0.1:7070`), bearer-token auth via `--api-token` | Daemon already runs as one process; loopback-only by default |
-| `OWNBASE.md` | Written to `<checkout>/OWNBASE.md` after every reconcile, from a template embedded via `//go:embed` | Always in the user-owned repo; diffs show in `git log` |
+| Operating guide | A static README.md seeded into the config repo at bootstrap (replaces the auto-init stub; never overwrites user edits). There is no generated `OWNBASE.md` — that mechanism was tried and removed | The repo holds *intent*; observed state (running/healthy, CVE counts) belongs to the status API, not to git — committing it would bury the user's history in noise commits |
 | Status contract version | `schema_version` field (currently v3) guards against breaking changes | Consumers check the version before parsing |
 
 ## Integration contract

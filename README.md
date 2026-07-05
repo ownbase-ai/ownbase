@@ -9,7 +9,7 @@ Grab a server or VM (cloud, home lab, anywhere) and OwnBase turns it into a **Ba
 ## Why you'd want this
 
 - **You own everything.** The code, the server, the data, the config, the secrets, the backups, the domains. Nothing can be repriced, rate-limited, or shut down on you — and when you want to leave, you take all of it ([docs/uninstall.md](docs/uninstall.md)).
-- **Your AI builds faster here.** Behind a platform API, your AI is a tenant; on a Base, it has the real machine. It can debug like an engineer, run any open-source software, stand up its own databases, and read `OWNBASE.md` — a briefing the Base rewrites after every change — to operate everything without guessing.
+- **Your AI builds faster here.** Behind a platform API, your AI is a tenant; on a Base, it has the real machine. It can debug like an engineer, run any open-source software, stand up its own databases, and operate everything without guessing — the config repo's README carries the full operating contract, and one command returns the live status.
 - **The sysadmin work disappears.** Firewall, intrusion protection, automatic security updates, TLS certificates, CVE scanning: set up during `create`, maintained by the daemon after. `ownbasectl checkup` tells you in plain language whether anything needs a glance.
 - **Your data is provably safe.** Encrypted off-machine snapshots every hour, and a daily drill that *actually restores* the latest backup and checks it. "Restorable" is a measured fact, not a checkbox.
 - **One machine replaces a pile of subscriptions.** Auth, databases, job queues, and every app you build run together on one modest box — one predictable bill instead of a per-seat, per-usage sprawl.
@@ -88,7 +88,7 @@ The OwnBase source: the on-Base daemon and the CLI.
 - **No registries.** User services build locally from source at a pinned `ref:`. Core packages (Forgejo, Caddy) are managed by `ownbasectl upgrade`.
 - **Secrets stay home.** Per-service secrets are age-encrypted on the Base; the private key never leaves it. Managed with `ownbasectl secrets`, injected as env vars at container start.
 - **Backups are verified.** Regular restic snapshots plus a periodic _verified restore drill_: `ownbasectl checkup` reports whether the Base is provably restorable, not just "backed up".
-- **Everything is explained.** After every reconcile the daemon rewrites `OWNBASE.md` on the Base: a briefing any human or AI can read to understand what is deployed, what is healthy, and what the security posture is. The same data is served as JSON at `/status` ([docs/api.md](docs/api.md)).
+- **Everything is explained.** The config repo's seeded README tells any human or AI how to operate the Base safely; `ownbasectl status`/`checkup` (and the `/status` JSON API — [docs/api.md](docs/api.md)) report what is deployed, what is healthy, and what the security posture is, always current.
 
 ---
 

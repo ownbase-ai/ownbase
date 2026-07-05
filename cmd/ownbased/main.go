@@ -570,12 +570,12 @@ func run(cfg agentConfig) error {
 
 	// lastReconcileState is the state from the most recent reconcile cycle.
 	// It is used by the vuln result handler to push a fresh status snapshot
-	// to the status server and OWNBASE.md immediately after a scan completes,
-	// rather than waiting up to one tick interval for the next reconcile.
+	// to the status server immediately after a scan completes, rather than
+	// waiting up to one tick interval for the next reconcile.
 	var lastReconcileState reconcileState
 
-	// afterReconcile gathers status from the completed cycle, updates the
-	// status server, and writes OWNBASE.md to the checkout.
+	// afterReconcile gathers status from the completed cycle and updates the
+	// status server.
 	afterReconcile := func(state reconcileState) {
 		ctx := context.Background()
 
@@ -613,11 +613,6 @@ func run(cfg agentConfig) error {
 			Vulns:             lastVulnStatus,
 		})
 		statusSrv.Update(status)
-		if state.Config != nil {
-			if err := explain.WriteOwnbaseMD(cfg.checkoutPath, state.Config, status); err != nil {
-				fmt.Fprintf(os.Stderr, "ownbased: write OWNBASE.md: %v\n", err)
-			}
-		}
 	}
 
 	reconcileOnce := func(reason string) {

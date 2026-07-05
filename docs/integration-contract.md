@@ -99,7 +99,7 @@ Reconcile      on every git push or timer tick
 Update         user edits ref: in ownbase.yaml and commits; ownbasectl updates shows drift
 Backup         data volume included in the restic snapshot on every backup interval
 Restore        verified restore drill confirms data is recoverable
-Explain        service appears in OWNBASE.md and the status API
+Explain        service appears in the status API (ownbasectl status)
 ```
 
 ---

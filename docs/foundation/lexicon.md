@@ -32,13 +32,13 @@
 
 **Watch** : The daemon's continuous monitoring of security, uptime, disk, certs, exposed ports, backups, and logs.
 
-**Explain** : The daemon producing status readable by both humans and AI (`OWNBASE.md`, the `/status` API).
+**Explain** : The daemon producing status readable by both humans and AI (the `/status` API, rendered by `ownbasectl status`/`checkup`).
 
 **Recover** : The daemon restoring health — rollback, restore, restart, secret rotation, closing unsafe ports.
 
 **`ownbase.yaml`** : The single control file in the user's repo that defines core settings and services. The contract between `ownbasectl`, the daemon, and any AI. See [ownbase-yaml.md](../ownbase-yaml.md).
 
-**`OWNBASE.md`** : The machine-and-human operating guide generated on each Base that tells an AI exactly how to work on it safely.
+**The config repo README** : The operating guide seeded into each Base's config repo at install — the first thing a human or AI sees when they open the repo, telling them exactly how to work on the Base safely. Static by design: live state comes from the `/status` API, not from git.
 
 **Durability (vs. availability)** : The reliability commitment for a single Base is durability — data is never lost and is restorable — not high availability. See [architecture-principles.md](architecture-principles.md), principle 12.
 
