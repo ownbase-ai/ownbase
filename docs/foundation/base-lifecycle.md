@@ -16,7 +16,7 @@ flowchart LR
   Export --> Retire
 ```
 
-## The ten stages
+## The nine stages
 
 ### 1. Create
 

@@ -11,13 +11,13 @@ A service is added as a **local Forgejo repo built locally to a `localhost/ownba
 There are two ways to declare a service in `ownbase.yaml`:
 
 1. **`source:`** — the repo is created or managed directly on this Base's Forgejo instance.
-2. **`mirror:`** — an external git URL (GitHub, any public host); OwnBase creates a Forgejo pull-mirror at `mirrors/<basename>` and builds from it. Declarative: the operator only specifies the URL; the daemon manages the mirror.
+2. **`mirror:`** — an external git URL (GitHub, any public host); OwnBase creates a Forgejo pull-mirror named `mirrors-<basename>` and builds from it. Declarative: the operator only specifies the URL; the daemon manages the mirror.
 
 **The no-registry rule:** `image:` and `digest:` are not valid user service fields. Core packages (Forgejo, Caddy) are the only bootstrap exception and are managed by the installer, not by `ownbase.yaml`.
 
 ```text
 upstream repo (GitHub, any git host) — mirror: declaration in ownbase.yaml
-        │  OwnBase creates pull-mirror in Forgejo (mirrors/<basename>)
+        │  OwnBase creates pull-mirror in Forgejo (mirrors-<basename>)
         ▼
 local Forgejo repo  @  pinned ref:
         │  daemon clones + builds at ref:
@@ -72,7 +72,7 @@ For monorepos or versioned layouts, use `context:` to point at a subdirectory (e
 
 ---
 
-## Isolation guarantees (Architecture Principle 14)
+## Isolation guarantees ([architecture-principles.md](foundation/architecture-principles.md), principle 13)
 
 OwnBase enforces these unconditionally for every service:
 
@@ -118,12 +118,6 @@ Every service must satisfy all five rules of the [Service Constitution](foundati
 
 ## Core infrastructure exception
 
-Forgejo (the local git host) and Caddy (the reverse proxy) cannot be self-hosted as a source repo at bootstrap time — the Base needs them to exist before it can mirror and build anything. These two services use the narrow `image:` exception (digest-pinned public image) until the Base is up and can mirror their repos:
+Forgejo (the local git host) and Caddy (the reverse proxy) cannot be built from a local repo at bootstrap time — the Base needs them to exist before it can mirror and build anything. These two **core packages** are the single narrow exception to the no-registry rule: they are installed from digest-pinned public images embedded in the OwnBase binary (`internal/core`), never declared in `ownbase.yaml`, and updated only via `ownbasectl upgrade`.
 
-```yaml
-forgejo:
-  image: codeberg.org/forgejo/forgejo:15.0.3
-  digest: sha256:...  # pinned
-```
-
-This exception does not apply to any other service. Once the Base is running, all subsequent services are mirrored repos built locally.
+This exception does not apply to any other service. Everything declared under `services:` is a Forgejo-hosted repo built locally.

@@ -1,6 +1,6 @@
 # Uninstalling OwnBase — retiring a Base
 
-> Export and Retire are first-class lifecycle stages ([foundation/base-lifecycle.md](foundation/base-lifecycle.md), stages 9–10). Because a Base is just Ubuntu you own, retiring OwnBase leaves a working system behind — nothing is held hostage.
+> Export and Retire are first-class lifecycle stages ([foundation/base-lifecycle.md](foundation/base-lifecycle.md), stages 8–9). Because a Base is just Ubuntu you own, retiring OwnBase leaves a working system behind — nothing is held hostage.
 
 There are three levels, from gentlest to most complete:
 
