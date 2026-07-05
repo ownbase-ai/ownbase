@@ -28,7 +28,7 @@
 #   substitute their own public key and re-sign the binary.
 #
 #   To verify manually:
-#     minisign -Vm ownbased-linux-amd64 -P 'RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3'
+#     minisign -Vm ownbased-linux-amd64 -P 'RWTaLp3BlckCjjicEDrN7oVrRhGDWhSjgOpR2Ue/yHzP0cFsmmxALr/V'
 
 set -euo pipefail
 
