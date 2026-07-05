@@ -19,7 +19,7 @@ Hold onto those three things and you can rebuild your entire Base from scratch o
 ## Quick start
 
 ```bash
-# 1. Install the CLI
+# 1. Install the CLI (no Homebrew? see the manual install script in INSTALL.md)
 brew install --cask ownbase-ai/tap/ownbasectl
 
 # 2. Create a Base: give it a name; local VM by default, or a fresh Ubuntu server over SSH

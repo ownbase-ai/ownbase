@@ -18,11 +18,37 @@ No Go toolchain and no cloned repo are needed — those are only for contributor
 
 ## Install ownbasectl
 
+### Homebrew (macOS/Linux)
+
 ```bash
 brew install --cask ownbase-ai/tap/ownbasectl
 ```
 
-Or download the archive for your platform from [GitHub Releases](https://github.com/ownbase-ai/ownbase/releases), unpack it, and put `ownbasectl` on your `PATH`. Verify with:
+### Without Homebrew
+
+Downloads the latest release for your OS/arch, verifies its checksum against the release's `checksums.txt`, and installs it to `/usr/local/bin`:
+
+```bash
+OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+ARCH="$(uname -m)"; case "$ARCH" in x86_64) ARCH=amd64 ;; arm64|aarch64) ARCH=arm64 ;; esac
+
+TAG="$(curl -fsSL https://api.github.com/repos/ownbase-ai/ownbase/releases/latest | grep '"tag_name"' | cut -d'"' -f4)"
+FILE="ownbasectl_${TAG#v}_${OS}_${ARCH}.tar.gz"
+BASE_URL="https://github.com/ownbase-ai/ownbase/releases/download/${TAG}"
+
+cd "$(mktemp -d)"
+curl -fsSLO "${BASE_URL}/${FILE}" && curl -fsSLO "${BASE_URL}/checksums.txt"
+grep " ${FILE}\$" checksums.txt | (command -v sha256sum >/dev/null && sha256sum -c - || shasum -a 256 -c -)
+
+tar xzf "$FILE" ownbasectl
+sudo install -m 0755 ownbasectl /usr/local/bin/ownbasectl
+```
+
+Supported platforms: macOS and Linux, each on amd64/arm64. There's no pre-built package for other package managers (apt, etc.) yet — this script and the Homebrew cask are the two supported paths.
+
+> **Downloaded via a browser instead?** macOS Gatekeeper quarantines browser downloads (it doesn't quarantine plain `curl`/`wget` downloads, so the script above is unaffected). If you see "cannot be opened because the developer cannot be verified" — the binaries aren't Apple-notarized, and only the Homebrew cask strips the quarantine flag automatically — clear it yourself: `xattr -dr com.apple.quarantine /usr/local/bin/ownbasectl`.
+
+Verify either install method with:
 
 ```bash
 ownbasectl version
