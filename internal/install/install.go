@@ -71,7 +71,7 @@ type StepStatus struct {
 }
 
 // HardeningReport summarises the state of each PassZero step.
-// Suitable for surfacing in OWNBASE.md and the explain interface (M8).
+// Suitable for surfacing through the explain interface (status API).
 type HardeningReport struct {
 	OS          StepStatus
 	Podman      StepStatus

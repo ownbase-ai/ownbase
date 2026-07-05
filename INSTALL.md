@@ -101,7 +101,15 @@ ownbasectl checkup mybase
 
 Run this regularly (weekly is reasonable). It combines intrusion/access monitoring, network exposure, CVE scan results, service update drift, and backup health into one report, with the exact fix command next to each finding.
 
-### 4. Disaster recovery — restore onto a new machine
+### 4. Disaster recovery — rebuild after losing the machine
+
+Before tearing down a Base, confirm you have a verified restore point — `restore` refuses unverified snapshots without `--force`:
+
+```bash
+ownbasectl backup status mybase   # want "restorable: true"
+```
+
+Then, whether the machine was lost or you deleted it yourself (`ownbasectl delete mybase`), rebuild onto a fresh VM or server with the same repo and password:
 
 ```bash
 ownbasectl restore mybase \
@@ -109,7 +117,23 @@ ownbasectl restore mybase \
   --password <the-restic-password>
 ```
 
-Provisions a fresh VM (or `--remote <host>` for a fresh server), runs the installer in rebuild mode, restores the latest verified snapshot, and lets the daemon's normal reconcile take it from there.
+This provisions a fresh VM (or `--remote <host>` for a fresh server), runs the installer in rebuild mode, restores the latest verified snapshot — which includes the Base's own Git repo, not just service data — and lets the daemon's normal reconcile take it from there.
+
+### Pausing a local VM
+
+`create`/`delete` are the only VM lifecycle `ownbasectl` manages directly. To pause a local VM between sessions without losing anything, use Multipass itself — the Base and its data are untouched:
+
+```bash
+multipass stop mybase
+multipass start mybase
+```
+
+Multipass may hand the VM a new IP on restart. If `ownbasectl status mybase` stops connecting afterward:
+
+```bash
+multipass info mybase | grep IPv4
+ownbasectl adopt mybase --host <new-ip> --token <token>   # token: `sudo cat /opt/ownbase/api-token` on the VM
+```
 
 ### Managing multiple Bases
 

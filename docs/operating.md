@@ -4,7 +4,7 @@
 
 ## The rules of the road
 
-1. **Read `OWNBASE.md` first.** It lives in the Base's config repo and is regenerated after every reconcile. It lists every service, what it provides, what it requires, and how to reach it — start there instead of exploring the machine by hand.
+1. **Read the config repo first.** Its README (seeded at install) carries the operating contract, and `ownbase.yaml` declares every service — what it's built from, what it requires, and how it's reached. For live state (running/healthy, security posture), run `ownbasectl status <base>` or `checkup` — don't explore the machine by hand.
 
 2. **The only way to change what's running is `ownbase.yaml` + a commit.** Never `podman run`, `systemctl edit`, or hand-edit anything under `runtime/` — those files are compiler output and get overwritten on the next reconcile. See [ownbase-yaml.md](ownbase-yaml.md) for the schema.
 
@@ -20,7 +20,7 @@
 
 | Task | How |
 |---|---|
-| See what's deployed and healthy | Read `OWNBASE.md`, or `ownbasectl status <base>` |
+| See what's deployed and healthy | `ownbasectl status <base>` (declared services: `ownbase.yaml`) |
 | Deploy or change a service | Edit `ownbase.yaml`, commit, push to the Base's Forgejo |
 | Update a service | Edit its `ref:`, commit, push |
 | See what's behind | `ownbasectl updates <base>` |

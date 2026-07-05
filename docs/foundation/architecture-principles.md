@@ -54,7 +54,7 @@ ownbase/
                # and the user's own software — declared and built the same way
   secrets/     # never committed in plaintext — see ownbase-yaml.md, "Secrets"
   ownbase.yaml # the control file
-  OWNBASE.md   # the AI-and-human operating guide
+  README.md    # the operating guide, seeded at install — how to work on this Base safely
 ```
 
 ### 6. One control file is the contract
@@ -96,7 +96,7 @@ The OwnBase daemon is the operator on the machine. It does exactly four things:
 
 1. **Reconcile** — make the machine match the repo; apply approved changes.
 2. **Watch** — security, uptime, disk, certs, exposed ports, backups, logs.
-3. **Explain** — produce status that is readable by both humans and AI (`OWNBASE.md`, the status API).
+3. **Explain** — produce status that is readable by both humans and AI (the `/status` API behind `ownbasectl status`/`checkup`).
 4. **Recover** — roll back, restore, restart, rotate secrets, close unsafe ports.
 
 If a proposed capability does not fit one of these four jobs, question whether the daemon should do it at all.
@@ -105,7 +105,10 @@ Reconcile is **event-driven**: a commit to the source of truth is the trigger, a
 
 ### 11. The AI interface is a first-class artifact
 
-Every Base ships an `OWNBASE.md` so any AI can operate it without guessing. It lists every repo, what it provides, what it requires, and how to reach it. This interface is part of the product, maintained with the same care as any user-facing surface.
+Any AI must be able to operate a Base without guessing, through two surfaces that are part of the product and maintained with the same care as any user-facing one:
+
+- **The config repo is self-describing.** Its seeded README carries the operating contract (how to make a change, what never to touch) and `ownbase.yaml` declares every service, what it requires, and how it is reached. Intent lives in git.
+- **Live state is served, not committed.** What is actually running, healthy, and secure comes from the `/status` API (`ownbasectl status`/`checkup`) — always current, never a stale snapshot in the repo. Observed state does not belong in the source of truth (principle 1: the repo declares intent).
 
 ### 12. Durable by design, not highly available
 

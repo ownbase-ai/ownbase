@@ -1,13 +1,9 @@
-// Package explain generates OWNBASE.md and the machine-readable status JSON
-// from live Base state, and serves the status API that the daily briefing
-// consumes. M8.
-//
-// Two readers, one source:
+// Package explain generates the machine-readable status JSON from live Base
+// state and serves the status API that ownbasectl and any HTTP client consume.
 //
 //	config + live status (M3) + restorable (M6) + audit (M3)
 //	        │
-//	        ├─> OWNBASE.md         (AI + technical human)
-//	        └─> status API (JSON)  ─> opterm briefing (outcomes, plain language)
+//	        └─> status API (JSON) ─> ownbasectl status/checkup, any HTTP client
 package explain
 
 import (

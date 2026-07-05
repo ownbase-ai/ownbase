@@ -23,7 +23,7 @@ Key claims are deliberately repeated across documents so each is self-contained 
 | No-registry rule + core-package exception | [ownbase-yaml.md](../ownbase-yaml.md) "The no-registry rule" | integration-contract, decisions, architecture-principles §6 |
 | Isolation / blast-radius model | [architecture-principles.md](architecture-principles.md) §13 | integration-contract |
 | Action taxonomy + risk tiers, all autonomous today | [architecture-principles.md](architecture-principles.md) §14 | decisions, lexicon |
-| Operating rules (read `OWNBASE.md` first; mutate only via `ownbase.yaml` + commit) | [operating.md](../operating.md) | AGENTS.md, README "How a Base works" |
+| Operating rules (read the config repo first; mutate only via `ownbase.yaml` + commit) | [operating.md](../operating.md) | AGENTS.md, README "How a Base works", the seeded config-repo README |
 | Tier-1 / Tier-2 test workflow | [development.md](../development.md) | README "Testing" |
 
 When editing a canonical source, check the "Also restated in" docs for the same claim and update them to stay consistent — or add a forward reference and trim the restatement if it is now redundant.

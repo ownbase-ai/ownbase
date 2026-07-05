@@ -106,7 +106,7 @@ Committing the change triggers the normal reconcile: the service is rebuilt from
 6. Diffs desired vs. actual → produces a `PlannedAction` list
 7. For source-built services: clones the Forgejo repo at `ref:` and runs `podman build`
 8. Applies the plan — each action is checkpoint-authorized and audit-logged
-9. Updates `OWNBASE.md` and the `/status` API with the new state
+9. Updates the `/status` API with the new state
 
 ## Secrets
 
