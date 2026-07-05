@@ -84,12 +84,16 @@ jobs:
           # value makes the AWS CLI fail rather than defaulting sanely.
           endpoint_flag=()
           [ -n "$RELEASES_BUCKET_ENDPOINT" ] && endpoint_flag=(--endpoint-url "$RELEASES_BUCKET_ENDPOINT")
+          # GoReleaser's `formats: [binary]` archives only rename the artifact
+          # for the GitHub Release asset — the file on disk keeps its original
+          # build path (e.g. dist/ownbased_linux_amd64_v1/ownbased). Resolve
+          # the real path via dist/artifacts.json instead of guessing by name.
           for arch in amd64 arm64; do
             for f in "ownbased-linux-${arch}" "ownbased-linux-${arch}.minisig"; do
-              src=$(find dist -type f -name "$f" | head -1)
-              if [ -z "$src" ]; then
-                echo "ERROR: $f not found in dist/" >&2
-                find dist -type f >&2
+              src=$(jq -r --arg name "$f" '.[] | select(.name == $name) | .path' dist/artifacts.json | head -1)
+              if [ -z "$src" ] || [ ! -f "$src" ]; then
+                echo "ERROR: $f not found via dist/artifacts.json" >&2
+                cat dist/artifacts.json >&2
                 exit 1
               fi
               aws s3 cp "$src" "s3://${RELEASES_BUCKET}/daemon/${VERSION}/${f}" "${endpoint_flag[@]}"

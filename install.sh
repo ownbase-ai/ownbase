@@ -92,9 +92,10 @@ FORGEJO_DOMAIN="${FORGEJO_DOMAIN:-}"
 CADDY_EMAIL="${CADDY_EMAIL:-}"
 
 # OwnBase release signing public key (minisign).
-# This is the development key — replace with the production key before release.
 # Generated with: minisign -G -p ownbase-release.pub -s ownbase-release.key
-MINISIGN_PUBLIC_KEY="RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3"
+# The matching secret key lives only in the MINISIGN_SECRET_KEY GitHub Actions
+# secret (repo: ownbase-ai/ownbase); it never touches disk outside CI.
+MINISIGN_PUBLIC_KEY="RWTaLp3BlckCjjicEDrN7oVrRhGDWhSjgOpR2Ue/yHzP0cFsmmxALr/V"
 
 RELEASE_BASE_URL="${RELEASE_BASE_URL:-https://releases.ownbase.ai/daemon}"
 

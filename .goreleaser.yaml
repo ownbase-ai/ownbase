@@ -66,9 +66,6 @@ archives:
 #   MINISIGN_SECRET_KEY_PATH — path to the minisign secret key file
 #   MINISIGN_PASSWORD        — passphrase for that key (piped to stdin)
 #
-# NOTE: install.sh currently pins the development public key. Replacing it
-# with the production public key is part of cutting the first real release —
-# generate with `minisign -G` and update MINISIGN_PUBLIC_KEY in install.sh.
 signs:
   - id: daemon-minisign
     ids: [ownbased-binaries]
