@@ -572,7 +572,9 @@ func forgejoGetFileWithContent(cfg ForgejoConfig, repoName, path, ref string) (s
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return "", "", err
 	}
-	decoded, err := b64.StdEncoding.DecodeString(result.Content)
+	// Forgejo wraps base64 at 60 chars with newlines; strip them before decoding.
+	cleaned := strings.ReplaceAll(result.Content, "\n", "")
+	decoded, err := b64.StdEncoding.DecodeString(cleaned)
 	if err != nil {
 		return result.SHA, "", nil // content undecodable — treat as unknown, not stub
 	}

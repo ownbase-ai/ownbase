@@ -180,12 +180,6 @@ func BootstrapCore(ctx context.Context, cfg CoreBootstrapConfig) error {
 		if err := githost.SeedBaseRepo(fgCfg, tmpl); err != nil {
 			return fmt.Errorf("bootstrap core: seed base repo: %w", err)
 		}
-		// Replace the auto-init stub README with the operating guide.
-		// This is the file a human or AI reads first when they open the repo.
-		if err := githost.SeedRepoReadme(fgCfg, baseRepoReadme); err != nil {
-			// Non-fatal: the repo works without it; ownbase.yaml is the contract.
-			fmt.Printf("bootstrap core: seed readme (non-fatal): %v\n", err)
-		}
 	}
 
 	// Step 5: Configure push webhook.
@@ -203,6 +197,17 @@ func BootstrapCore(ctx context.Context, cfg CoreBootstrapConfig) error {
 			fmt.Printf("bootstrap core: add forgejo remote (non-fatal): %v\n", err)
 		} else if err := githost.SyncToForgejo(c.BareRepoPath); err != nil {
 			fmt.Printf("bootstrap core: initial sync (non-fatal): %v\n", err)
+		}
+	}
+
+	// Step 7: Seed the operating guide README after the sync so it is not
+	// overwritten by the bare-repo force push above. The README is written to
+	// Forgejo via API; it is not in the bare repo (the bare repo holds only
+	// ownbase.yaml and the daemon never commits README.md to it).
+	if !c.DryRun {
+		if err := githost.SeedRepoReadme(fgCfg, baseRepoReadme); err != nil {
+			// Non-fatal: the repo works without it; ownbase.yaml is the contract.
+			fmt.Printf("bootstrap core: seed readme (non-fatal): %v\n", err)
 		}
 	}
 
