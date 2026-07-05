@@ -64,7 +64,7 @@ The consequence is the most important property in the model: **recovery is not a
 
 ## What "reconcile" means
 
-A reconciler is a **thermostat for a server.** The repo declares the target — these apps, these services, this config should be running. The daemon continuously reads what is *actually* running, compares it to the target, and makes the machine match: it starts what is missing, stops what should not be there, and repairs what drifted. The user never pushes a change or runs a deploy script by hand; they change the target (edit `ownbase.yaml`, commit) and the loop converges.
+A reconciler is a **thermostat for a server.** The repo declares the target — these services, this config should be running. The daemon continuously reads what is *actually* running, compares it to the target, and makes the machine match: it starts what is missing, stops what should not be there, and repairs what drifted. The user never pushes a change or runs a deploy script by hand; they change the target (edit `ownbase.yaml`, commit) and the loop converges.
 
 ### The trigger is a commit, not a clock
 
@@ -75,7 +75,7 @@ A reconciler is a **thermostat for a server.** The repo declares the target — 
 ```
 
 1. A commit lands in the Base's local source of truth. A hook signals the daemon — no polling, near-zero latency.
-2. **Compile** `ownbase.yaml` and manifests into runtime artifacts.
+2. **Compile** `ownbase.yaml` into runtime artifacts.
 3. **Diff** the desired runtime against what is actually running.
 4. **Apply** the diff transactionally, health-checked, with rollback.
 
@@ -109,7 +109,7 @@ Secrets are the third input to the pure function, so they must be reconstructabl
 
 - **Encrypted at rest**, decryptable only by a key held on the Base. See [ownbase-yaml.md](../ownbase-yaml.md), "Secrets".
 - **Injected at start, never written as plaintext to disk.** The daemon decrypts and injects at container start.
-- **Scoped at issue time.** Each app receives only the secrets it declares; no app can enumerate another's.
+- **Scoped at issue time.** Each service receives only the secrets it declares; no service can enumerate another's.
 
 ## Verified recovery is the spine, not a feature
 

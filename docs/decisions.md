@@ -36,7 +36,7 @@
 | `mirror:` mechanics | `mirror: <url>` → daemon creates a Forgejo pull-mirror at `mirrors-<basename>` and builds from it | Declarative external mirrors |
 | Update model | User edits `ref:` and commits; a blank `ref:` auto-pins to the source's HEAD SHA on the next reconcile. There is no agent-opened PR flow — that mechanism was tried and removed because it added process without adding safety | Direct `ref:` commits fit the existing push→reconcile path |
 | `mode:` field | Parsed but has no effect (deprecated no-op); a warning is emitted when present | Removing it outright would break existing files that reject unknown fields |
-| App image build | `localhost/ownbase-<name>:local`, built by the daemon from the repo at `ref:` | No external registry references; deterministic per ref |
+| Service image build | `localhost/ownbase-<name>:local`, built by the daemon from the repo at `ref:` | No external registry references; deterministic per ref |
 | Compiler output | Deterministic, byte-identical for the same input | Golden-testable, diff-readable, no compiler state |
 | Health probe | `health_probe.http: /path` → `# HealthProbeHTTP=` provenance comment in the Quadlet unit | One contract reused by dependency-gating and verified restore |
 | Data volume | Named Podman volume per service (`ownbase-<name>-data`), or `volumes:` for multi-volume services with per-volume `backup:` scoping | Isolated, persistent; `backup: ["."]` is what opts a volume into the restic snapshot — omitting it excludes the volume |

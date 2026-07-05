@@ -36,7 +36,7 @@ The boring, critical hardening happens without the user having to understand it:
 
 ### 3. Build
 
-The user (often via their AI) creates an app. The AI reads `OWNBASE.md` and the service manifests and builds against existing capabilities (auth, jobs, a database, storage) instead of reinventing them.
+The user (often via their AI) creates a service. The AI reads `OWNBASE.md` — which lists every existing service, the capability it provides, and how to reach it — and builds against those capabilities (auth, jobs, a database, storage) instead of reinventing them.
 
 - **Driven by:** user + AI.
 - **Daemon job:** explain (expose capabilities the AI can build against).
@@ -44,7 +44,7 @@ The user (often via their AI) creates an app. The AI reads `OWNBASE.md` and the 
 
 ### 4. Deploy
 
-An app goes live. The daemon generates the boring deployment details (Quadlet units, Caddy routing, certificates) from the high-level description in `ownbase.yaml`.
+A service goes live. The daemon generates the boring deployment details (Quadlet units, Caddy routing, certificates) from the high-level description in `ownbase.yaml`.
 
 - **Driven by:** the commit; the daemon reconciles.
 - **Daemon job:** reconcile.

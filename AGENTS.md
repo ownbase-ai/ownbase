@@ -6,7 +6,7 @@
 
 > AI makes it easy to build software. OwnBase makes it easy to own it.
 
-OwnBase turns a user-controlled Ubuntu machine (their **Base**) into a secure, self-maintaining home for AI-built apps and services. The daemon and its stewardship are the product; the user owns everything it touches.
+OwnBase turns a user-controlled Ubuntu machine (their **Base**) into a secure, self-maintaining home for AI-built services. The daemon and its stewardship are the product; the user owns everything it touches.
 
 ## Hard constraints
 

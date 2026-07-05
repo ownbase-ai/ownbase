@@ -19,7 +19,7 @@ More precisely: the **ownership invariant** is `reconstructable = (repo, secrets
 
 ### 2. The repo beats a database
 
-Where state could live in a vendor database or in the user's repo, it lives in the repo. Caches and indexes are allowed but must be *derivable* and non-authoritative. The authoritative copy of config, app definitions, and service code is always the user's.
+Where state could live in a vendor database or in the user's repo, it lives in the repo. Caches and indexes are allowed but must be *derivable* and non-authoritative. The authoritative copy of config and service code is always the user's.
 
 ### 3. Plain files over proprietary formats
 
@@ -50,8 +50,8 @@ And a representative user-owned repo:
 ```text
 ownbase/
   system/      # hardening, firewall, monitoring, backups, caddy, container runtime
-  services/    # service templates (auth, jobs, the on-Base git host, ...)
-  apps/        # the user's own apps
+  services/    # every service — default capability providers (auth, jobs, the on-Base git host, ...)
+               # and the user's own software — declared and built the same way
   secrets/     # never committed in plaintext — see ownbase-yaml.md, "Secrets"
   ownbase.yaml # the control file
   OWNBASE.md   # the AI-and-human operating guide
@@ -67,7 +67,7 @@ Generated artifacts (the `runtime/` units, the generated Caddyfile) are derived 
 
 ### 7. Capabilities, not implementations
 
-Apps depend on capabilities (`auth`, `jobs`, `storage`) rather than on specific products. A capability is satisfied by a provider, and providers are swappable. This is what makes services genuinely replaceable and is enforced by [service-constitution.md](service-constitution.md).
+Services depend on capabilities (`auth`, `jobs`, `storage`) rather than on specific products. A capability is satisfied by a provider, and providers are swappable. This is what makes services genuinely replaceable and is enforced by [service-constitution.md](service-constitution.md).
 
 ### 8. Compose-shaped, systemd-owned; never Kubernetes
 
@@ -119,11 +119,11 @@ A Base is one machine, and one machine is a single point of failure: a disk, a p
 
 ### 13. Isolation limits blast radius
 
-Every app the user deploys — especially AI-generated code — runs with the minimum surface area necessary. Colocation on one machine is a performance and cost advantage, but it also means a compromised or misbehaving app could reach the database, the secrets vault, or other apps if left unchecked. We manage that risk structurally, not by trusting the code:
+Every service the user deploys — especially AI-generated code — runs with the minimum surface area necessary. Colocation on one machine is a performance and cost advantage, but it also means a compromised or misbehaving service could reach the database, the secrets vault, or other services if left unchecked. We manage that risk structurally, not by trusting the code:
 
-- **Rootless, per-app containers, least privilege.** Each app runs in its own rootless container (no privileged daemon, no shared runtime socket) with no more Linux capabilities than it needs. No app mounts volumes from another app or from system directories.
-- **Scoped secrets.** Each app receives only the secrets it is declared to need. No app can enumerate or read another app's secrets. Secrets are age-encrypted and injected at start — see [ownbase-yaml.md](../ownbase-yaml.md), "Secrets".
-- **Internal network segmentation.** Apps reach declared capabilities (auth, jobs, database) over per-capability networks only; they cannot reach the host runtime, the daemon, or other apps' private ports by default.
+- **Rootless, per-service containers, least privilege.** Each service runs in its own rootless container (no privileged daemon, no shared runtime socket) with no more Linux capabilities than it needs. No service mounts volumes from another service or from system directories.
+- **Scoped secrets.** Each service receives only the secrets it is declared to need. No service can enumerate or read another service's secrets. Secrets are age-encrypted and injected at start — see [ownbase-yaml.md](../ownbase-yaml.md), "Secrets".
+- **Internal network segmentation.** Services reach declared capabilities (auth, jobs, database) over per-capability networks only; they cannot reach the host runtime, the daemon, or other services' private ports by default.
 
 If any principle here would be violated by a proposed change, redesign the change before shipping.
 

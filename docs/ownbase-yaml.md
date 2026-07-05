@@ -20,7 +20,7 @@ core:
 services:
   <name>:
     # Source-built service (built from a local Forgejo repo)
-    source: <forgejo-repo-path> # e.g. "services/auth" or "apps/crm"
+    source: <forgejo-repo-path> # e.g. "services/auth" or "myorg/crm"
     ref: <branch|tag|sha> # git ref to build from; blank = auto-pin to latest commit
     dockerfile: Dockerfile # optional; defaults to "Dockerfile"
     context: "" # optional build context subdirectory
@@ -73,8 +73,10 @@ services:
 
 ```yaml
 source: services/auth    # → Forgejo repo owned by the "services" org
-source: apps/crm         # → Forgejo repo owned by the "apps" org
+source: myorg/crm        # → Forgejo repo owned by the "myorg" org
 ```
+
+The org name is an arbitrary Forgejo org — there is no reserved "apps" vs. "services" split; every entry under `services:` in `ownbase.yaml` is declared and built the same way regardless of which org its repo lives in.
 
 The daemon calls `<forgejo-url>/api/v1/repos/<org>/<repo>` to clone the repo at the pinned `ref:`. The org is the path's first component. To track a GitHub repo, declare it with `mirror:` — the daemon mirrors it into Forgejo and builds from there. Never put a GitHub URL directly in `ownbase.yaml`.
 

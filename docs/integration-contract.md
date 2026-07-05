@@ -79,7 +79,7 @@ OwnBase enforces these unconditionally for every service:
 | Property | Mechanism |
 |---|---|
 | Rootless container | Podman rootless; no root process |
-| Per-app user namespace | Podman user namespace isolation |
+| Per-service user namespace | Podman user namespace isolation |
 | Per-capability network | Service joins only the networks of its declared `requires:` |
 | Scoped secrets | Service receives only the secrets in `/opt/ownbase/secrets/<name>.yaml.age`; scoping is structural, not policy-based |
 | No shared runtime socket | No Docker/Podman socket passed into containers |
@@ -110,7 +110,7 @@ Every service must satisfy all five rules of the [Service Constitution](foundati
 
 1. **Removable** — removing from `ownbase.yaml` stops and tears down the service
 2. **Forkable** — source is in a Forgejo repo the user owns and can modify
-3. **Replaceable** — apps depend on the capability name (`requires:` key), not the service
+3. **Replaceable** — services depend on the capability name (`requires:` key), not the specific provider
 4. **Data accessible** — data is in a standard Podman volume the user can access
 5. **Works standalone** — image is built locally; nothing to reach outside the Base at runtime
 

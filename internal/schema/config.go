@@ -225,7 +225,7 @@ type ServiceDecl struct {
 
 	// AddCapabilities lists Linux capabilities to add back after DropCapability=ALL.
 	// Only use when the service genuinely requires them (e.g. ["NET_BIND_SERVICE"]
-	// for a service binding port 80/443). Leave empty for normal apps.
+	// for a service binding port 80/443). Leave empty for normal services.
 	AddCapabilities []string `yaml:"add_capabilities,omitempty"`
 
 	// SecurityOpt passes --security-opt flags to Podman for this container.
