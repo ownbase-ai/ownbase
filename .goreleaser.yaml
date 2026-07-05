@@ -25,6 +25,8 @@ builds:
     env: [CGO_ENABLED=0]
     goos: [darwin, linux]
     goarch: [amd64, arm64]
+    flags:
+      - -trimpath
     ldflags:
       - -s -w
       # .Tag (not .Version) so the injected version keeps the "v" prefix —
@@ -41,6 +43,14 @@ builds:
     env: [CGO_ENABLED=0]
     goos: [linux]
     goarch: [amd64, arm64]
+    # Without this tag the daemon builds against applier_default.go's
+    # noopGuardApplier, which refuses to touch real Podman/systemd — see
+    # cmd/ownbased/applier_default.go and Makefile's build-linux target.
+    # A released daemon binary without it would run but never actually
+    # apply anything on a real Base.
+    tags: [integration]
+    flags:
+      - -trimpath
     ldflags:
       - -s -w
 
