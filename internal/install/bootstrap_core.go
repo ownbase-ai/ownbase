@@ -399,5 +399,17 @@ as the hostname (e.g. connect to ` + "`postgres:5432`" + `).
 - **Secrets**: never commit them here. They are stored encrypted on the Base
   and injected at container start — manage with ` + "`ownbasectl secrets`" + `.
 
+## Reference documentation
+
+| Need | Doc |
+|---|---|
+| Full operating playbook | [docs/operating.md](https://github.com/ownbase-ai/ownbase/blob/main/docs/operating.md) |
+| ` + "`ownbase.yaml`" + ` schema, ` + "`ref:`" + ` updates, secrets | [docs/ownbase-yaml.md](https://github.com/ownbase-ai/ownbase/blob/main/docs/ownbase-yaml.md) |
+| CLI command reference | [docs/cli.md](https://github.com/ownbase-ai/ownbase/blob/main/docs/cli.md) |
+| Daemon HTTP API | [docs/api.md](https://github.com/ownbase-ai/ownbase/blob/main/docs/api.md) |
+| Adding a service | [docs/integration-contract.md](https://github.com/ownbase-ai/ownbase/blob/main/docs/integration-contract.md) |
+| Something failed | [docs/troubleshooting.md](https://github.com/ownbase-ai/ownbase/blob/main/docs/troubleshooting.md) |
+| Exporting everything / retiring | [docs/uninstall.md](https://github.com/ownbase-ai/ownbase/blob/main/docs/uninstall.md) |
+
 This file was seeded by OwnBase at install time and is yours to edit.
 `
