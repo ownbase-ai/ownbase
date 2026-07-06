@@ -14,7 +14,7 @@ When in doubt: does the change make the user **more of an owner** and **less of 
 
 You have SSH/CLI access to a running Base and are asked to change what's deployed, diagnose a problem, or check health.
 
-**Start with [docs/operating.md](docs/operating.md)** — the order of operations (read the config repo first; the only mutation path is `ownbase.yaml` + a commit to the Base's own Forgejo; never hand-edit `runtime/`). Then:
+**Start with [docs/operating.md](docs/operating.md)** — the order of operations (read the config repo first; the only mutation path is `ownbase.yaml` + a commit to the Base's own local config repo, via `ownbasectl` or a direct SSH push; never hand-edit `runtime/`). Then:
 
 | Need | Doc |
 |---|---|

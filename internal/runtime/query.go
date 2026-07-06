@@ -12,7 +12,7 @@ import (
 // stops containers/networks/volumes it did not create.
 const OwnbasePrefix = "ownbase-"
 
-// OwnbaseCorePrefix is the name prefix for core containers (Forgejo, Caddy)
+// OwnbaseCorePrefix is the name prefix for core containers (Caddy)
 // managed by bootstrapCore. These are excluded from user reconcile queries
 // so the diff loop does not attempt to stop them.
 const OwnbaseCorePrefix = "ownbase-core-"
@@ -41,7 +41,7 @@ func QueryCurrentState() (CurrentState, error) {
 
 	// OwnBase Quadlet units all set ContainerName=ownbase-X explicitly, so
 	// containers appear as "ownbase-X" (no "systemd-" prefix). Filter directly.
-	// We exclude "ownbase-core-*" containers (Forgejo, Caddy) which are managed
+	// We exclude "ownbase-core-*" containers (Caddy) which are managed
 	// by bootstrapCore, not the user reconcile loop.
 	rawRunning, err := podmanList("ps",
 		"--filter", "name=^"+OwnbasePrefix,

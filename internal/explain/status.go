@@ -49,10 +49,11 @@ type ServiceStatus struct {
 	HealthProbeResult string `json:"health_probe_result,omitempty"`
 
 	// Source-built services (source: is set in ownbase.yaml).
-	Source string `json:"source,omitempty"` // Forgejo repo path, e.g. "services/auth"
+	Source string `json:"source,omitempty"` // local bare repo path, e.g. "services/auth"
 	Ref    string `json:"ref,omitempty"`    // pinned branch/tag/SHA; empty = auto-pin in progress
 
-	// Mirror services (mirror: is set — external git URL mirrored into Forgejo).
+	// Mirror services (mirror: is set — external git URL mirrored into a
+	// local bare repo under /opt/ownbase/repos/).
 	Mirror string `json:"mirror,omitempty"`
 
 	// Public exposure.
@@ -123,7 +124,7 @@ type ServiceDrift struct {
 	// CommitsBehind is how many commits the pinned ref is behind the default
 	// branch HEAD. Zero means up to date on the branch dimension.
 	CommitsBehind int `json:"commits_behind"`
-	// NewestTag is the highest semver tag available in the Forgejo repo.
+	// NewestTag is the highest semver tag available in the local bare repo.
 	// Empty when the repo has no tags.
 	NewestTag string `json:"newest_tag,omitempty"`
 	// UpToDate is true when CommitsBehind == 0 and there is no newer tag.

@@ -40,7 +40,7 @@ The user (often via their AI) creates a service. The AI reads the config repo �
 
 - **Driven by:** user + AI.
 - **Daemon job:** explain (expose capabilities the AI can build against).
-- **CLI:** none — this is editing `ownbase.yaml` and pushing to the Base's Forgejo.
+- **CLI:** `ownbasectl config set` / `ownbasectl service add` — or edit `ownbase.yaml` by hand and push directly to the Base's config bare repo over SSH.
 
 ### 4. Deploy
 
@@ -60,7 +60,7 @@ The everyday stage. The Base watches itself and reports in plain language: healt
 
 ### 6. Update
 
-The Base stays current without the user becoming a maintainer. User services update by editing `ref:` in `ownbase.yaml` and committing. Core packages (Forgejo, Caddy) update via a dedicated command.
+The Base stays current without the user becoming a maintainer. User services update by editing `ref:` in `ownbase.yaml` and committing (or `ownbasectl service update --ref`). The core package (Caddy) updates via a dedicated command.
 
 - **Driven by:** the user or their AI (editing `ref:`); `ownbasectl` for core packages.
 - **Daemon job:** reconcile.

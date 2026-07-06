@@ -61,16 +61,15 @@ func writeEmbeddedInstallScript() (path string, cleanup func(), err error) {
 // `restore`: where the Base runs (local VM or remote server) and how to
 // reach/size it.
 type baseTargetFlags struct {
-	remoteHost    string
-	sshUser       string
-	sshKey        string
-	sshPort       int
-	cpus          int
-	memoryGB      int
-	diskGB        int
-	forgejoDomain string
-	caddyEmail    string
-	assumeYes     bool
+	remoteHost string
+	sshUser    string
+	sshKey     string
+	sshPort    int
+	cpus       int
+	memoryGB   int
+	diskGB     int
+	caddyEmail string
+	assumeYes  bool
 }
 
 // register adds the shared provisioning flags to cmd.
@@ -83,8 +82,7 @@ func (f *baseTargetFlags) register(cmd *cobra.Command) {
 	fl.IntVar(&f.cpus, "cpus", 2, "VM CPU count (local VM only)")
 	fl.IntVar(&f.memoryGB, "memory", 2, "VM memory in GB (local VM only)")
 	fl.IntVar(&f.diskGB, "disk", 15, "VM disk in GB (local VM only)")
-	fl.StringVar(&f.forgejoDomain, "forgejo-domain", "", "public domain for the Forgejo UI (optional)")
-	fl.StringVar(&f.caddyEmail, "caddy-email", "", "ACME contact email for automatic TLS (used with --forgejo-domain)")
+	fl.StringVar(&f.caddyEmail, "caddy-email", "", "ACME contact email for automatic TLS on public domains")
 	fl.BoolVarP(&f.assumeYes, "yes", "y", false, "skip confirmation prompts (e.g. overwriting an existing local VM)")
 }
 
@@ -93,10 +91,10 @@ func (f *baseTargetFlags) register(cmd *cobra.Command) {
 func (f *baseTargetFlags) provision(name string, extraEnv map[string]string) error {
 	if f.remoteHost != "" {
 		host, user := splitUserHost(f.remoteHost, f.sshUser)
-		return baseCreateRemote(name, host, user, f.sshKey, f.sshPort, f.forgejoDomain, f.caddyEmail, extraEnv)
+		return baseCreateRemote(name, host, user, f.sshKey, f.sshPort, f.caddyEmail, extraEnv)
 	}
 	opts := vmhost.LaunchOptions{CPUs: f.cpus, MemoryGB: f.memoryGB, DiskGB: f.diskGB}
-	return baseCreateVM(name, opts, f.forgejoDomain, f.caddyEmail, f.assumeYes, extraEnv)
+	return baseCreateVM(name, opts, f.caddyEmail, f.assumeYes, extraEnv)
 }
 
 func newCreateCmd() *cobra.Command {
@@ -112,7 +110,7 @@ With no --remote flag, a fresh local Multipass VM is launched. With
 server you already provisioned.`,
 		Example: `  ownbasectl create mybase
   ownbasectl create mybase --remote root@mybase.example.com \
-    --forgejo-domain git.yourdomain.com --caddy-email you@example.com`,
+    --caddy-email you@example.com`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return target.provision(args[0], nil)
@@ -148,7 +146,7 @@ func splitUserHost(remote, fallbackUser string) (host, user string) {
 //
 // extraEnv is merged into the installer's environment on top of the standard
 // vars — restore uses it to pass OWNBASE_REBUILD=1 and restic credentials.
-func baseCreateVM(name string, opts vmhost.LaunchOptions, forgejoDomain, caddyEmail string, assumeYes bool, extraEnv map[string]string) error {
+func baseCreateVM(name string, opts vmhost.LaunchOptions, caddyEmail string, assumeYes bool, extraEnv map[string]string) error {
 	// OWNBASE_DRIVEN_BY_CTL tells install.sh that the profile registration
 	// happens automatically, so its footer skips the manual `adopt` step.
 	env := map[string]string{"OWNBASE_DRIVEN_BY_CTL": "1"}
@@ -215,9 +213,6 @@ func baseCreateVM(name string, opts vmhost.LaunchOptions, forgejoDomain, caddyEm
 	if key := defaultOwnerSSHKey(); key != "" {
 		env["OWNBASE_OWNER_SSH_KEY"] = key
 	}
-	if forgejoDomain != "" {
-		env["FORGEJO_DOMAIN"] = forgejoDomain
-	}
 	if caddyEmail != "" {
 		env["CADDY_EMAIL"] = caddyEmail
 	}
@@ -256,7 +251,7 @@ func baseCreateVM(name string, opts vmhost.LaunchOptions, forgejoDomain, caddyEm
 // a dev build installs the latest release. extraEnv is merged into the
 // installer's environment — restore uses it to pass OWNBASE_REBUILD=1 and
 // restic credentials.
-func baseCreateRemote(name, host, sshUser, sshKey string, sshPort int, forgejoDomain, caddyEmail string, extraEnv map[string]string) error {
+func baseCreateRemote(name, host, sshUser, sshKey string, sshPort int, caddyEmail string, extraEnv map[string]string) error {
 	keyPath := serverconfig.ServerProfile{SSHKey: sshKey}.EffectiveSSHKey()
 
 	fmt.Printf("==> Installing OwnBase on %s@%s ...\n", sshUser, host)
@@ -272,9 +267,6 @@ func baseCreateRemote(name, host, sshUser, sshKey string, sshPort int, forgejoDo
 	if key := defaultOwnerSSHKey(); key != "" {
 		env["OWNBASE_OWNER_SSH_KEY"] = key
 	}
-	if forgejoDomain != "" {
-		env["FORGEJO_DOMAIN"] = forgejoDomain
-	}
 	if caddyEmail != "" {
 		env["CADDY_EMAIL"] = caddyEmail
 	}
@@ -283,7 +275,7 @@ func baseCreateRemote(name, host, sshUser, sshKey string, sshPort int, forgejoDo
 	}
 
 	// sudo -E: install.sh requires root; -E preserves the env-var prefix
-	// (FORGEJO_DOMAIN, OWNBASE_OWNER_SSH_KEY, ...) through the sudo boundary
+	// (CADDY_EMAIL, OWNBASE_OWNER_SSH_KEY, ...) through the sudo boundary
 	// so it works whether sshUser is already root or a sudo-capable user.
 	out, err := tunnel.RunCommand(host, sshUser, keyPath, envPrefixedCommand(env, "sudo -E bash "+remoteScriptPath), sshPort)
 	fmt.Println(out)

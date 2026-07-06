@@ -68,9 +68,8 @@ func TestBuildPaths_BackwardCompat(t *testing.T) {
 	oc := minimalOC("myapp")
 
 	resolver := fakeResolver{
-		"ownbase-myapp-data":        "/vol/myapp-data",
-		"ownbase-core-forgejo-data": "/vol/forgejo",
-		"ownbase-core-caddy-data":   "/vol/caddy",
+		"ownbase-myapp-data":      "/vol/myapp-data",
+		"ownbase-core-caddy-data": "/vol/caddy",
 	}
 
 	paths, err := backup.BuildPaths(context.Background(), oc, resolver)
@@ -85,7 +84,6 @@ func TestBuildPaths_BackwardCompat(t *testing.T) {
 	// Service data volume resolved.
 	mustContain(t, paths, "/vol/myapp-data")
 	// Core volumes resolved.
-	mustContain(t, paths, "/vol/forgejo")
 	mustContain(t, paths, "/vol/caddy")
 }
 
@@ -106,9 +104,8 @@ func TestBuildPaths_ExplicitVolumes_WholeMount(t *testing.T) {
 		},
 	}
 	resolver := fakeResolver{
-		"ownbase-svc-config":        "/vol/svc-config",
-		"ownbase-core-forgejo-data": "/vol/forgejo",
-		"ownbase-core-caddy-data":   "/vol/caddy",
+		"ownbase-svc-config":      "/vol/svc-config",
+		"ownbase-core-caddy-data": "/vol/caddy",
 	}
 
 	paths, err := backup.BuildPaths(context.Background(), oc, resolver)
@@ -141,9 +138,8 @@ func TestBuildPaths_ExplicitVolumes_Subdirs(t *testing.T) {
 		},
 	}
 	resolver := fakeResolver{
-		"ownbase-media-storage":     "/vol/media-storage",
-		"ownbase-core-forgejo-data": "/vol/forgejo",
-		"ownbase-core-caddy-data":   "/vol/caddy",
+		"ownbase-media-storage":   "/vol/media-storage",
+		"ownbase-core-caddy-data": "/vol/caddy",
 	}
 
 	paths, err := backup.BuildPaths(context.Background(), oc, resolver)
@@ -175,10 +171,9 @@ func TestBuildPaths_VolumeNoBackup(t *testing.T) {
 		},
 	}
 	resolver := fakeResolver{
-		"ownbase-svc-config":        "/vol/svc-config",
-		"ownbase-svc-cache":         "/vol/svc-cache",
-		"ownbase-core-forgejo-data": "/vol/forgejo",
-		"ownbase-core-caddy-data":   "/vol/caddy",
+		"ownbase-svc-config":      "/vol/svc-config",
+		"ownbase-svc-cache":       "/vol/svc-cache",
+		"ownbase-core-caddy-data": "/vol/caddy",
 	}
 
 	paths, err := backup.BuildPaths(context.Background(), oc, resolver)
@@ -201,8 +196,7 @@ func TestBuildPaths_CoreVolumesAlwaysIncluded(t *testing.T) {
 		Services:      map[string]schema.ServiceDecl{},
 	}
 	resolver := fakeResolver{
-		"ownbase-core-forgejo-data": "/vol/forgejo",
-		"ownbase-core-caddy-data":   "/vol/caddy",
+		"ownbase-core-caddy-data": "/vol/caddy",
 	}
 
 	paths, err := backup.BuildPaths(context.Background(), oc, resolver)
@@ -210,7 +204,6 @@ func TestBuildPaths_CoreVolumesAlwaysIncluded(t *testing.T) {
 		t.Fatalf("BuildPaths: %v", err)
 	}
 
-	mustContain(t, paths, "/vol/forgejo")
 	mustContain(t, paths, "/vol/caddy")
 }
 
@@ -250,10 +243,9 @@ func TestBuildPaths_NoDuplicates(t *testing.T) {
 		},
 	}
 	resolver := fakeResolver{
-		"ownbase-a-data":            "/vol/shared",
-		"ownbase-b-data":            "/vol/shared", // intentional duplicate
-		"ownbase-core-forgejo-data": "/vol/forgejo",
-		"ownbase-core-caddy-data":   "/vol/caddy",
+		"ownbase-a-data":          "/vol/shared",
+		"ownbase-b-data":          "/vol/shared", // intentional duplicate
+		"ownbase-core-caddy-data": "/vol/caddy",
 	}
 
 	paths, err := backup.BuildPaths(context.Background(), oc, resolver)
@@ -280,8 +272,7 @@ func TestBuildPaths_ServiceVolumeResolveFail_Fatal(t *testing.T) {
 	oc := minimalOC("broken")
 	// Resolver has no entry for the service volume.
 	resolver := fakeResolver{
-		"ownbase-core-forgejo-data": "/vol/forgejo",
-		"ownbase-core-caddy-data":   "/vol/caddy",
+		"ownbase-core-caddy-data": "/vol/caddy",
 	}
 
 	_, err := backup.BuildPaths(context.Background(), oc, resolver)
@@ -315,9 +306,8 @@ func TestBuildPaths_RelativePathVariants(t *testing.T) {
 		},
 	}
 	resolver := fakeResolver{
-		"ownbase-svc-data":          "/vol/data",
-		"ownbase-core-forgejo-data": "/vol/forgejo",
-		"ownbase-core-caddy-data":   "/vol/caddy",
+		"ownbase-svc-data":        "/vol/data",
+		"ownbase-core-caddy-data": "/vol/caddy",
 	}
 
 	paths, err := backup.BuildPaths(context.Background(), oc, resolver)
@@ -344,11 +334,10 @@ func TestBuildPaths_Deterministic(t *testing.T) {
 		},
 	}
 	resolver := fakeResolver{
-		"ownbase-alpha-data":        "/vol/alpha",
-		"ownbase-beta-data":         "/vol/beta",
-		"ownbase-gamma-data":        "/vol/gamma",
-		"ownbase-core-forgejo-data": "/vol/forgejo",
-		"ownbase-core-caddy-data":   "/vol/caddy",
+		"ownbase-alpha-data":      "/vol/alpha",
+		"ownbase-beta-data":       "/vol/beta",
+		"ownbase-gamma-data":      "/vol/gamma",
+		"ownbase-core-caddy-data": "/vol/caddy",
 	}
 
 	paths1, _ := backup.BuildPaths(context.Background(), oc, resolver)

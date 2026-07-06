@@ -20,20 +20,21 @@
 
 | Decision | Choice | Why |
 |---|---|---|
-| Authoritative repo | Bare git repo at `/opt/ownbase/repo` | User-owned, no third-party dependency |
-| Git UX layer | **Forgejo**, a core package bootstrapped by the installer (not declared in `ownbase.yaml`) | Forgejo must always be present; making it a user service creates a chicken-and-egg problem |
-| Sync model | Daemon pushes bare→Forgejo after reconcile; a webhook (and a `post-receive` hook via `SIGUSR1`) triggers reconcile on push | Users interact with Forgejo; the bare repo stays the final authority; two signal paths into the same reconcile code |
-| Forgejo API token | Scopes: `write:user,write:repository,write:issue,read:organization,write:admin`; stored at `/opt/ownbase/forgejo-token` (0600) | Minimum required for repo creation/management/admin password updates; internal daemon credential, never a user secret |
+| Authoritative repo | Bare git repo at `/opt/ownbase/repo` (config) + one bare repo per service under `/opt/ownbase/repos/` | User-owned, no third-party dependency, no git host to run or secure |
+| Git UX layer | None — `ownbasectl` pushes directly to the bare repos over the normal admin SSH user, exactly like a manual `git push` | A hosted git UI (Forgejo) was tried and removed: it was a second attack surface, a second thing to back up and reconstruct, and added no capability `ownbasectl` + local bare repos didn't already provide — see the "Forgejo removal" entry below |
+| Sync model | `post-receive` hook on the config bare repo sends `SIGUSR1` to the daemon, which pulls into the checkout and reconciles | Single signal path; no webhook, no second git host to keep in sync |
+| Service source repos | `source:` services get an empty bare repo the user pushes into directly; `mirror:` services get a `git clone --bare --mirror` of the external URL, refreshed on demand when a new `ref:` is pinned (see `internal/repos`) | The Base is self-contained — the external git host is only consulted when a genuinely new ref appears, never on every reconcile |
+| Forgejo removal | Forgejo (hosted git UI + pull-mirror manager) was removed in favor of the above | It served three roles — config repo host, build source, mirror manager — all of which the existing bare-repo + hook mechanism already handled *underneath* Forgejo. Removing it cut a core package, a token, a webhook, and an entire AuthorizedKeysCommand SSH-proxy shim without losing any capability |
 
 ## Schema and compiler
 
 | Decision | Choice | Why |
 |---|---|---|
 | Config format | YAML (`ownbase.yaml`) | Human-readable |
-| Service declaration | `source:` (local Forgejo repo path) or `mirror:` (external git URL, auto-mirrored) — the only valid user service kinds | Every service builds from a Forgejo-hosted repo; no container registries as service sources |
+| Service declaration | `source:` (local bare repo path under `/opt/ownbase/repos/`) or `mirror:` (external git URL, auto-mirrored) — the only valid user service kinds | Every service builds from a local bare repo; no container registries as service sources |
 | No-registry rule | `image:`/`digest:` do not exist on `ServiceDecl` | Enforced at the schema level, not just convention |
-| Core packages | Forgejo + Caddy are installed by the installer, configured via the `core:` block, upgraded via `ownbasectl upgrade` — never declared as `ownbase.yaml` services | Decouples infrastructure lifecycle from user service lifecycle; `core:` configures, never sets versions |
-| `mirror:` mechanics | `mirror: <url>` → daemon creates a Forgejo pull-mirror at `mirrors-<basename>` and builds from it | Declarative external mirrors |
+| Core packages | Caddy is installed by the installer, configured via the `core:` block, upgraded via `ownbasectl upgrade` — never declared as an `ownbase.yaml` service | Decouples infrastructure lifecycle from user service lifecycle; `core:` configures, never sets versions |
+| `mirror:` mechanics | `mirror: <url>` → daemon creates a local bare mirror at `/opt/ownbase/repos/mirrors-<basename>` and builds from it | Declarative external mirrors, backed up locally like every other repo |
 | Update model | User edits `ref:` and commits; a blank `ref:` auto-pins to the source's HEAD SHA on the next reconcile. There is no agent-opened PR flow — that mechanism was tried and removed because it added process without adding safety | Direct `ref:` commits fit the existing push→reconcile path |
 | `mode:` field | Parsed but has no effect (deprecated no-op); a warning is emitted when present | Removing it outright would break existing files that reject unknown fields |
 | Service image build | `localhost/ownbase-<name>:local`, built by the daemon from the repo at `ref:` | No external registry references; deterministic per ref |
@@ -76,7 +77,7 @@
 
 | Decision | Choice | Why |
 |---|---|---|
-| Source-ref detection | Forgejo API `GET /repos/{owner}/{repo}/tags?limit=1` (reads the local mirror, never reaches upstream) | Forgejo sorts newest-first |
+| Source-ref detection | Local git CLI against the service's bare repo (`git rev-parse`, `git rev-list --count`, `git tag --sort=-v:refname`) — never reaches upstream | The local bare repo is always current for anything already fetched; only a genuinely new ref triggers a fetch (see `internal/repos`) |
 | Commit-SHA refs | Skipped in drift comparison | A 40-char hex ref is already maximally pinned |
 | Blank-ref resolution | Autonomous-tier action (`update.pin_ref`) | Safe to do without asking — it only records what the source repo already is; it does not change what's running |
 
@@ -113,6 +114,8 @@
 | Host key verification | `~/.ownbase/known_hosts`, trust-on-first-use | Same UX as the `ssh` CLI |
 | Token bootstrap | `install.sh` generates a token, writes it to `/opt/ownbase/api-token` (root, `0600`), prints it once; `ownbasectl` fetches it over SSH automatically when adopting an existing Base | SSH is the root credential; the API token only scopes access within the tunnel it opens |
 | Token hot-swap | `POST /token/reset` updates the daemon's in-memory token immediately | No daemon restart needed |
+| Config mutation | `ownbasectl config get/set` and `ownbasectl service add/remove/update` all funnel through one `GET`/`POST /config` endpoint — the daemon front door for the whole `ownbase.yaml` document, validated and committed via `update.CommitFile` exactly like a manual `git push` | Single front door means every mutation path (CLI, agent, future UI) is exercised the same way the reconcile loop already trusts; no partial-update API to keep in sync with git-push semantics |
+| Agent-first CLI | Every `config`/`service` subcommand is a single non-interactive invocation — no editor, no prompts, `--json` for structured output, non-zero exit on validation or transport failure | An AI agent must be able to drive the whole config lifecycle unattended |
 | Secrets over the wire | Client sends plaintext over the SSH tunnel only; the daemon re-encrypts and writes to disk; no git commit | The age private key never leaves the Base; plaintext only exists in-memory for the duration of the request |
 | CLI distribution | `ownbasectl` is a standalone binary (GoReleaser: darwin/linux × amd64/arm64), with `install.sh` embedded via `go:embed` so a released binary needs no checkout | `ownbasectl create` is the only supported install path — there is no `curl \| bash` |
 | Daemon version pinning | Release builds of `ownbasectl` set `OWNBASE_VERSION` to their own version so `install.sh` downloads the matching signed daemon | `ownbasectl` and the daemon stay in lockstep for released installs |
@@ -124,13 +127,13 @@
 | Scanner | **trivy** | Single binary, no daemon, scans both OS packages and container images, structured JSON, degrades gracefully when absent |
 | Scan scope | Host OS packages + every running container image (discovered via `podman ps`) | Unbuilt images simply don't appear yet — no false "scan failed" noise |
 | Cadence | 24h ticker, 5-minute initial delay after daemon start | Long enough not to hammer the trivy DB; delay lets the first reconcile finish building images |
-| Remediation | `ownbasectl security fix` → `apt-get upgrade` on the Base (host packages); `ownbasectl upgrade --apply` → pull + restart (Forgejo/Caddy images). Both trigger an automatic rescan | Image CVEs can only be fixed by a newer upstream image; there is no way to patch an image in place |
+| Remediation | `ownbasectl security fix` → `apt-get upgrade` on the Base (host packages); `ownbasectl upgrade --apply` → pull + restart (the Caddy image). Both trigger an automatic rescan | Image CVEs can only be fixed by a newer upstream image; there is no way to patch an image in place |
 
 ## Security monitoring (exposure + access)
 
 | Decision | Choice | Why |
 |---|---|---|
-| Exposure scan | Local-only: `ss -tlnpH` + `ufw status` + the expected-allowlist derived from `ownbase.yaml` (SSH port, 80, 443, Forgejo port iff no domain set) | Deterministic, no cloud dependency, no packets sent; answers "what does this machine believe is reachable" — an off-box scan is a possible future addition, not a requirement |
+| Exposure scan | Local-only: `ss -tlnpH` + `ufw status` + the expected-allowlist derived from `ownbase.yaml` (SSH port, 80, 443) | Deterministic, no cloud dependency, no packets sent; answers "what does this machine believe is reachable" — an off-box scan is a possible future addition, not a requirement |
 | Access monitor | `fail2ban-client status sshd` + `journalctl -u ssh` (24h window) | fail2ban and journald are already present; no new daemon, no external blocklist |
 | Exposure scan cadence | At most once every 5 minutes | `ss`/`ufw`/`fail2ban-client`/`journalctl` are shell-outs; no need to re-run on every push-triggered reconcile |
 | Graceful degradation | Missing tools (`ss`, `ufw`, etc.) return `Available=false` + zero values, never an error | Keeps status queries working on machines where a probe tool is temporarily unavailable |

@@ -56,7 +56,7 @@ type Listener struct {
 	InternetReachable bool `json:"internet_reachable"`
 
 	// Expected is true when the port appears in the expected-allowlist derived
-	// from ownbase.yaml (SSH, 80, 443, Forgejo when no domain is set).
+	// from ownbase.yaml (SSH, 80, 443).
 	Expected bool `json:"expected"`
 }
 

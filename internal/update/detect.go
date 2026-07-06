@@ -1,199 +1,101 @@
 package update
 
-// detect.go implements Forgejo API helpers for:
+// detect.go implements local-git helpers for:
 //   - resolving a repo's default branch and its HEAD commit SHA
 //   - computing how many commits a pinned ref is behind the branch HEAD
 //   - finding the newest semver tag on a repo (for drift reporting)
+//
+// All of these operate on the local bare repo under /opt/ownbase/repos/
+// (see internal/repos) — no network access or API token required. The
+// external git host, if any, is only consulted by internal/repos when a
+// service is first added or its ref: is updated to something not yet fetched.
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/http"
+	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // ---------------------------------------------------------------------------
 // Default branch + HEAD resolution
 // ---------------------------------------------------------------------------
 
-// resolveDefaultBranchHead returns the default branch name and its HEAD commit
-// SHA for sourcePath in the local Forgejo instance.
-// Returns ("", "", nil) when the repo exists but has no commits.
-func resolveDefaultBranchHead(ctx context.Context, cfg Config, sourcePath string) (branch, sha string, err error) {
-	owner, repo := parseSourcePath(sourcePath, cfg.ForgejoUser)
+// resolveDefaultBranchHead returns the default branch name and its HEAD
+// commit SHA for the local bare repo backing sourcePath.
+// Returns ("", "", nil) when the repo doesn't exist locally or has no
+// commits yet.
+func resolveDefaultBranchHead(_ context.Context, cfg Config, sourcePath string) (branch, sha string, err error) {
+	repoPath := cfg.repoPath(sourcePath)
 
-	// Step 1: get the repo's default_branch name.
-	repoURL := fmt.Sprintf("%s/api/v1/repos/%s/%s", cfg.ForgejoURL, owner, repo)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, repoURL, nil)
+	branchOut, err := exec.Command("git", "-C", repoPath, "symbolic-ref", "--short", "HEAD").Output()
 	if err != nil {
-		return "", "", fmt.Errorf("build repo request for %s/%s: %w", owner, repo, err)
-	}
-	req.Header.Set("Authorization", "token "+cfg.ForgejoToken)
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", "", fmt.Errorf("GET repo %s/%s: %w", owner, repo, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
+		// Repo missing, not yet a git dir, or HEAD is unborn (no commits).
 		return "", "", nil
 	}
-	if resp.StatusCode != http.StatusOK {
-		return "", "", fmt.Errorf("GET repo %s/%s: status %d", owner, repo, resp.StatusCode)
+	branch = strings.TrimSpace(string(branchOut))
+	if branch == "" {
+		branch = "main"
 	}
 
-	var repoInfo struct {
-		DefaultBranch string `json:"default_branch"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&repoInfo); err != nil {
-		return "", "", fmt.Errorf("decode repo %s/%s: %w", owner, repo, err)
-	}
-	if repoInfo.DefaultBranch == "" {
-		repoInfo.DefaultBranch = "main"
-	}
-
-	// Step 2: get the branch's HEAD commit SHA.
-	branchURL := fmt.Sprintf("%s/api/v1/repos/%s/%s/branches/%s",
-		cfg.ForgejoURL, owner, repo, repoInfo.DefaultBranch)
-	req2, err := http.NewRequestWithContext(ctx, http.MethodGet, branchURL, nil)
+	shaOut, err := exec.Command("git", "-C", repoPath, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch).Output()
 	if err != nil {
-		return "", "", fmt.Errorf("build branch request for %s/%s/%s: %w", owner, repo, repoInfo.DefaultBranch, err)
+		// Branch exists in HEAD but has no commits yet.
+		return branch, "", nil
 	}
-	req2.Header.Set("Authorization", "token "+cfg.ForgejoToken)
-
-	resp2, err := client.Do(req2)
-	if err != nil {
-		return "", "", fmt.Errorf("GET branch %s/%s/%s: %w", owner, repo, repoInfo.DefaultBranch, err)
-	}
-	defer resp2.Body.Close()
-	if resp2.StatusCode == http.StatusNotFound {
-		// Branch exists in repo info but has no commits yet.
-		return repoInfo.DefaultBranch, "", nil
-	}
-	if resp2.StatusCode != http.StatusOK {
-		return "", "", fmt.Errorf("GET branch %s/%s/%s: status %d", owner, repo, repoInfo.DefaultBranch, resp2.StatusCode)
-	}
-
-	var branchInfo struct {
-		Commit struct {
-			ID string `json:"id"`
-		} `json:"commit"`
-	}
-	if err := json.NewDecoder(resp2.Body).Decode(&branchInfo); err != nil {
-		return "", "", fmt.Errorf("decode branch %s/%s/%s: %w", owner, repo, repoInfo.DefaultBranch, err)
-	}
-
-	return repoInfo.DefaultBranch, branchInfo.Commit.ID, nil
+	return branch, strings.TrimSpace(string(shaOut)), nil
 }
 
 // ---------------------------------------------------------------------------
 // Commits-behind calculation
 // ---------------------------------------------------------------------------
 
-// commitsBehind returns how many commits `base` is behind `head` in the given
-// repo via the Forgejo compare API. Returns 0 on any transient error so the
-// caller can still produce a partial result.
-func commitsBehind(ctx context.Context, cfg Config, sourcePath, base, head string) (int, error) {
+// commitsBehind returns how many commits `base` is behind `head` in the
+// local bare repo backing sourcePath.
+func commitsBehind(_ context.Context, cfg Config, sourcePath, base, head string) (int, error) {
 	if base == head {
 		return 0, nil
 	}
-	owner, repo := parseSourcePath(sourcePath, cfg.ForgejoUser)
+	repoPath := cfg.repoPath(sourcePath)
 
-	url := fmt.Sprintf("%s/api/v1/repos/%s/%s/compare/%s...%s",
-		cfg.ForgejoURL, owner, repo, base, head)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	out, err := exec.Command("git", "-C", repoPath, "rev-list", base+".."+head, "--count").Output()
 	if err != nil {
-		return 0, fmt.Errorf("build compare request: %w", err)
+		return 0, fmt.Errorf("git rev-list %s..%s in %s: %w", base, head, repoPath, err)
 	}
-	req.Header.Set("Authorization", "token "+cfg.ForgejoToken)
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	n, err := strconv.Atoi(strings.TrimSpace(string(out)))
 	if err != nil {
-		return 0, fmt.Errorf("GET compare %s/%s %s...%s: %w", owner, repo, base, head, err)
+		return 0, fmt.Errorf("parse rev-list count %q: %w", string(out), err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("GET compare %s/%s %s...%s: status %d", owner, repo, base, head, resp.StatusCode)
-	}
-
-	var result struct {
-		TotalCommits int `json:"total_commits"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return 0, fmt.Errorf("decode compare %s/%s: %w", owner, repo, err)
-	}
-	return result.TotalCommits, nil
+	return n, nil
 }
 
 // ---------------------------------------------------------------------------
 // Newest tag detection (for drift reporting)
 // ---------------------------------------------------------------------------
 
-// fetchLatestSourceRef returns the name of the newest semver tag for the repo
-// at sourcePath in the local Forgejo instance. Returns "" (no error) when the
-// repo has no tags or is not found.
-func fetchLatestSourceRef(ctx context.Context, cfg Config, sourcePath string) (string, error) {
-	owner, repo := parseSourcePath(sourcePath, cfg.ForgejoUser)
+// fetchLatestSourceRef returns the name of the newest semver tag in the
+// local bare repo backing sourcePath. Returns "" (no error) when the repo
+// has no tags or doesn't exist locally.
+func fetchLatestSourceRef(_ context.Context, cfg Config, sourcePath string) (string, error) {
+	repoPath := cfg.repoPath(sourcePath)
 
-	const tagsPageSize = 50
-	url := fmt.Sprintf("%s/api/v1/repos/%s/%s/tags?limit=%d&page=1",
-		cfg.ForgejoURL, owner, repo, tagsPageSize)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	out, err := exec.Command("git", "-C", repoPath, "tag", "--list").Output()
 	if err != nil {
-		return "", fmt.Errorf("build tag request for %s/%s: %w", owner, repo, err)
+		return "", nil // repo missing or not a git dir — no tags to report
 	}
-	req.Header.Set("Authorization", "token "+cfg.ForgejoToken)
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("GET tags %s/%s: %w", owner, repo, err)
+	var names []string
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			names = append(names, line)
+		}
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusNotFound {
+	if len(names) == 0 {
 		return "", nil
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("GET tags %s/%s: status %d", owner, repo, resp.StatusCode)
-	}
-
-	var tags []struct {
-		Name string `json:"name"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&tags); err != nil {
-		return "", fmt.Errorf("decode tags %s/%s: %w", owner, repo, err)
-	}
-	if len(tags) == 0 {
-		return "", nil
-	}
-
-	names := make([]string, len(tags))
-	for i, t := range tags {
-		names[i] = t.Name
 	}
 	return highestVersionTag(names), nil
-}
-
-// ---------------------------------------------------------------------------
-// Forgejo source path parsing
-// ---------------------------------------------------------------------------
-
-// parseSourcePath splits a Forgejo repo path (e.g. "services/auth") into
-// owner and repo. If sourcePath has no slash, defaultOwner is used as owner.
-// Exported so podman.go can reuse the same logic without importing this package.
-func parseSourcePath(sourcePath, defaultOwner string) (owner, repo string) {
-	parts := strings.SplitN(sourcePath, "/", 2)
-	if len(parts) == 2 {
-		return parts[0], parts[1]
-	}
-	return defaultOwner, sourcePath
 }
 
 // ---------------------------------------------------------------------------
@@ -263,7 +165,7 @@ func compareVersionTags(a, b string) int {
 // ---------------------------------------------------------------------------
 
 // ParseImageRef splits "registry/repo:tag" into its components.
-// Handles references like "codeberg.org/forgejo/forgejo:10" and
+// Handles references like "docker.io/library/caddy:2" and
 // "docker.io/library/nginx:latest". Exported for testing and for the M12
 // core-package update detection path (Tier-2).
 func ParseImageRef(image string) (registry, repo, tag string, err error) {

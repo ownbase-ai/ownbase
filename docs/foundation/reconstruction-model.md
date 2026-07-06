@@ -96,10 +96,10 @@ secrets (enc)--+--> compile() --> runtime/   (generated; never hand-edited)
 
 ## The source of truth lives on owned hardware
 
-The ownership promise collapses if the authoritative repository lives on someone else's servers. So the authoritative copy of the user's repo lives **on the Base itself** — on the Base's own Forgejo instance. This is what makes the commit-driven loop above possible: a commit to the source of truth is an *internal* event, not a remote poll.
+The ownership promise collapses if the authoritative repository lives on someone else's servers. So the authoritative copy of the user's repo lives **on the Base itself** — a plain filesystem bare repo, with no hosted git server in front of it. This is what makes the commit-driven loop above possible: a commit to the source of truth is an *internal* event, not a remote poll.
 
-- **A filesystem bare repo is the irreducible truth.** The on-Base Git host is itself a reconciled service; to avoid a chicken-and-egg, the daemon holds a bare repo on the local filesystem first and the hosted Forgejo service becomes a remote of it.
-- **External mirrors are optional and never authoritative.** A Base may push-mirror to an external host so tooling that assumes GitHub can work against it — but the authoritative copy stays on the Base and the update loop runs locally regardless.
+- **A filesystem bare repo is the irreducible truth.** There is no chicken-and-egg to avoid: the bare repo at `/opt/ownbase/repo` (config) and the per-service bare repos under `/opt/ownbase/repos/` *are* the git host — `ownbasectl` and the user push into them directly over the normal admin SSH connection. A hosted git UI (Forgejo) was tried and removed; it added a second attack surface and a second thing to reconstruct without adding any capability the bare repos didn't already have.
+- **External mirrors are optional and never authoritative.** A `mirror:` service clones an external URL into a local bare mirror, refreshed only when a newly pinned `ref:` isn't yet present locally — but the authoritative copy stays on the Base and the update loop runs locally regardless.
 
 This is the deepest expression of [architecture-principles.md](architecture-principles.md), principles 1 and 2: not just "Git is the source of truth," but *the source of truth is an artifact the user physically owns.*
 

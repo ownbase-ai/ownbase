@@ -2,6 +2,7 @@ package explain_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,8 +17,8 @@ import (
 
 // buildAPIServer creates a StatusServer + APIConfig + httptest.Server for API
 // tests. secretsDir may be empty (secrets tests will fail without it).
-// ageKeyPath may be empty (credential/token tests work without it).
-func buildAPIServer(t *testing.T, secretsDir, ageKeyPath, adminPassPath, tokenPath string) (*explain.StatusServer, *httptest.Server) {
+// ageKeyPath may be empty (token tests work without it).
+func buildAPIServer(t *testing.T, secretsDir, ageKeyPath, tokenPath string) (*explain.StatusServer, *httptest.Server) {
 	t.Helper()
 	const tok = "test-api-token"
 	srv := explain.NewStatusServer()
@@ -26,11 +27,10 @@ func buildAPIServer(t *testing.T, secretsDir, ageKeyPath, adminPassPath, tokenPa
 	mux.Handle("/status", statusHandler)
 	mux.Handle("/health", statusHandler)
 	explain.MountAPI(mux, explain.APIConfig{
-		SecretsDir:    secretsDir,
-		AgeKeyPath:    ageKeyPath,
-		AdminPassPath: adminPassPath,
-		APITokenPath:  tokenPath,
-		StatusSrv:     srv,
+		SecretsDir:   secretsDir,
+		AgeKeyPath:   ageKeyPath,
+		APITokenPath: tokenPath,
+		StatusSrv:    srv,
 	})
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
@@ -72,51 +72,123 @@ func authedDelete(t *testing.T, ts *httptest.Server, path string) *http.Response
 }
 
 // ---------------------------------------------------------------------------
-// /credentials/forgejo
+// /config
 // ---------------------------------------------------------------------------
 
-func TestAPI_ForgejoCredentials_ReturnsCredentials(t *testing.T) {
-	dir := t.TempDir()
-	passFile := filepath.Join(dir, "forgejo-admin-pass")
-	if err := os.WriteFile(passFile, []byte("s3cretP@ss"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+func TestAPI_ConfigGet_ReturnsContent(t *testing.T) {
+	srv := explain.NewStatusServer()
+	mux := http.NewServeMux()
+	mux.Handle("/status", srv.Handler("test-api-token"))
+	const yamlContent = "schema_version: v1\nservices: {}\n"
+	explain.MountAPI(mux, explain.APIConfig{
+		StatusSrv: srv,
+		GetConfig: func() (string, error) { return yamlContent, nil },
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
 
-	_, ts := buildAPIServer(t, "", "", passFile, "")
-
-	resp := authedGet(t, ts, "/credentials/forgejo")
+	resp := authedGet(t, ts, "/config")
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status = %d: %s", resp.StatusCode, body)
 	}
-
-	var got map[string]string
-	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if got["username"] != explain.ForgejoAdminUser {
-		t.Errorf("username = %q, want %q", got["username"], explain.ForgejoAdminUser)
-	}
-	if got["password"] != "s3cretP@ss" {
-		t.Errorf("password = %q, want s3cretP@ss", got["password"])
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != yamlContent {
+		t.Errorf("body = %q, want %q", body, yamlContent)
 	}
 }
 
-func TestAPI_ForgejoCredentials_404WhenMissing(t *testing.T) {
-	_, ts := buildAPIServer(t, "", "", "/nonexistent/path", "")
+func TestAPI_ConfigGet_501WhenNotConfigured(t *testing.T) {
+	_, ts := buildAPIServer(t, "", "", "")
 
-	resp := authedGet(t, ts, "/credentials/forgejo")
+	resp := authedGet(t, ts, "/config")
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Errorf("status = %d, want 404", resp.StatusCode)
+	if resp.StatusCode != http.StatusNotImplemented {
+		t.Errorf("status = %d, want 501", resp.StatusCode)
 	}
 }
 
-func TestAPI_ForgejoCredentials_401WithoutToken(t *testing.T) {
-	_, ts := buildAPIServer(t, "", "", "", "")
+func TestAPI_ConfigSet_CallsSetConfig(t *testing.T) {
+	var gotContent, gotMsg string
+	srv := explain.NewStatusServer()
+	mux := http.NewServeMux()
+	mux.Handle("/status", srv.Handler("test-api-token"))
+	explain.MountAPI(mux, explain.APIConfig{
+		StatusSrv: srv,
+		SetConfig: func(content, msg string) error {
+			gotContent = content
+			gotMsg = msg
+			return nil
+		},
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
 
-	resp, err := http.Get(ts.URL + "/credentials/forgejo")
+	resp := authedPost(t, ts, "/config", `{"content":"schema_version: v1\nservices: {}\n","message":"test commit"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d: %s", resp.StatusCode, body)
+	}
+	if gotContent != "schema_version: v1\nservices: {}\n" {
+		t.Errorf("content = %q", gotContent)
+	}
+	if gotMsg != "test commit" {
+		t.Errorf("message = %q", gotMsg)
+	}
+}
+
+func TestAPI_ConfigSet_400OnEmptyContent(t *testing.T) {
+	srv := explain.NewStatusServer()
+	mux := http.NewServeMux()
+	mux.Handle("/status", srv.Handler("test-api-token"))
+	explain.MountAPI(mux, explain.APIConfig{
+		StatusSrv: srv,
+		SetConfig: func(string, string) error { return nil },
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	resp := authedPost(t, ts, "/config", `{"content":""}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestAPI_ConfigSet_400OnSetConfigError(t *testing.T) {
+	srv := explain.NewStatusServer()
+	mux := http.NewServeMux()
+	mux.Handle("/status", srv.Handler("test-api-token"))
+	explain.MountAPI(mux, explain.APIConfig{
+		StatusSrv: srv,
+		SetConfig: func(string, string) error { return fmt.Errorf("invalid config") },
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	resp := authedPost(t, ts, "/config", `{"content":"bad"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestAPI_ConfigSet_501WhenNotConfigured(t *testing.T) {
+	_, ts := buildAPIServer(t, "", "", "")
+
+	resp := authedPost(t, ts, "/config", `{"content":"x"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotImplemented {
+		t.Errorf("status = %d, want 501", resp.StatusCode)
+	}
+}
+
+func TestAPI_Config_401WithoutToken(t *testing.T) {
+	_, ts := buildAPIServer(t, "", "", "")
+
+	resp, err := http.Get(ts.URL + "/config")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +210,6 @@ func TestAPI_CoreStatus_ReturnsPackages(t *testing.T) {
 		StatusSrv: srv,
 		CoreStatus: func() []explain.CorePackageStatus {
 			return []explain.CorePackageStatus{
-				{Name: "Forgejo", Container: "ownbase-core-forgejo", Image: "codeberg.org/forgejo/forgejo:10", Digest: "sha256:abc", Running: true},
 				{Name: "Caddy", Container: "ownbase-core-caddy", Image: "docker.io/library/caddy:2-alpine", Running: false},
 			}
 		},
@@ -159,19 +230,16 @@ func TestAPI_CoreStatus_ReturnsPackages(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(got.Packages) != 2 {
-		t.Fatalf("packages = %d, want 2", len(got.Packages))
+	if len(got.Packages) != 1 {
+		t.Fatalf("packages = %d, want 1", len(got.Packages))
 	}
-	if got.Packages[0].Name != "Forgejo" || !got.Packages[0].Running {
-		t.Errorf("first package = %+v, want running Forgejo", got.Packages[0])
-	}
-	if got.Packages[1].Name != "Caddy" || got.Packages[1].Running {
-		t.Errorf("second package = %+v, want stopped Caddy", got.Packages[1])
+	if got.Packages[0].Name != "Caddy" || got.Packages[0].Running {
+		t.Errorf("package = %+v, want stopped Caddy", got.Packages[0])
 	}
 }
 
 func TestAPI_CoreStatus_501WhenNotConfigured(t *testing.T) {
-	_, ts := buildAPIServer(t, "", "", "", "")
+	_, ts := buildAPIServer(t, "", "", "")
 
 	resp := authedGet(t, ts, "/core/status")
 	defer resp.Body.Close()
@@ -181,7 +249,7 @@ func TestAPI_CoreStatus_501WhenNotConfigured(t *testing.T) {
 }
 
 func TestAPI_CoreStatus_401WithoutToken(t *testing.T) {
-	_, ts := buildAPIServer(t, "", "", "", "")
+	_, ts := buildAPIServer(t, "", "", "")
 
 	resp, err := http.Get(ts.URL + "/core/status")
 	if err != nil {
@@ -204,7 +272,7 @@ func TestAPI_TokenReset_GeneratesNewToken(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv, ts := buildAPIServer(t, "", "", "", tokenFile)
+	srv, ts := buildAPIServer(t, "", "", tokenFile)
 	_ = srv
 
 	resp := authedPost(t, ts, "/token/reset", "")
@@ -235,7 +303,7 @@ func TestAPI_TokenReset_HotSwapsServerToken(t *testing.T) {
 	tokenFile := filepath.Join(dir, "api-token")
 	_ = os.WriteFile(tokenFile, []byte("old-token"), 0o600)
 
-	_, ts := buildAPIServer(t, "", "", "", tokenFile)
+	_, ts := buildAPIServer(t, "", "", tokenFile)
 
 	// Reset the token.
 	resp := authedPost(t, ts, "/token/reset", "")
@@ -344,7 +412,7 @@ func buildSecretsFixture(t *testing.T) (secretsDir, keyPath string) {
 
 func TestAPI_SecretsList(t *testing.T) {
 	secretsDir, keyPath := buildSecretsFixture(t)
-	_, ts := buildAPIServer(t, secretsDir, keyPath, "", "")
+	_, ts := buildAPIServer(t, secretsDir, keyPath, "")
 
 	resp := authedGet(t, ts, "/secrets/crm")
 	defer resp.Body.Close()
@@ -366,7 +434,7 @@ func TestAPI_SecretsList(t *testing.T) {
 
 func TestAPI_SecretsList_UnknownService_ReturnsEmpty(t *testing.T) {
 	secretsDir, keyPath := buildSecretsFixture(t)
-	_, ts := buildAPIServer(t, secretsDir, keyPath, "", "")
+	_, ts := buildAPIServer(t, secretsDir, keyPath, "")
 
 	// A service with no secrets file yet returns empty list, not 404.
 	// Secrets are independent of ownbase.yaml declarations.
@@ -387,7 +455,7 @@ func TestAPI_SecretsList_UnknownService_ReturnsEmpty(t *testing.T) {
 
 func TestAPI_SecretsGet(t *testing.T) {
 	secretsDir, keyPath := buildSecretsFixture(t)
-	_, ts := buildAPIServer(t, secretsDir, keyPath, "", "")
+	_, ts := buildAPIServer(t, secretsDir, keyPath, "")
 
 	resp := authedGet(t, ts, "/secrets/crm/DB_URL")
 	defer resp.Body.Close()
@@ -408,7 +476,7 @@ func TestAPI_SecretsGet(t *testing.T) {
 
 func TestAPI_SecretsGet_MissingKey_404(t *testing.T) {
 	secretsDir, keyPath := buildSecretsFixture(t)
-	_, ts := buildAPIServer(t, secretsDir, keyPath, "", "")
+	_, ts := buildAPIServer(t, secretsDir, keyPath, "")
 
 	resp := authedGet(t, ts, "/secrets/crm/NONEXISTENT_KEY")
 	resp.Body.Close()
@@ -419,7 +487,7 @@ func TestAPI_SecretsGet_MissingKey_404(t *testing.T) {
 
 func TestAPI_SecretsSet_MergesSecrets(t *testing.T) {
 	secretsDir, keyPath := buildSecretsFixture(t)
-	_, ts := buildAPIServer(t, secretsDir, keyPath, "", "")
+	_, ts := buildAPIServer(t, secretsDir, keyPath, "")
 
 	resp := authedPost(t, ts, "/secrets/crm", `{"NEW_KEY":"newval","DB_URL":"postgres://newhost/crm"}`)
 	defer resp.Body.Close()
@@ -451,7 +519,7 @@ func TestAPI_SecretsSet_MergesSecrets(t *testing.T) {
 
 func TestAPI_SecretsSet_CreatesFileForNewService(t *testing.T) {
 	secretsDir, keyPath := buildSecretsFixture(t)
-	_, ts := buildAPIServer(t, secretsDir, keyPath, "", "")
+	_, ts := buildAPIServer(t, secretsDir, keyPath, "")
 
 	// Set secrets for a service that doesn't have a file yet.
 	resp := authedPost(t, ts, "/secrets/newservice", `{"FOO":"bar"}`)
@@ -478,7 +546,7 @@ func TestAPI_SecretsSet_CreatesFileForNewService(t *testing.T) {
 
 func TestAPI_SecretsDelete_RemovesKey(t *testing.T) {
 	secretsDir, keyPath := buildSecretsFixture(t)
-	_, ts := buildAPIServer(t, secretsDir, keyPath, "", "")
+	_, ts := buildAPIServer(t, secretsDir, keyPath, "")
 
 	resp := authedDelete(t, ts, "/secrets/crm/API_KEY")
 	defer resp.Body.Close()
@@ -509,7 +577,7 @@ func TestAPI_SecretsDelete_RemovesKey(t *testing.T) {
 
 func TestAPI_SecretsDelete_MissingKey_404(t *testing.T) {
 	secretsDir, keyPath := buildSecretsFixture(t)
-	_, ts := buildAPIServer(t, secretsDir, keyPath, "", "")
+	_, ts := buildAPIServer(t, secretsDir, keyPath, "")
 
 	resp := authedDelete(t, ts, "/secrets/crm/NONEXISTENT")
 	resp.Body.Close()

@@ -66,20 +66,20 @@ ownbasectl create mybase
 
 # Remote server
 ownbasectl create mybase --remote root@mybase.example.com \
-  --forgejo-domain git.yourdomain.com --caddy-email you@example.com
+  --caddy-email you@example.com
 ```
 
 What `create` does, in order:
 
 1. Provisions the target — launches a fresh Ubuntu 24.04 VM via Multipass (deleting any existing VM with the same name first), or connects over SSH to the server you provisioned.
-2. Uploads the installer (embedded in `ownbasectl`) and runs it as root: it downloads the `ownbased` daemon release matching your `ownbasectl` version, verifies its minisign signature, then runs pass zero (Podman, UFW, fail2ban, unattended-upgrades, trivy) and the Forgejo + Caddy bootstrap.
+2. Uploads the installer (embedded in `ownbasectl`) and runs it as root: it downloads the `ownbased` daemon release matching your `ownbasectl` version, verifies its minisign signature, then runs pass zero (Podman, UFW, fail2ban, unattended-upgrades, trivy) and seeds the local config bare repo with a starter `ownbase.yaml`.
 3. Reads the generated API token back and registers the Base as `mybase` in `~/.ownbase/config` — nothing to copy-paste.
 
-Omit `--forgejo-domain`/`--caddy-email` if you don't have a domain yet; Forgejo is then reached directly at `http://<host>:3000`.
+`--caddy-email` is only needed if you're putting services on public domains with automatic TLS; omit it otherwise.
 
 ```bash
 ownbasectl status mybase
-ownbasectl forgejo mybase
+ownbasectl config get mybase
 ```
 
 ### 2. Set up remote backups

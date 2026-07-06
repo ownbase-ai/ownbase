@@ -1,19 +1,20 @@
 // Package githost manages the on-Base bare repo, the post-receive hook, and
-// the working checkout the daemon reconciles from. Delivered in M4a (bare repo
-// + hook) and extended in M4b (Forgejo as a reconciled service).
+// the working checkout the daemon reconciles from.
 //
 // Layout on a running Base:
 //
 //	/opt/ownbase/
 //	  repo/        # bare git repo — the irreducible, user-owned source of truth
 //	  checkout/    # working clone the daemon reads ownbase.yaml from
+//	  repos/       # one bare repo per service (see internal/repos)
 //	  runtime/     # compiler output written by the daemon (never by hand)
 //	  logs/        # audit log and other daemon logs
 //	  daemon.pid   # daemon PID for SIGUSR1 hook signaling
 //
-// The bare repo is the canonical source of truth. Forgejo (M4b) is wired as a
-// remote of it — not the other way around. The filesystem repo, not the
-// service, is what reconcile can never depend on being up.
+// The bare repo at repo/ is the canonical source of truth: ownbasectl pushes
+// directly to it over SSH; the post-receive hook signals the daemon, which
+// pulls into checkout/ and reconciles. There is no intermediary git host —
+// the filesystem repo is what reconcile can never depend on being up.
 package githost
 
 import (

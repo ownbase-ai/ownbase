@@ -63,13 +63,10 @@ OWNBASE_REBUILD="${OWNBASE_REBUILD:-0}"
 OWNBASE_BACKUP_REPO="${OWNBASE_BACKUP_REPO:-}"
 OWNBASE_FORCE_REBUILD="${OWNBASE_FORCE_REBUILD:-0}"
 
-# Owner credentials — passed to the daemon for first-run Forgejo setup.
-# OWNBASE_OWNER_PASSWORD: Forgejo web-UI login password. If not set, a
-#   random one is generated and printed at the end of this script.
-# OWNBASE_OWNER_SSH_KEY: SSH public key to register with Forgejo so the
-#   owner can git push/pull over SSH without a password.
+# OWNBASE_OWNER_SSH_KEY: SSH public key added to the invoking user's
+#   authorized_keys so ownbasectl can open an SSH tunnel and push directly
+#   to the config/service bare repos without a password.
 #   Example: "ssh-ed25519 AAAA... you@laptop"
-OWNBASE_OWNER_PASSWORD="${OWNBASE_OWNER_PASSWORD:-}"
 OWNBASE_OWNER_SSH_KEY="${OWNBASE_OWNER_SSH_KEY:-}"
 
 # OWNBASE_DRIVEN_BY_CTL: set to 1 by `ownbasectl create`, which registers
@@ -85,10 +82,7 @@ OWNBASE_SSH_PORT="${OWNBASE_SSH_PORT:-22}"
 
 # Domain configuration — seeded into ownbase.yaml on first bootstrap so
 # Caddy configures TLS on the first reconcile without a manual edit/push.
-# FORGEJO_DOMAIN: public hostname for the Forgejo git UI (e.g. git.mysite.com).
-#   Point your DNS at this server before running the installer.
 # CADDY_EMAIL: ACME/Let's Encrypt contact email for automatic TLS.
-FORGEJO_DOMAIN="${FORGEJO_DOMAIN:-}"
 CADDY_EMAIL="${CADDY_EMAIL:-}"
 
 # OwnBase release signing public key (minisign).
@@ -300,27 +294,16 @@ run_rebuild_if_requested() {
 # by root (0600) and lives in the same directory as the token.
 write_first_run_env() {
     local first_run_file="${OWNBASE_BASE_DIR}/first-run.env"
-    local password="$1"
-    local ssh_key="$2"
-    local forgejo_domain="$3"
-    local caddy_email="$4"
+    local caddy_email="$1"
 
     # Nothing to write.
-    if [[ -z "$password" && -z "$ssh_key" && -z "$forgejo_domain" && -z "$caddy_email" ]]; then
+    if [[ -z "$caddy_email" ]]; then
         return
     fi
 
     install -o root -g root -m 0600 /dev/null "$first_run_file"
-    [[ -n "$password"        ]] && printf 'OWNER_PASSWORD=%s\n'  "$password"        >> "$first_run_file"
-    [[ -n "$ssh_key"         ]] && printf 'OWNER_SSH_KEY=%s\n'   "$ssh_key"         >> "$first_run_file"
-    [[ -n "$forgejo_domain"  ]] && printf 'FORGEJO_DOMAIN=%s\n'  "$forgejo_domain"  >> "$first_run_file"
     [[ -n "$caddy_email"     ]] && printf 'CADDY_EMAIL=%s\n'     "$caddy_email"     >> "$first_run_file"
-    info "Owner credentials saved for daemon first-run setup."
-}
-
-# generate_password produces a random alphanumeric password.
-generate_password() {
-    tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 20 || true
+    info "First-run config saved for daemon bootstrap."
 }
 
 # generate_token produces a random 32-char alphanumeric token.
@@ -336,15 +319,6 @@ write_api_token() {
     install -o root -g root -m 0600 /dev/null "$token_file"
     printf '%s' "$token" > "$token_file"
     info "API token written to $token_file"
-}
-
-# write_forgejo_admin_pass persists the Forgejo admin password so the daemon
-# can serve it via the credentials API after first-run.env is deleted.
-write_forgejo_admin_pass() {
-    local password="$1"
-    local pass_file="${OWNBASE_BASE_DIR}/forgejo-admin-pass"
-    install -o root -g root -m 0600 /dev/null "$pass_file"
-    printf '%s' "$password" > "$pass_file"
 }
 
 install_systemd_service() {
@@ -409,14 +383,6 @@ main() {
     info "All hardening and service setup is handled by the daemon."
     info ""
 
-    # Generate a Forgejo owner password if the caller did not supply one.
-    local owner_password="$OWNBASE_OWNER_PASSWORD"
-    local generated_password=0
-    if [[ -z "$owner_password" ]]; then
-        owner_password="$(generate_password)"
-        generated_password=1
-    fi
-
     local api_token
     api_token="$(generate_token)"
 
@@ -424,15 +390,14 @@ main() {
     create_ownbase_user
     install_binary
     run_rebuild_if_requested
-    write_first_run_env "$owner_password" "$OWNBASE_OWNER_SSH_KEY" "$FORGEJO_DOMAIN" "$CADDY_EMAIL"
+    write_first_run_env "$CADDY_EMAIL"
     write_api_token "$api_token"
-    write_forgejo_admin_pass "$owner_password"
     install_systemd_service
     enable_service
 
     # If the owner provided an SSH public key, also add it to the invoking
-    # user's authorized_keys so that ownbasectl can open an SSH tunnel for
-    # its remote subcommands (status, secrets, forgejo, etc.).
+    # user's authorized_keys so that ownbasectl can open an SSH tunnel and
+    # push directly to the config/service bare repos.
     if [[ -n "$OWNBASE_OWNER_SSH_KEY" ]]; then
         local invoker_home
         invoker_home="$(getent passwd "${SUDO_USER:-ubuntu}" | cut -d: -f6)"
@@ -451,15 +416,6 @@ main() {
 
     info ""
     info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    if [[ "$generated_password" -eq 1 ]]; then
-        info "  Forgejo owner credentials"
-        info "    Username : ownbase"
-        info "    Password : ${owner_password}"
-        if [[ -n "$FORGEJO_DOMAIN" ]]; then
-        info "    URL      : https://${FORGEJO_DOMAIN}"
-        fi
-        info ""
-    fi
     info "  OwnBase API token (for ownbasectl)"
     info "    Token    : ${api_token}"
     info ""

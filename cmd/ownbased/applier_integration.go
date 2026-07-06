@@ -15,11 +15,8 @@ import (
 // linger enabled (loginctl enable-linger <user>).
 func newApplier(cfg agentConfig) reconcile.Applier {
 	return &podman.Applier{
-		RuntimeDir:   filepath.Join(cfg.checkoutPath, "runtime"),
-		ForgejoURL:   cfg.forgejoURL,
-		ForgejoUser:  cfg.forgejoUser,
-		ForgejoToken: cfg.forgejoToken,
-		SecretsDir:   "/opt/ownbase/secrets",
+		RuntimeDir: filepath.Join(cfg.checkoutPath, "runtime"),
+		SecretsDir: "/opt/ownbase/secrets",
 	}
 }
 

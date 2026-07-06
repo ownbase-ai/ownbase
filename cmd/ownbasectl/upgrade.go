@@ -2,12 +2,12 @@ package main
 
 // upgrade.go implements the 'ownbasectl upgrade' subcommand.
 //
-// ownbasectl upgrade shows the state of the OwnBase core packages (Forgejo
-// and Caddy) as reported by the Base's daemon and, when --apply is passed,
-// pulls the latest pinned images and restarts the affected containers.
+// ownbasectl upgrade shows the state of the OwnBase core package (Caddy)
+// as reported by the Base's daemon and, when --apply is passed,
+// pulls the latest pinned image and restarts the container.
 //
 // Core package versions are managed by OwnBase — not by ownbase.yaml. This
-// subcommand is the only supported way to upgrade Forgejo and Caddy.
+// subcommand is the only supported way to upgrade Caddy.
 // User services are updated by editing ref: in ownbase.yaml and committing
 // (see 'ownbasectl updates' for drift).
 
@@ -27,11 +27,11 @@ func newUpgradeCmd() *cobra.Command {
 	var apply bool
 	cmd := &cobra.Command{
 		Use:   "upgrade <name>",
-		Short: "Check or apply updates to OwnBase core packages (Forgejo, Caddy)",
-		Long: `Core packages (Forgejo and Caddy) are managed by OwnBase — not by
-ownbase.yaml. Without --apply, this shows the state of the core packages
+		Short: "Check or apply updates to the OwnBase core package (Caddy)",
+		Long: `The core package (Caddy) is managed by OwnBase — not by
+ownbase.yaml. Without --apply, this shows the state of the core package
 as reported by the Base's daemon. With --apply, the daemon pulls the
-latest pinned images and restarts the core containers.
+latest pinned image and restarts the core container.
 
 User services are updated by editing ref: in ownbase.yaml and committing
 (see 'ownbasectl updates' for drift).`,
@@ -114,9 +114,9 @@ func runUpgradeApply(base string) error {
 		req.Header.Set("Authorization", "Bearer "+conn.token)
 	}
 
-	fmt.Println("About to upgrade the OwnBase core packages (Forgejo, Caddy) on the Base:")
-	fmt.Println("  the daemon pulls the latest pinned images and restarts the core")
-	fmt.Println("  containers — Forgejo and the reverse proxy restart briefly.")
+	fmt.Println("About to upgrade the OwnBase core package (Caddy) on the Base:")
+	fmt.Println("  the daemon pulls the latest pinned image and restarts the")
+	fmt.Println("  reverse proxy container briefly.")
 	fmt.Println()
 
 	client := &http.Client{Timeout: 15 * time.Minute}

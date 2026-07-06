@@ -45,10 +45,10 @@ func (PodmanVolumeResolver) Resolve(ctx context.Context, volumeName string) (str
 	return mp, nil
 }
 
-// coreVolumeNames are the Podman volumes for the two OwnBase core packages.
-// They are always included in every snapshot regardless of service declarations.
+// coreVolumeNames are the Podman volumes for the OwnBase core package
+// (Caddy). Always included in every snapshot regardless of service
+// declarations.
 var coreVolumeNames = []string{
-	"ownbase-core-forgejo-data",
 	"ownbase-core-caddy-data",
 }
 
@@ -63,9 +63,9 @@ var coreVolumeNames = []string{
 //     and include the entire mountpoint (backward compat — no config change
 //     required for existing single-volume services).
 //
-// Core volumes (ownbase-core-forgejo-data, ownbase-core-caddy-data) are always
-// included; a resolve error on a core volume is non-fatal (printed to stderr,
-// skipped) because the volume may not yet exist on a fresh install.
+// The core volume (ownbase-core-caddy-data) is always included; a resolve
+// error on it is non-fatal (printed to stderr, skipped) because the volume
+// may not yet exist on a fresh install.
 //
 // DefaultPaths (/opt/ownbase/data, /opt/ownbase/secrets, /opt/ownbase/age) are
 // always prepended. The result is deduplicated.

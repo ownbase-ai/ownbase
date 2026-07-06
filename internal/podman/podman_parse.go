@@ -133,30 +133,3 @@ func parsePublishPort(unitContent string) int {
 	return 0
 }
 
-// buildCloneURL constructs the (unauthenticated) Forgejo clone URL for
-// owner/repo. The token is intentionally NOT embedded in the URL — pass it
-// separately via git's http.extraHeader config (M14: token never in argv URL).
-//
-// Example: buildCloneURL("http://localhost:3000", "ownbase", "auth")
-// → "http://localhost:3000/ownbase/auth.git"
-func buildCloneURL(baseURL, owner, repo string) string {
-	u := strings.TrimSuffix(baseURL, "/")
-	idx := strings.Index(u, "://")
-	if idx < 0 {
-		return fmt.Sprintf("%s/%s/%s.git", u, owner, repo)
-	}
-	scheme := u[:idx+3] // e.g. "http://"
-	host := u[idx+3:]   // e.g. "localhost:3000"
-	return fmt.Sprintf("%s%s/%s/%s.git", scheme, host, owner, repo)
-}
-
-// scrubToken replaces all occurrences of token in s with "<redacted>".
-// Also removes the "user:token@" form that git may embed in error output.
-// A no-op when token is empty.
-func scrubToken(s, token string) string {
-	if token == "" {
-		return s
-	}
-	s = strings.ReplaceAll(s, token, "<redacted>")
-	return s
-}

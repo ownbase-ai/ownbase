@@ -14,15 +14,17 @@
 // # Blank-ref resolution
 //
 // When a service has no ref: in ownbase.yaml, ResolveBlankRefs resolves the
-// default-branch HEAD commit SHA via the Forgejo API and commits it back.
-// The commit triggers the existing hook -> reconcile -> build path. Once set,
-// the ref is never rewritten by the agent.
+// default-branch HEAD commit SHA from the service's local bare repo (see
+// internal/repos) and commits it back. The commit triggers the existing
+// hook -> reconcile -> build path. Once set, the ref is never rewritten by
+// the agent.
 //
 // # Drift reporting
 //
 // ComputeDrift computes, for each service with a concrete ref:, how many
 // commits behind that ref is from the default-branch HEAD, and what the
-// newest semver tag is. Results are surfaced by ownbasectl updates.
+// newest semver tag is — all read from the local bare repo. Results are
+// surfaced by ownbasectl updates.
 package update
 
 import (
@@ -34,6 +36,7 @@ import (
 	"time"
 
 	"github.com/ownbase/ownbase/internal/authz"
+	"github.com/ownbase/ownbase/internal/repos"
 	"github.com/ownbase/ownbase/internal/schema"
 )
 
@@ -51,7 +54,7 @@ type ServiceDrift struct {
 	// CommitsBehind is how many commits the pinned ref is behind the default
 	// branch HEAD. Zero means up to date on the branch dimension.
 	CommitsBehind int
-	// NewestTag is the highest semver tag available in the Forgejo repo.
+	// NewestTag is the highest semver tag available in the local bare repo.
 	// Empty when the repo has no tags.
 	NewestTag string
 	// UpToDate is true when CommitsBehind == 0 and (NewestTag == "" or
@@ -64,42 +67,45 @@ type Config struct {
 	// CheckoutPath is the path to the ownbase checkout where ownbase.yaml lives.
 	CheckoutPath string
 
-	// ForgejoURL is the base URL of the on-Base Forgejo instance.
-	ForgejoURL string
-
-	// ForgejoToken is the Forgejo API token. Required for detection and
-	// blank-ref resolution. Empty disables the update loop entirely.
-	ForgejoToken string
-
-	// ForgejoUser is the Forgejo user that owns the config repository (and is
-	// the default owner for repos without an explicit org/ prefix in source:).
-	ForgejoUser string
-
-	// RepoName is the Forgejo repository name that holds ownbase.yaml.
-	RepoName string
+	// ReposDir is the root directory containing one bare repo per service
+	// (see internal/repos). Empty means repos.DefaultReposDir
+	// (/opt/ownbase/repos). Overridable so tests can point detection at a
+	// throwaway directory instead of the real production path.
+	ReposDir string
 
 	// DryRun previews detection without making changes.
 	DryRun bool
 }
 
+// repoPath returns the local bare-repo path for a service's source name,
+// rooted at cfg.ReposDir (or repos.DefaultReposDir when unset).
+func (c Config) repoPath(name string) string {
+	root := c.ReposDir
+	if root == "" {
+		root = repos.DefaultReposDir
+	}
+	return filepath.Join(root, name)
+}
+
 // ServiceRef is the minimal info the update loop needs about one service.
 type ServiceRef struct {
-	// Source is the Forgejo repo path — either from source: directly or
-	// derived from mirror: via mirrorForgejoPath (e.g. "mirrors-postgres").
+	// Source is the local bare-repo name under /opt/ownbase/repos/ — either
+	// from source: directly or derived from mirror: via mirrorRepoName
+	// (e.g. "mirrors-postgres").
 	Source string
 	// Ref is the pinned ref (branch, tag, or SHA). Empty means blank (pending resolution).
 	Ref string
 }
 
 // ServicesFromConfig extracts service refs from a parsed OwnbaseConfig.
-// Both source: and mirror: services are included; mirror: services resolve to
-// their derived Forgejo path (mirrors-<basename>) for detection.
+// Both source: and mirror: services are included; mirror: services resolve
+// to their derived local bare-repo name (mirrors-<basename>) for detection.
 func ServicesFromConfig(cfg *schema.OwnbaseConfig) map[string]ServiceRef {
 	out := make(map[string]ServiceRef, len(cfg.Services))
 	for name, svc := range cfg.Services {
 		source := svc.Source
 		if source == "" && svc.Mirror != "" {
-			source = mirrorForgejoPath(svc.Mirror)
+			source = mirrorRepoName(svc.Mirror)
 		}
 		out[name] = ServiceRef{
 			Source: source,
@@ -109,10 +115,10 @@ func ServicesFromConfig(cfg *schema.OwnbaseConfig) map[string]ServiceRef {
 	return out
 }
 
-// mirrorForgejoPath derives the Forgejo path for a mirror URL.
+// mirrorRepoName derives the local bare-repo name for a mirror URL.
 // Returns "mirrors-<basename>" (with a dash, not a slash) — matching
-// compiler.MirrorForgejoPath and githost.MirrorForgejoRepoName.
-func mirrorForgejoPath(mirrorURL string) string {
+// compiler.MirrorRepoName.
+func mirrorRepoName(mirrorURL string) string {
 	u := strings.TrimRight(mirrorURL, "/")
 	u = strings.TrimSuffix(u, ".git")
 	if idx := strings.Index(u, ":"); idx >= 0 && !strings.Contains(u[:idx], "/") {
@@ -127,8 +133,8 @@ func mirrorForgejoPath(mirrorURL string) string {
 
 // ResolveBlankRefs checks each service for a missing ref: and, for each that
 // has none, resolves the default-branch HEAD commit SHA and commits it back to
-// ownbase.yaml via the Forgejo contents API. Each write-back is recorded in
-// the audit log as update.pin_ref (autonomous tier).
+// ownbase.yaml via the local config-repo front door (see CommitFile). Each
+// write-back is recorded in the audit log as update.pin_ref (autonomous tier).
 //
 // Non-fatal per service: an error resolving one service is logged and skipped.
 func ResolveBlankRefs(ctx context.Context, cfg Config, services map[string]ServiceRef, al authz.AuditLogger) {
@@ -168,7 +174,7 @@ func ResolveBlankRefs(ctx context.Context, cfg Config, services map[string]Servi
 		}
 
 		commitMsg := fmt.Sprintf("chore(pin): auto-pin %s to %s\n\nref: was blank; resolved to default-branch HEAD", name, shortRef(sha))
-		if err := forgejoCommitFile(ctx, cfg, "ownbase.yaml", updated, commitMsg); err != nil {
+		if err := CommitFile(ctx, cfg, "ownbase.yaml", updated, commitMsg); err != nil {
 			fmt.Fprintf(os.Stderr, "update: commit blank-ref resolution for %s: %v\n", name, err)
 			continue
 		}
@@ -190,9 +196,6 @@ func ComputeDrift(ctx context.Context, cfg Config, services map[string]ServiceRe
 
 	for name, svc := range services {
 		if svc.Source == "" || strings.TrimSpace(svc.Ref) == "" {
-			continue
-		}
-		if cfg.ForgejoToken == "" {
 			continue
 		}
 
@@ -230,7 +233,7 @@ func ComputeDrift(ctx context.Context, cfg Config, services map[string]ServiceRe
 	return result
 }
 
-// MirrorForgejoPathForTest exposes mirrorForgejoPath for Tier-1 regression tests.
-func MirrorForgejoPathForTest(mirrorURL string) string {
-	return mirrorForgejoPath(mirrorURL)
+// MirrorRepoNameForTest exposes mirrorRepoName for Tier-1 regression tests.
+func MirrorRepoNameForTest(mirrorURL string) string {
+	return mirrorRepoName(mirrorURL)
 }

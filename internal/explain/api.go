@@ -16,16 +16,9 @@ import (
 )
 
 const (
-	// DefaultAdminPassPath is the canonical location of the Forgejo admin
-	// password on the Base (written by install.sh, mode 0600).
-	DefaultAdminPassPath = "/opt/ownbase/forgejo-admin-pass"
-
 	// DefaultAPITokenPath is the canonical location of the agent API Bearer
 	// token on the Base (written by install.sh, mode 0600).
 	DefaultAPITokenPath = "/opt/ownbase/api-token"
-
-	// ForgejoAdminUser is the default Forgejo admin username.
-	ForgejoAdminUser = "ownbase"
 )
 
 // APIConfig holds the paths and references the API endpoints need.
@@ -37,9 +30,6 @@ type APIConfig struct {
 	// AgeKeyPath is the path to the age private key (default:
 	// secrets.DefaultKeyPath). Required for secrets endpoints.
 	AgeKeyPath string
-	// AdminPassPath is the path to the Forgejo admin password file (default:
-	// DefaultAdminPassPath). Required for /credentials/forgejo.
-	AdminPassPath string
 	// APITokenPath is the path to the Bearer token file (default:
 	// DefaultAPITokenPath). Required for /token/reset.
 	APITokenPath string
@@ -51,11 +41,23 @@ type APIConfig struct {
 	// the daemon is still initializing and the scan cannot be started yet.
 	// Called by /security/fix (after upgrade) and /security/scan (on-demand).
 	TriggerScan func() bool
-	// UpgradeCore, when non-nil, pulls the latest pinned images for all core
-	// packages (Forgejo, Caddy) and restarts them. Progress lines are written
+	// UpgradeCore, when non-nil, pulls the latest pinned image for the core
+	// package (Caddy) and restarts it. Progress lines are written
 	// to w so the HTTP handler can stream them to the client. A non-nil error
 	// means at least one pull failed; partial progress may have been written.
 	UpgradeCore func(w io.Writer) error
+	// GetConfig, when non-nil, returns the current contents of ownbase.yaml
+	// from the checkout. Called by GET /config — the read side of
+	// `ownbasectl config get`.
+	GetConfig func() (string, error)
+	// SetConfig, when non-nil, validates newContent and commits it through
+	// the front-door commit path (see update.CommitFile) — exactly like a
+	// user's own git push — then wakes the reconcile loop. Called by
+	// POST /config, the write side of `ownbasectl config set` and
+	// `ownbasectl service add/remove/update` (which read-modify-write the
+	// full document through this same endpoint; there is no partial-update
+	// API to keep the front door singular).
+	SetConfig func(newContent, commitMsg string) error
 	// ConfigureBackup, when non-nil, commits core.backup.repo (and optionally
 	// interval/verify_interval) to ownbase.yaml through the front-door commit
 	// path. Called by POST /backup/configure — the API `ownbasectl base
@@ -65,7 +67,7 @@ type APIConfig struct {
 	// the resulting status. Called by POST /backup/run.
 	RunBackup func() (BackupRunStatus, error)
 	// CoreStatus, when non-nil, reports the current state of the OwnBase core
-	// packages (Forgejo, Caddy): pinned image + digest and whether the
+	// package (Caddy): pinned image + digest and whether the
 	// container is running on the Base. Called by GET /core/status — the
 	// endpoint behind `ownbasectl upgrade` (check-only mode).
 	CoreStatus func() []CorePackageStatus
@@ -74,9 +76,9 @@ type APIConfig struct {
 // CorePackageStatus is the JSON-friendly state of one core package as
 // returned by GET /core/status.
 type CorePackageStatus struct {
-	Name      string `json:"name"`      // e.g. "Forgejo"
-	Container string `json:"container"` // e.g. "ownbase-core-forgejo"
-	Image     string `json:"image"`     // e.g. "codeberg.org/forgejo/forgejo:10"
+	Name      string `json:"name"`      // e.g. "Caddy"
+	Container string `json:"container"` // e.g. "ownbase-core-caddy"
+	Image     string `json:"image"`     // e.g. "docker.io/library/caddy:2-alpine"
 	Digest    string `json:"digest,omitempty"`
 	Running   bool   `json:"running"`
 }
@@ -109,13 +111,6 @@ func (c *APIConfig) effectiveAgeKeyPath() string {
 	return secrets.DefaultKeyPath
 }
 
-func (c *APIConfig) effectiveAdminPassPath() string {
-	if c.AdminPassPath != "" {
-		return c.AdminPassPath
-	}
-	return DefaultAdminPassPath
-}
-
 func (c *APIConfig) effectiveAPITokenPath() string {
 	if c.APITokenPath != "" {
 		return c.APITokenPath
@@ -127,26 +122,6 @@ func (c *APIConfig) effectiveAPITokenPath() string {
 // Bearer token from the StatusServer (same token as /status). The caller must
 // mount the status API first so the token is set.
 func MountAPI(mux *http.ServeMux, cfg APIConfig) {
-	// /credentials/forgejo — returns Forgejo admin username + password.
-	mux.HandleFunc("/credentials/forgejo", func(w http.ResponseWriter, r *http.Request) {
-		if !authRequired(w, r, cfg.StatusSrv) {
-			return
-		}
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		pass, err := os.ReadFile(cfg.effectiveAdminPassPath())
-		if err != nil {
-			http.Error(w, "forgejo credentials not available", http.StatusNotFound)
-			return
-		}
-		writeJSON(w, map[string]string{
-			"username": ForgejoAdminUser,
-			"password": strings.TrimSpace(string(pass)),
-		})
-	})
-
 	// /secrets[/{service}[/{key}]] — list all services, list keys, or operate on a key.
 	// Note: ServeMux redirects GET /secrets → GET /secrets/ so the empty-service
 	// case (list all) is handled here rather than in a separate /secrets handler.
@@ -180,6 +155,60 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 			handleSecretsSet(w, r, cfg, service)
 		case r.Method == http.MethodDelete && key != "":
 			handleSecretsDelete(w, r, cfg, service, key)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	// /config — read or atomically replace ownbase.yaml. This is the single
+	// front door for every programmatic config mutation: `ownbasectl config
+	// set` writes here directly, and `ownbasectl service add/remove/update`
+	// read the current document (GET), edit it locally, and write the whole
+	// document back (POST) — no partial-update surface to keep in sync with
+	// git push semantics.
+	mux.HandleFunc("/config", func(w http.ResponseWriter, r *http.Request) {
+		if !authRequired(w, r, cfg.StatusSrv) {
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			if cfg.GetConfig == nil {
+				http.Error(w, "config read not available", http.StatusNotImplemented)
+				return
+			}
+			content, err := cfg.GetConfig()
+			if err != nil {
+				http.Error(w, "read config: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/x-yaml; charset=utf-8")
+			_, _ = io.WriteString(w, content)
+		case http.MethodPost, http.MethodPut:
+			if cfg.SetConfig == nil {
+				http.Error(w, "config write not available", http.StatusNotImplemented)
+				return
+			}
+			var body struct {
+				Content string `json:"content"`
+				Message string `json:"message"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			if strings.TrimSpace(body.Content) == "" {
+				http.Error(w, "content is required", http.StatusBadRequest)
+				return
+			}
+			msg := body.Message
+			if msg == "" {
+				msg = "chore(config): update ownbase.yaml via ownbasectl"
+			}
+			if err := cfg.SetConfig(body.Content, msg); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, map[string]string{"status": "applied"})
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
@@ -303,7 +332,7 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 	})
 
 	// /core/status — report the pinned image/digest and running state of the
-	// core packages (Forgejo, Caddy). Read-only companion to POST /upgrade,
+	// core package (Caddy). Read-only companion to POST /upgrade,
 	// used by `ownbasectl upgrade` without --apply.
 	mux.HandleFunc("/core/status", func(w http.ResponseWriter, r *http.Request) {
 		if !authRequired(w, r, cfg.StatusSrv) {

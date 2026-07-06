@@ -66,9 +66,9 @@ func acquireBackupSlot(ctx context.Context) (release func(), err error) {
 // runBackupScheduler runs for the life of the daemon. It is always started;
 // each poll is a no-op when core.backup.repo is unset.
 //
-// reconcileSig is the same channel the Forgejo push webhook and
-// /backup/configure write to, wired to trigger reconcileOnce on the main
-// select loop. This scheduler signals it after a backup or verify-restore
+// reconcileSig is the same channel /backup/configure and /backup/run write
+// to, wired to trigger reconcileOnce on the main select loop. This scheduler
+// signals it after a backup or verify-restore
 // drill completes so the cached /status payload (which only refreshes on
 // reconcile — see explain.Gather in reconcileOnce) picks up the new
 // LastBackup/LastVerified/Restorable values within seconds instead of
@@ -148,8 +148,7 @@ func runBackupScheduler(ctx context.Context, cfg agentConfig, auditLog authz.Aud
 	}
 }
 
-// signalReconcile does a non-blocking send on sig, matching the pattern
-// already used by the Forgejo push webhook handler: a full channel means a
+// signalReconcile does a non-blocking send on sig: a full channel means a
 // reconcile is already queued, so a second signal would be redundant.
 func signalReconcile(sig chan<- struct{}) {
 	select {

@@ -1,6 +1,6 @@
 # `ownbase.yaml` reference
 
-> The single declarative config file of a Base. It lives at the root of the Base's config repo (on the Base's own Forgejo); committing a change triggers `git push` → `post-receive` hook → reconcile.
+> The single declarative config file of a Base. It lives at the root of the Base's config repo — a local, remote-less bare git repo at `/opt/ownbase/repo`. Pushing a change (via `ownbasectl config set`/`service add|update|remove`, or a direct `git push` over SSH) triggers a `post-receive` hook → reconcile.
 
 ## Full schema
 
@@ -8,8 +8,6 @@
 schema_version: v1 # required; only "v1" is understood
 
 core:
-  forgejo:
-    domain: git.yourdomain.com # public domain for the Forgejo UI (optional)
   caddy:
     email: you@example.com # ACME contact email for automatic TLS
   backup:
@@ -19,13 +17,13 @@ core:
 
 services:
   <name>:
-    # Source-built service (built from a local Forgejo repo)
-    source: <forgejo-repo-path> # e.g. "services/auth" or "myorg/crm"
+    # Source-built service (built from a local bare repo the user pushes into)
+    source: <local-repo-path> # e.g. "services/auth" or "myorg/crm"
     ref: <branch|tag|sha> # git ref to build from; blank = auto-pin to latest commit
     dockerfile: Dockerfile # optional; defaults to "Dockerfile"
     context: "" # optional build context subdirectory
 
-    # OR: mirror-built (daemon creates + maintains the Forgejo pull-mirror)
+    # OR: mirror-built (daemon clones + maintains a local bare mirror)
     mirror: <external-git-url> # e.g. "https://github.com/docker-library/postgres"
 
     # Runtime
@@ -65,24 +63,24 @@ services:
 
 ## The no-registry rule
 
-`image:` is intentionally absent from user services. Every user service is **built locally on the Base** from a Forgejo repo at the pinned `ref:` — no pre-built application images, ever. Core packages (Forgejo, Caddy) are the only exception and are managed by `ownbasectl upgrade`, not by `ownbase.yaml`.
+`image:` is intentionally absent from user services. Every user service is **built locally on the Base** from a local bare repo at the pinned `ref:` — no pre-built application images, ever. The core package (Caddy) is the only exception and is managed by `ownbasectl upgrade`, not by `ownbase.yaml`.
 
 ## `source:` paths — how they work
 
-`source:` is always a **Forgejo repo path**, never a URL:
+`source:` is always a **local bare repo path** under `/opt/ownbase/repos/`, never a URL:
 
 ```yaml
-source: services/auth    # → Forgejo repo owned by the "services" org
-source: myorg/crm        # → Forgejo repo owned by the "myorg" org
+source: services/auth    # → /opt/ownbase/repos/services/auth
+source: myorg/crm        # → /opt/ownbase/repos/myorg/crm
 ```
 
-The org name is an arbitrary Forgejo org — there is no reserved "apps" vs. "services" split; every entry under `services:` in `ownbase.yaml` is declared and built the same way regardless of which org its repo lives in.
+There is no reserved "apps" vs. "services" split, and no notion of an org on the Base itself — the path is just a directory nesting under `/opt/ownbase/repos/`. Every entry under `services:` in `ownbase.yaml` is declared and built the same way regardless of the path.
 
-The daemon calls `<forgejo-url>/api/v1/repos/<org>/<repo>` to clone the repo at the pinned `ref:`. The org is the path's first component. To track a GitHub repo, declare it with `mirror:` — the daemon mirrors it into Forgejo and builds from there. Never put a GitHub URL directly in `ownbase.yaml`.
+The daemon (`internal/repos`) creates an empty bare repo at that path the first time the service is declared; the user (or an agent) then pushes real content into it directly over SSH, exactly like the config repo — `git push ssh://<user>@<base>/opt/ownbase/repos/services/auth <branch>`. To track a GitHub repo instead, declare it with `mirror:` — the daemon clones it into a local bare mirror and builds from there. Never put a GitHub URL directly in `source:`.
 
 ## Updates: the `ref:` model
 
-Updates are user-driven — edit `ref:` and commit:
+Updates are user-driven — edit `ref:` and commit (by hand, or with `ownbasectl service update <base> <name> --ref <new-ref>`):
 
 ```yaml
 services:
@@ -90,7 +88,7 @@ services:
     ref: v1.0.0 # edit this to v1.1.0 and commit to update
 ```
 
-Committing the change triggers the normal reconcile: the service is rebuilt from the repo at the new `ref:` and restarted health-gated. No silent mutations, no daemon-opened PRs.
+Committing the change triggers the normal reconcile: if the new `ref:` isn't already present in the service's local bare repo, the daemon fetches it from the external URL (`mirror:` services only — `source:` services are pushed into directly, so the ref is already there), then rebuilds and restarts the service health-gated. No silent mutations, no daemon-opened PRs.
 
 - **Blank `ref:` auto-pin.** A service with no `ref:` gets the default-branch HEAD commit SHA resolved and committed back to `ownbase.yaml` automatically — a concrete, reproducible pin without looking up the SHA by hand. Deleting `ref:` is therefore "give me the latest, then pin it".
 - **Drift visibility.** `ownbasectl updates` shows commits-behind and the newest semver tag for every service (see [cli.md](cli.md)).
@@ -98,13 +96,13 @@ Committing the change triggers the normal reconcile: the service is rebuilt from
 
 ## What the daemon does on every push
 
-1. Pulls the latest commit from the bare repo into the checkout
+1. Pulls the latest commit from the config bare repo into the checkout
 2. Reads `ownbase.yaml` and compiles the desired state (Quadlet units, Caddyfile)
-3. Ensures Forgejo pull-mirrors exist for all `mirror:` services
+3. Ensures a local bare repo exists for every service, cloning `mirror:` services on first sight and fetching any pinned `ref:` not yet present locally (`internal/repos`)
 4. Checks for drift (compiler output vs. `runtime/` on disk)
 5. Queries what Podman/systemd is actually running
 6. Diffs desired vs. actual → produces a `PlannedAction` list
-7. For source-built services: clones the Forgejo repo at `ref:` and runs `podman build`
+7. For each service: clones its local bare repo at `ref:` and runs `podman build`
 8. Applies the plan — each action is checkpoint-authorized and audit-logged
 9. Updates the `/status` API with the new state
 
@@ -121,9 +119,15 @@ The age private key (`/opt/ownbase/age/key.age`) never leaves the Base; plaintex
 
 ## Integrating a new service (the black-box contract)
 
-Any service can be integrated by following [integration-contract.md](integration-contract.md). The short version:
+Any service can be integrated by following [integration-contract.md](integration-contract.md). The short version, done non-interactively with `ownbasectl`:
 
-1. **Mirror the repo** — add a `mirror:` entry (the daemon creates the Forgejo pull-mirror automatically), or use `source:` for a repo that already lives on the Base's Forgejo
+```bash
+ownbasectl service add mybase auth --mirror https://github.com/org/auth --ref main --port 8080 --domain auth.example.com
+```
+
+Or the same steps by hand:
+
+1. **Add the repo** — add a `mirror:` entry (the daemon clones a local bare mirror automatically), or use `source:` and push real content into the empty bare repo the daemon creates for you
 2. **Declare it** — `ref:` (or omit to auto-pin), `port:`, `data_path:` (or `volumes:`), `requires:`
 3. **Ensure a Dockerfile** in the repo root (or set `dockerfile:`/`context:` for non-standard layouts)
 4. **Run the Service Constitution audit** — [foundation/service-constitution.md](foundation/service-constitution.md)

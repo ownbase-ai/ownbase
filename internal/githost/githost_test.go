@@ -244,21 +244,3 @@ func TestWritePIDFile_WritesCurrentPID(t *testing.T) {
 		t.Errorf("unexpected PID content: %q", pid)
 	}
 }
-
-// TestDefaultForgejoRepoName_UsedByBootstrapAndAgent ensures that the constant
-// used by BootstrapCore to create the Forgejo repo matches the value the agent
-// uses as the default for its --repo-name flag. A mismatch causes the agent to
-// look for a repo that doesn't exist (sync fails with "repository not found").
-//
-// If this test fails, check:
-//   - githost.DefaultForgejoRepoName
-//   - the --repo-name flag default in cmd/ownbased/main.go
-func TestDefaultForgejoRepoName_MatchesAgentFlagDefault(t *testing.T) {
-	// The canonical name is the constant. Document it here so a rename is
-	// intentional and forces this test to be updated.
-	const wantName = "ownbase"
-	if githost.DefaultForgejoRepoName != wantName {
-		t.Errorf("DefaultForgejoRepoName = %q, want %q — update this test if the name was intentionally changed",
-			githost.DefaultForgejoRepoName, wantName)
-	}
-}

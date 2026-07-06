@@ -15,7 +15,7 @@ multipass exec <name> -- journalctl -u ownbased -f # local VM
 
 ### The installer fails partway through (pass zero)
 
-Host hardening (Podman, UFW, fail2ban, unattended-upgrades, trivy) and the Forgejo/Caddy bootstrap are the daemon's **reconcile pass zero** — they run after the install script finishes, and they are **resumable**. If the daemon hits a transient failure (apt mirror down, network blip), it retries on its normal loop; watch `journalctl -u ownbased -f` and give it a few minutes before intervening.
+Host hardening (Podman, UFW, fail2ban, unattended-upgrades, trivy) and the Caddy bootstrap are the daemon's **reconcile pass zero** — they run after the install script finishes, and they are **resumable**. If the daemon hits a transient failure (apt mirror down, network blip), it retries on its normal loop; watch `journalctl -u ownbased -f` and give it a few minutes before intervening.
 
 If `create` itself failed (the script, not the daemon):
 
@@ -66,16 +66,6 @@ ownbasectl adopt <name> --host <host> --token <token>
 
 It never left the Base: `sudo cat /opt/ownbase/api-token` (root, 0600). Re-register with `ownbasectl adopt` as above. To rotate it, `POST /token/reset` on the daemon API ([api.md](api.md)) — the daemon hot-swaps it, no restart.
 
-### Lost Forgejo admin password
-
-Also persisted on the Base, and served by the daemon:
-
-```bash
-ownbasectl forgejo <name>          # prints username + password
-# or directly on the Base:
-sudo cat /opt/ownbase/forgejo-admin-pass
-```
-
 ---
 
 ## Multipass (local VM) issues
@@ -98,7 +88,7 @@ sudo cat /opt/ownbase/forgejo-admin-pass
 
 ## Upgrading the daemon itself
 
-`ownbasectl upgrade` updates the **core packages** (Forgejo, Caddy) — not `ownbased`. To update the daemon binary on a Base, install the new signed release and restart the service:
+`ownbasectl upgrade` updates the **core package** (Caddy) — not `ownbased`. To update the daemon binary on a Base, install the new signed release and restart the service:
 
 ```bash
 ssh root@<base-host>

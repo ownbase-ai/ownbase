@@ -294,7 +294,7 @@ func TestCompile_SecretBindingsDeterministic(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Mirror services (source built from external git URL via Forgejo pull-mirror)
+// Mirror services (source built from external git URL via local bare mirror)
 // ---------------------------------------------------------------------------
 
 func testInputMirror(t *testing.T) compiler.Input {
@@ -307,7 +307,8 @@ func testInputMirror(t *testing.T) compiler.Input {
 }
 
 // TestCompile_MirrorService_BuildSourceFromURL verifies that a mirror: service
-// resolves to mirrors-<basename> as the Forgejo repo path (flat name under owner) in the Quadlet unit.
+// resolves to mirrors-<basename> as the local bare-repo name (flat name, no
+// nested directories) in the Quadlet unit.
 func TestCompile_MirrorService_BuildSourceFromURL(t *testing.T) {
 	out := compiler.Compile(testInputMirror(t))
 
@@ -392,8 +393,8 @@ func TestCompile_MirrorService_Deterministic(t *testing.T) {
 	}
 }
 
-// TestCompile_MirrorForgejoPath verifies the URL → Forgejo path derivation.
-func TestCompile_MirrorForgejoPath(t *testing.T) {
+// TestCompile_MirrorRepoName verifies the URL → local bare-repo name derivation.
+func TestCompile_MirrorRepoName(t *testing.T) {
 	cases := []struct {
 		url  string
 		want string
@@ -406,9 +407,9 @@ func TestCompile_MirrorForgejoPath(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.url, func(t *testing.T) {
-			got := compiler.MirrorForgejoPath(tc.url)
+			got := compiler.MirrorRepoName(tc.url)
 			if got != tc.want {
-				t.Errorf("MirrorForgejoPath(%q) = %q, want %q", tc.url, got, tc.want)
+				t.Errorf("MirrorRepoName(%q) = %q, want %q", tc.url, got, tc.want)
 			}
 		})
 	}

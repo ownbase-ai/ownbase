@@ -34,7 +34,7 @@ brew install --cask ownbase-ai/tap/ownbasectl
 # 2. Create a Base: give it a name; local VM by default, or a fresh Ubuntu server over SSH
 ownbasectl create mybase
 #    ...or: ownbasectl create mybase --remote root@mybase.example.com \
-#             --forgejo-domain git.yourdomain.com --caddy-email you@example.com
+#             --caddy-email you@example.com
 
 # 3. Turn on remote backups (runs the first snapshot immediately)
 ownbasectl backup setup mybase --repo s3:s3.amazonaws.com/my-bucket/ownbase \
@@ -48,9 +48,9 @@ ownbasectl checkup mybase
 ownbasectl restore mybase --repo s3:... --password <the-restic-password>
 ```
 
-`ownbasectl create` provisions the machine, hardens it (Podman, UFW, fail2ban, auto-updates), bootstraps **Forgejo** + **Caddy**, verifies the signed daemon binary, and registers the Base: one command, nothing to copy-paste.
+`ownbasectl create` provisions the machine, hardens it (Podman, UFW, fail2ban, auto-updates), bootstraps **Caddy** and a local config repo, verifies the signed daemon binary, and registers the Base: one command, nothing to copy-paste.
 
-Then declare your services: log into Forgejo (`ownbasectl forgejo mybase`), clone the config repo, add services to `ownbase.yaml`, and push. The daemon builds them from source and brings them up health-gated. See [INSTALL.md](INSTALL.md) for the full walkthrough.
+Then declare your services: `ownbasectl service add mybase <name> --mirror <url> --ref main --port 3000`, or pull the config repo (`ownbasectl config get mybase`), add services to `ownbase.yaml` by hand, and push. The daemon builds them from source and brings them up health-gated. See [INSTALL.md](INSTALL.md) for the full walkthrough.
 
 ---
 
@@ -84,8 +84,8 @@ The OwnBase source: the on-Base daemon and the CLI.
 
 ## How a Base works
 
-- **One config file.** `ownbase.yaml`, in a git repo on the Base's own Forgejo, declares every service. Committing a change is the only mutation path: push → hook → reconcile → build → health-gated start. See [docs/ownbase-yaml.md](docs/ownbase-yaml.md).
-- **No registries.** User services build locally from source at a pinned `ref:`. Core packages (Forgejo, Caddy) are managed by `ownbasectl upgrade`.
+- **One config file.** `ownbase.yaml`, in a local, remote-less git repo on the Base itself, declares every service. Committing a change is the only mutation path: push (via `ownbasectl config`/`service`, or plain `git push` over SSH) → hook → reconcile → build → health-gated start. See [docs/ownbase-yaml.md](docs/ownbase-yaml.md).
+- **No registries.** User services build locally from source at a pinned `ref:`. The core package (Caddy) is managed by `ownbasectl upgrade`.
 - **Secrets stay home.** Per-service secrets are age-encrypted on the Base; the private key never leaves it. Managed with `ownbasectl secrets`, injected as env vars at container start.
 - **Backups are verified.** Regular restic snapshots plus a periodic _verified restore drill_: `ownbasectl checkup` reports whether the Base is provably restorable, not just "backed up".
 - **Everything is explained.** The config repo's seeded README tells any human or AI how to operate the Base safely; `ownbasectl status`/`checkup` (and the `/status` JSON API — [docs/api.md](docs/api.md)) report what is deployed, what is healthy, and what the security posture is, always current.

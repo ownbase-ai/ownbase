@@ -124,7 +124,7 @@ func GatherImageVulns(ctx context.Context, targets []ContainerTarget) []ImageVul
 
 // RunningContainers returns a deduplicated list of images from all currently
 // running rootful Podman containers. Called by the daemon before each vuln
-// scan so core services (Forgejo, Caddy) and user-defined services are all
+// scan so core services (Caddy) and user-defined services are all
 // covered — not just services declared in ownbase.yaml.
 //
 // Returns nil when podman is absent or no containers are running.

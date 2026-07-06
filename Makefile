@@ -53,10 +53,9 @@ test-integration:
 # Go-instrumented replacement for the old testing/smoke-install.sh: it
 # provisions (or re-provisions) the VM, builds ownbased from this checkout,
 # runs the installer, and registers the resulting profile — all in one step.
-# Override: make smoke-test VM_NAME=my-vm FORGEJO_DOMAIN=git.example.com
+# Override: make smoke-test VM_NAME=my-vm CADDY_EMAIL=you@example.com
 smoke-test:
 	go run ./cmd/ownbasectl create $(VM_NAME) \
-	  $(if $(FORGEJO_DOMAIN),--forgejo-domain $(FORGEJO_DOMAIN)) \
 	  $(if $(CADDY_EMAIL),--caddy-email $(CADDY_EMAIL))
 
 # Kept as an alias for smoke-test: `create` already registers the profile as

@@ -17,7 +17,7 @@ go vet ./...
 golangci-lint run ./...
 ```
 
-Tier-2 (integration) tests require an Ubuntu VM (Multipass) and exercise real Podman/systemd/Forgejo behavior that can't be faked on macOS:
+Tier-2 (integration) tests require an Ubuntu VM (Multipass) and exercise real Podman/systemd behavior that can't be faked on macOS:
 
 1. Confirm the VM is running: `multipass list`
 2. Sync changed files: `make sync-vm`
@@ -39,7 +39,7 @@ All changes must keep `go test ./...` and `golangci-lint run ./...` green. Break
 
 ## Verifying a fresh install end-to-end
 
-This is for verifying the installer itself still works correctly after changing `install.sh`, the daemon's bootstrap path, or `internal/vmhost`. It is separate from the automated tiers above because the fresh-install path (pass zero → Quadlet bootstrap → Forgejo → reconcile loop) cannot be fully exercised by unit or integration tests; it requires a real installer run on a clean machine.
+This is for verifying the installer itself still works correctly after changing `install.sh`, the daemon's bootstrap path, or `internal/vmhost`. It is separate from the automated tiers above because the fresh-install path (pass zero → Quadlet bootstrap → reconcile loop) cannot be fully exercised by unit or integration tests; it requires a real installer run on a clean machine.
 
 ### Run it
 
@@ -63,7 +63,6 @@ sudo journalctl -u ownbased -f
 pass zero complete — host is hardened
 bootstrap core: ...                      ← Quadlet units written, SIGHUP fired
 starting (mode=integration ...)          ← real Podman+Quadlet mode
-using Forgejo token from /opt/ownbase/forgejo-token
 already converged — no changes needed
 update detection enabled ...
 ```
@@ -74,14 +73,11 @@ update detection enabled ...
 # Get the VM IP
 multipass info ownbase-fresh | grep IPv4
 
-# From your Mac — Forgejo is at http://<VM-IP>:3000
-curl -s http://<VM-IP>:3000/api/healthz | python3 -m json.tool
-
-# Or open a VM shell and check from inside
-multipass exec ownbase-fresh -- curl -s http://localhost:3000/api/healthz | python3 -m json.tool
-multipass exec ownbase-fresh -- sudo podman ps                  # both forgejo and caddy running
-multipass exec ownbase-fresh -- sudo systemctl list-units 'ownbase-*'   # 4 units loaded
-multipass exec ownbase-fresh -- sudo ls /etc/containers/systemd/        # Quadlet unit files
+# Open a VM shell and check from inside
+multipass exec ownbase-fresh -- sudo podman ps                         # caddy running
+multipass exec ownbase-fresh -- sudo systemctl list-units 'ownbase-*'  # units loaded
+multipass exec ownbase-fresh -- sudo ls /etc/containers/systemd/       # Quadlet unit files
+multipass exec ownbase-fresh -- sudo ls /opt/ownbase/repo /opt/ownbase/repos  # config + service bare repos
 
 # Verify trivy was installed by PassZero
 multipass exec ownbase-fresh -- trivy --version
@@ -92,7 +88,7 @@ multipass exec ownbase-fresh -- trivy --version
 ```bash
 go run ./cmd/ownbasectl status ownbase-fresh
 go run ./cmd/ownbasectl checkup ownbase-fresh
-go run ./cmd/ownbasectl forgejo ownbase-fresh
+go run ./cmd/ownbasectl config get ownbase-fresh
 ```
 
 ## Agent-level bootstrap tests
