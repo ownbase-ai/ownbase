@@ -245,6 +245,28 @@ create_ownbase_user() {
     info "User $OWNBASE_USER created"
 }
 
+# grant_admin_group_access adds OWNBASE_ADMIN_USER as a supplementary member
+# of OWNBASE_GROUP. useradd --create-home leaves OWNBASE_BASE_DIR
+# (/opt/ownbase) at mode 0750 owned by ownbase:ownbase — without group
+# membership, the admin user cannot even traverse into it, so chowning a
+# bare repo under it (githost.SetRepoOwner / repos.EnsureRepo) is not
+# enough on its own for a direct git push over SSH to work. Sensitive
+# subpaths (age/, api-token, logs/) stay root-owned with their own tighter
+# modes regardless of this — this only grants traversal of the parent.
+# A no-op for a root admin user, which already bypasses all permission
+# checks. Idempotent and safe to re-run.
+grant_admin_group_access() {
+    if [[ "$OWNBASE_ADMIN_USER" == "root" ]]; then
+        return
+    fi
+    if ! id "$OWNBASE_ADMIN_USER" &>/dev/null; then
+        info "WARNING: admin user $OWNBASE_ADMIN_USER does not exist locally; skipping group grant"
+        return
+    fi
+    usermod -aG "$OWNBASE_GROUP" "$OWNBASE_ADMIN_USER"
+    info "Added $OWNBASE_ADMIN_USER to the $OWNBASE_GROUP group (for repo access under $OWNBASE_BASE_DIR)"
+}
+
 # ---------------------------------------------------------------------------
 # Step 4: Install binary
 # ---------------------------------------------------------------------------
@@ -412,6 +434,7 @@ main() {
 
     download_agent
     create_ownbase_user
+    grant_admin_group_access
     install_binary
     run_rebuild_if_requested
     write_first_run_env "$CADDY_EMAIL"

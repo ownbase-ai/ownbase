@@ -221,6 +221,13 @@ func run(cfg agentConfig) error {
 
 	// Bootstrap: ensure the bare repo and checkout exist.
 	if !cfg.skipBootstrap {
+		// Must run before any git operation touches a repo that may already
+		// be chowned to the admin user (from a prior start) — otherwise the
+		// daemon's own git commands (seed, pull, fetch) fail with git's
+		// "dubious ownership" refusal. See githost.TrustAllRepos.
+		if err := githost.TrustAllRepos(); err != nil {
+			fmt.Fprintf(os.Stderr, "ownbased: trust local repos (non-fatal): %v\n", err)
+		}
 		if err := githost.Bootstrap(cfg.repoPath, cfg.checkoutPath); err != nil {
 			return fmt.Errorf("bootstrap: %w", err)
 		}
@@ -235,6 +242,11 @@ func run(cfg agentConfig) error {
 		if adminUser := install.ReadAdminUser(install.AdminUserPath); adminUser != "" {
 			if err := githost.SetRepoOwner(cfg.repoPath, adminUser); err != nil {
 				fmt.Fprintf(os.Stderr, "ownbased: set repo owner (non-fatal): %v\n", err)
+			}
+			// Let the post-receive hook (running as adminUser) wake this
+			// (root) process after a direct push — see githost.HookScript.
+			if err := install.EnsureNotifySudoers(adminUser); err != nil {
+				fmt.Fprintf(os.Stderr, "ownbased: ensure notify sudoers (non-fatal): %v\n", err)
 			}
 		}
 		// Seed a template ownbase.yaml (and README) on a brand-new config
