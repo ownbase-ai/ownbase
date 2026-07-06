@@ -128,6 +128,7 @@
 | Hostname refresh | `ownbasectl dev-tls sync` (new service `domain:`) and `ownbasectl vm start/restart` (VM IP changed) both call the same `/etc/hosts` writer (`cmd/ownbasectl/devtls.go`) | Two distinct triggers, one code path |
 | `ownbasectl vm` | New command group (`start`/`stop`/`restart`/`list`/`ip`) owning the Multipass lifecycle for local VMs | Multipass reassigns the VM's IP via DHCP on every `start`; this is the single point that re-detects it, updates the profile, and refreshes `/etc/hosts` — replacing a manual `adopt --host <new-ip>` |
 | mkcert missing | `create` prints a warning + install hint and falls back to plain HTTP for that run; never a hard failure | `make smoke-test`/CI have no mkcert installed and must keep working unmodified |
+| `restore` and dev-TLS | `restore` never defaults to enabling dev-TLS itself — the restored `ownbase.yaml`'s own domain/TLS settings are authoritative. If that restored config says `dev_tls: true`, `restore` detects it after the install/rebuild completes and regenerates + stages a fresh certificate (derived from `core.forgejo.domain`), since certificates are never part of a restic snapshot | A restored Base's backup is the source of truth for what it should look like; blindly re-applying `create`'s local-VM default would silently override a real ACME domain the backup actually used |
 
 ## Vulnerability scanning
 

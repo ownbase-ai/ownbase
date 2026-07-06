@@ -117,6 +117,8 @@ Takes all the provisioning flags of `create`, plus the credential flags of `back
 | `--repo` | restic repository URL to restore from (required; same flag as `backup setup`) |
 | `--force` | restore even if the latest snapshot was never verified restorable |
 
+Unlike `create`, a local VM `restore` never defaults to a *fresh* dev-TLS domain — `--no-dev-tls`/`--dev-domain` don't apply here (they're hidden from `restore --help`). Instead, the restored `ownbase.yaml`'s own `core.caddy.dev_tls`/domain settings are authoritative, since they reflect whatever the Base actually had when it was backed up. If the restored config says `dev_tls: true`, `restore` automatically regenerates and stages a matching mkcert certificate on the new VM (certificates themselves are never part of a backup) and updates `/etc/hosts` — best-effort, with a warning if `mkcert` isn't installed on this host.
+
 ---
 
 ## Health and backups

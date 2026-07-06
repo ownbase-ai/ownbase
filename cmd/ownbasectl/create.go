@@ -19,6 +19,8 @@ import (
 	"github.com/spf13/cobra"
 
 	ownbase "github.com/ownbase/ownbase"
+	"github.com/ownbase/ownbase/internal/core"
+	"github.com/ownbase/ownbase/internal/schema"
 	"github.com/ownbase/ownbase/internal/serverconfig"
 	"github.com/ownbase/ownbase/internal/tunnel"
 	"github.com/ownbase/ownbase/internal/vmhost"
@@ -319,22 +321,141 @@ func baseCreateVM(name string, opts vmhost.LaunchOptions, forgejoDomain, caddyEm
 		return err
 	}
 
+	// A `restore` never enables dev-TLS itself (see provision/devTLSDefault
+	// above) — the restored ownbase.yaml is authoritative on that. But the
+	// Base being restored may itself have used dev-TLS before it was backed
+	// up, and its certificate is never part of a restic snapshot (it lives
+	// only at core.DevTLSHostDir on the now-destroyed original VM — see
+	// stage_dev_tls_certs in install.sh). So: if this run didn't already
+	// provision dev-TLS, check what the Base's actual, final ownbase.yaml
+	// says (after any --rebuild restore inside install.sh) and, if it wants
+	// dev-TLS, regenerate and stage a fresh certificate now — best-effort,
+	// same as the pre-install path.
+	var restoredHostnames []string
+	if devTLSDomain == "" {
+		if domain, hostnames, ok := detectPostInstallDevTLS(ctx, m, name); ok {
+			if restageDevTLSCert(ctx, m, name, domain) {
+				devTLSDomain = domain
+				restoredHostnames = hostnames
+				if forgejoDomain == "" {
+					forgejoDomain = "forgejo." + domain
+				}
+			}
+		}
+	}
+
 	if err := registerProfile(name, ip, serverconfig.DefaultSSHUser, serverconfig.DefaultSSHKey, 22, serverconfig.DefaultAPIPort, token, true, devTLSDomain); err != nil {
 		return err
 	}
 
-	// Seed the initial /etc/hosts entry for Forgejo's dev-TLS hostname (the
-	// template ownbase.yaml has no services yet). 'ownbasectl dev-tls sync'
-	// picks up any domain: added to a service afterward.
-	if devTLSDomain != "" && forgejoDomain != "" {
-		if err := writeHostsBlock(name, ip, []string{forgejoDomain}); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not write /etc/hosts entry for %s (%v) — run 'ownbasectl dev-tls sync %s' manually\n",
-				forgejoDomain, err, name)
+	// Seed the /etc/hosts entry for the dev-TLS hostname(s). A fresh create
+	// only has Forgejo's; a restore's restoredHostnames (if any) already
+	// includes every service domain the backup had — matching what
+	// 'ownbasectl dev-tls sync' would produce, so it isn't needed right away.
+	if devTLSDomain != "" {
+		hostnames := restoredHostnames
+		if len(hostnames) == 0 && forgejoDomain != "" {
+			hostnames = []string{forgejoDomain}
+		}
+		if len(hostnames) > 0 {
+			if err := writeHostsBlock(name, ip, hostnames); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not write /etc/hosts entries for %q (%v) — run 'ownbasectl dev-tls sync %s' manually\n",
+					name, err, name)
+			}
 		}
 	}
 
 	printBaseCreatedBanner(name, ip, devTLSDomain, forgejoDomain)
 	return nil
+}
+
+// detectPostInstallDevTLS reads the Base's actual, final ownbase.yaml
+// (after any --rebuild restore has already run inside install.sh) and, if
+// it declares core.caddy.dev_tls: true, returns the dev-TLS base domain
+// (derived from core.forgejo.domain, which every dev-TLS Base is created
+// with as "forgejo.<domain>") and the full set of hostnames that should
+// resolve to it. ok is false whenever dev-TLS is not in play, or the
+// domain can't be safely inferred (no Forgejo domain, or one that was
+// hand-edited to not follow the "forgejo.<domain>" convention) — callers
+// treat that as "nothing to do here", not an error.
+func detectPostInstallDevTLS(ctx context.Context, m *vmhost.Multipass, name string) (domain string, hostnames []string, ok bool) {
+	raw, err := m.Exec(ctx, name, "sudo", "cat", "/opt/ownbase/checkout/ownbase.yaml")
+	if err != nil {
+		return "", nil, false
+	}
+	cfg, err := schema.ParseConfig(strings.NewReader(raw))
+	if err != nil || !cfg.Core.Caddy.DevTLS {
+		return "", nil, false
+	}
+	domain = strings.TrimPrefix(cfg.Core.Forgejo.Domain, "forgejo.")
+	if domain == "" || domain == cfg.Core.Forgejo.Domain {
+		fmt.Fprintf(os.Stderr,
+			"warning: %q has core.caddy.dev_tls: true but no usable core.forgejo.domain to derive its wildcard "+
+				"domain from — HTTPS will not work until you stage a certificate manually and run 'ownbasectl dev-tls sync %s'\n",
+			name, name)
+		return "", nil, false
+	}
+	hostnames, _, err = devTLSHostnamesFromYAML(raw, domain)
+	if err != nil {
+		return "", nil, false
+	}
+	return domain, hostnames, true
+}
+
+// restageDevTLSCert generates a fresh mkcert wildcard certificate for domain
+// and stages it directly into core.DevTLSHostDir on the running VM (the
+// installer already ran, so install.sh's own staging step never saw this
+// certificate), then restarts the Caddy core container so it picks the
+// certificate up immediately instead of waiting for a crash-loop retry.
+// Returns false (after printing a warning) on any failure — the caller
+// treats that the same as "dev-TLS unavailable for this run".
+func restageDevTLSCert(ctx context.Context, m *vmhost.Multipass, name, domain string) bool {
+	if !mkcertAvailable() {
+		fmt.Fprintf(os.Stderr, "warning: %q was restored with dev-TLS enabled, but %s\n"+
+			"         Caddy will not serve HTTPS until you install mkcert and run 'ownbasectl dev-tls sync %s'\n",
+			name, mkcertInstallHint, name)
+		return false
+	}
+	if err := mkcertEnsureInstalled(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: mkcert -install failed (%v) — dev-TLS certificate not regenerated for %q\n", err, name)
+		return false
+	}
+	certPath, keyPath, cleanup, ok := generateDevTLSCert(domain)
+	if !ok {
+		return false
+	}
+	defer cleanup()
+
+	fmt.Println("==> Restored Base uses dev-TLS — regenerating and staging its certificate ...")
+	if _, err := m.Exec(ctx, name, "mkdir", "-p", "/home/ubuntu/dev-tls"); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not create /home/ubuntu/dev-tls in the VM (%v) — dev-TLS certificate not staged\n", err)
+		return false
+	}
+	if err := m.Transfer(ctx, certPath, name, "/home/ubuntu/dev-tls/cert.pem"); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: transfer dev-TLS certificate failed (%v)\n", err)
+		return false
+	}
+	if err := m.Transfer(ctx, keyPath, name, "/home/ubuntu/dev-tls/key.pem"); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: transfer dev-TLS key failed (%v)\n", err)
+		return false
+	}
+
+	// Mirrors install.sh's stage_dev_tls_certs — that step only runs during
+	// the installer, before the daemon's first boot, which is too early to
+	// have this post-restore certificate.
+	stage := fmt.Sprintf(
+		"mkdir -p %[1]s && cp /home/ubuntu/dev-tls/cert.pem %[1]s/cert.pem && cp /home/ubuntu/dev-tls/key.pem %[1]s/key.pem && "+
+			"chown -R root:root %[1]s && chmod 0755 %[1]s && chmod 0644 %[1]s/cert.pem && chmod 0600 %[1]s/key.pem",
+		core.DevTLSHostDir)
+	if _, err := m.Exec(ctx, name, "sudo", "bash", "-c", stage); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not stage the dev-TLS certificate on %q (%v)\n", name, err)
+		return false
+	}
+	if _, err := m.Exec(ctx, name, "sudo", "systemctl", "restart", core.CaddyContainerName+".service"); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: staged the dev-TLS certificate for %q but could not restart Caddy (%v) — "+
+			"it will pick it up on the next reconcile\n", name, err)
+	}
+	return true
 }
 
 // generateDevTLSCert generates a wildcard mkcert certificate for domain in a
