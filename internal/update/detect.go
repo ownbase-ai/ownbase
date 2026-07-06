@@ -20,6 +20,26 @@ import (
 )
 
 // ---------------------------------------------------------------------------
+// Commit-SHA detection
+// ---------------------------------------------------------------------------
+
+// isCommitSHA reports whether ref is a full 40-character hex commit SHA,
+// as opposed to a branch or tag name. A full SHA is already maximally
+// pinned — there is nothing more specific to compare it against — so
+// ComputeDrift skips the tag-based drift comparison for these refs.
+func isCommitSHA(ref string) bool {
+	if len(ref) != 40 {
+		return false
+	}
+	for _, c := range ref {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+// ---------------------------------------------------------------------------
 // Default branch + HEAD resolution
 // ---------------------------------------------------------------------------
 

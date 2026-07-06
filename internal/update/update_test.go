@@ -405,6 +405,38 @@ func TestComputeDrift_SkipsBlankRef(t *testing.T) {
 	}
 }
 
+func TestComputeDrift_CommitSHAAlwaysUpToDate(t *testing.T) {
+	// A full 40-char commit SHA is already maximally pinned. Even though a
+	// newer semver tag exists locally (which would never equal a raw SHA),
+	// the service must not be reported as out of date.
+	reposDir := t.TempDir()
+	newLocalDriftRepo(t, reposDir, "services/auth", 5, []string{"v1.1.0"})
+	sha := strings.Repeat("a", 40)
+
+	cfg := update.Config{ReposDir: reposDir}
+	services := update.ServicesFromConfig(&schema.OwnbaseConfig{
+		SchemaVersion: "v1",
+		Services: map[string]schema.ServiceDecl{
+			"auth": {Source: "services/auth", Ref: sha},
+		},
+	})
+
+	drift := update.ComputeDrift(t.Context(), cfg, services)
+	if len(drift) != 1 {
+		t.Fatalf("want 1 drift entry, got %d", len(drift))
+	}
+	d := drift[0]
+	if d.Ref != sha {
+		t.Errorf("Ref = %q, want %q", d.Ref, sha)
+	}
+	if !d.UpToDate {
+		t.Error("UpToDate should be true for a commit-SHA ref, regardless of newer tags")
+	}
+	if d.CommitsBehind != 0 {
+		t.Errorf("CommitsBehind = %d, want 0 for a commit-SHA ref", d.CommitsBehind)
+	}
+}
+
 func TestComputeDrift_MissingRepoIsHarmless(t *testing.T) {
 	// A repo not yet cloned locally (e.g. a brand-new mirror: service before
 	// its first EnsureRepo) must not error — resolveDefaultBranchHead and

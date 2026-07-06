@@ -58,7 +58,8 @@ type ServiceDrift struct {
 	// Empty when the repo has no tags.
 	NewestTag string
 	// UpToDate is true when CommitsBehind == 0 and (NewestTag == "" or
-	// NewestTag == Ref or Ref is already at the newest tag).
+	// NewestTag == Ref or Ref is already at the newest tag). Always true
+	// when Ref is a full commit SHA — see ComputeDrift.
 	UpToDate bool
 }
 
@@ -196,6 +197,20 @@ func ComputeDrift(ctx context.Context, cfg Config, services map[string]ServiceRe
 
 	for name, svc := range services {
 		if svc.Source == "" || strings.TrimSpace(svc.Ref) == "" {
+			continue
+		}
+
+		// A full commit SHA is already maximally pinned — there is no
+		// newer version of "this exact commit" to be behind, and comparing
+		// it against the newest semver tag would produce a false positive
+		// (a raw SHA essentially never matches a tag name). Skip the
+		// tag-based drift comparison and report it as up to date.
+		if isCommitSHA(svc.Ref) {
+			result = append(result, ServiceDrift{
+				Service:  name,
+				Ref:      svc.Ref,
+				UpToDate: true,
+			})
 			continue
 		}
 
