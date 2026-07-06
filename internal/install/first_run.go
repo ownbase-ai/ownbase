@@ -3,6 +3,8 @@ package install
 import (
 	"os"
 	"strings"
+
+	"github.com/ownbase/ownbase/internal/schema"
 )
 
 // FirstRunEnvPath is the one-time credential file written by install.sh and
@@ -74,4 +76,35 @@ func ReadFirstRunEnv(path string) FirstRunEnv {
 // silently ignored — the file may already be absent.
 func DeleteFirstRunEnv(path string) {
 	_ = os.Remove(path)
+}
+
+// MergeFirstRunIntoCoreConfig fills in coreCfg's domain/email/dev-TLS from
+// firstRun, but only when configExisted is false — i.e. only on a
+// genuinely first boot, before ownbase.yaml has ever existed on disk, when
+// coreCfg is still just the zero-value default. This is the bridge that
+// lets Forgejo/Caddy start with the right settings before the initial
+// ownbase.yaml is seeded.
+//
+// It must be a no-op whenever configExisted is true, most importantly
+// after a `restore`: the daemon's `--rebuild` path restores a real
+// ownbase.yaml from the backup snapshot *before* the agent's normal
+// startup ever calls this, and that file's own domain/email/dev_tls
+// (which may be a real ACME domain, not a fresh local dev-TLS one) must
+// never be silently overridden by first-run.env, which `restore` also
+// writes (carrying whatever dev-TLS default `ownbasectl create`/`restore`
+// resolved for this run).
+func MergeFirstRunIntoCoreConfig(coreCfg schema.CoreConfig, firstRun FirstRunEnv, configExisted bool) schema.CoreConfig {
+	if configExisted {
+		return coreCfg
+	}
+	if firstRun.ForgejoDomain != "" && coreCfg.Forgejo.Domain == "" {
+		coreCfg.Forgejo.Domain = firstRun.ForgejoDomain
+	}
+	if firstRun.CaddyEmail != "" && coreCfg.Caddy.Email == "" {
+		coreCfg.Caddy.Email = firstRun.CaddyEmail
+	}
+	if firstRun.DevTLS {
+		coreCfg.Caddy.DevTLS = true
+	}
+	return coreCfg
 }

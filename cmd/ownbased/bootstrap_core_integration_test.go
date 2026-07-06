@@ -64,7 +64,7 @@ func TestBootstrapCore_QuadletUnitsWritten(t *testing.T) {
 	err := bootstrapCore(ctx, agentConfig{
 		repoPath:   "/opt/ownbase/repo",
 		statusAddr: "127.0.0.1:7070",
-	}, schema.CoreConfig{})
+	}, schema.CoreConfig{}, true)
 	if err != nil {
 		t.Fatalf("bootstrapCore: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestBootstrapCore_ForgejoRunning(t *testing.T) {
 	if err := bootstrapCore(ctx, agentConfig{
 		repoPath:   "/opt/ownbase/repo",
 		statusAddr: "127.0.0.1:7070",
-	}, schema.CoreConfig{}); err != nil {
+	}, schema.CoreConfig{}, true); err != nil {
 		t.Fatalf("bootstrapCore: %v", err)
 	}
 

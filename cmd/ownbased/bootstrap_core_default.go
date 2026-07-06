@@ -10,7 +10,7 @@ import (
 
 // bootstrapCore is a no-op without the integration build tag.
 // Core packages (Forgejo, Caddy) are managed manually in dev/CI.
-func bootstrapCore(_ context.Context, _ agentConfig, _ schema.CoreConfig) error {
+func bootstrapCore(_ context.Context, _ agentConfig, _ schema.CoreConfig, _ bool) error {
 	return nil
 }
 

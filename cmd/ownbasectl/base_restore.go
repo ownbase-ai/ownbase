@@ -39,6 +39,11 @@ reconstruction drill as one command.`,
 	creds.register(cmd)
 	cmd.Flags().BoolVar(&forceRebuild, "force", false, "restore even if the latest snapshot was never verified restorable")
 	target.register(cmd)
+	// dev-TLS is never auto-enabled for a restore (the restored backup's
+	// ownbase.yaml already has its own domain/TLS settings — see
+	// runBaseRestore/provision), so these flags would be silent no-ops here.
+	_ = cmd.Flags().MarkHidden("no-dev-tls")
+	_ = cmd.Flags().MarkHidden("dev-domain")
 	return cmd
 }
 
@@ -75,7 +80,11 @@ func runBaseRestore(name, backupRepo string, creds backupCredFlags, forceRebuild
 	fmt.Println("    current = restore(backups); running = reconcile(compile(repo, secrets), current)")
 	fmt.Println()
 
-	if err := target.provision(name, env); err != nil {
+	// devTLSDefault=false: the restored backup's ownbase.yaml already
+	// carries its own Forgejo domain and Caddy TLS settings (dev-TLS or
+	// real ACME) from before it was backed up — restore must not silently
+	// override them with a fresh local dev-TLS domain.
+	if err := target.provision(name, env, false); err != nil {
 		return fmt.Errorf("restore failed: %w", err)
 	}
 

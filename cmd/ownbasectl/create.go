@@ -95,7 +95,15 @@ func (f *baseTargetFlags) register(cmd *cobra.Command) {
 
 // provision runs the shared create/restore path for the flag target:
 // a remote server when --remote is set, a local Multipass VM otherwise.
-func (f *baseTargetFlags) provision(name string, extraEnv map[string]string) error {
+//
+// devTLSDefault controls whether dev-TLS is auto-enabled for a local VM
+// when the user didn't pass --no-dev-tls/--forgejo-domain/--caddy-email:
+// true for `create` (a genuinely new Base with no config yet — dev-TLS is
+// the right default), false for `restore` (the restored backup's
+// ownbase.yaml already carries its own Forgejo domain and Caddy TLS
+// settings, possibly a real ACME domain, and must not be silently
+// re-pointed at a fresh dev-TLS *.test domain).
+func (f *baseTargetFlags) provision(name string, extraEnv map[string]string, devTLSDefault bool) error {
 	if f.remoteHost != "" {
 		host, user := splitUserHost(f.remoteHost, f.sshUser)
 		return baseCreateRemote(name, host, user, f.sshKey, f.sshPort, f.forgejoDomain, f.caddyEmail, extraEnv)
@@ -105,7 +113,7 @@ func (f *baseTargetFlags) provision(name string, extraEnv map[string]string) err
 	// or --caddy-email signals the user wants the production ACME path even
 	// on a local VM (e.g. testing real-domain TLS) — --no-dev-tls is not
 	// needed in that case, dev-TLS just steps aside.
-	devTLS := !f.noDevTLS && f.forgejoDomain == "" && f.caddyEmail == ""
+	devTLS := devTLSDefault && !f.noDevTLS && f.forgejoDomain == "" && f.caddyEmail == ""
 	return baseCreateVM(name, opts, f.forgejoDomain, f.caddyEmail, devTLS, f.devDomain, f.assumeYes, extraEnv)
 }
 
@@ -132,7 +140,7 @@ server you already provisioned — dev-TLS never applies there; use
     --forgejo-domain git.yourdomain.com --caddy-email you@example.com`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return target.provision(args[0], nil)
+			return target.provision(args[0], nil, true)
 		},
 	}
 	target.register(cmd)

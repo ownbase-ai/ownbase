@@ -28,20 +28,22 @@ func runningAsRoot() bool { return os.Getuid() == 0 }
 //
 // This runs after pass zero and before the main reconcile loop so that core
 // packages are always healthy before user services are reconciled.
-func bootstrapCore(ctx context.Context, cfg agentConfig, coreCfg schema.CoreConfig) error {
-	// On first install, merge domain/email from first-run.env into coreCfg so
-	// Forgejo starts with the correct ROOT_URL and the seeded ownbase.yaml has
-	// the domain pre-filled — all before ownbase.yaml exists on disk.
+//
+// configExisted must be false only when ownbase.yaml did not exist on disk
+// yet (a genuinely new Base, before the initial template is seeded) — true
+// for every other case, including a `restore`, where a backup snapshot has
+// already restored a real ownbase.yaml (with its own domain/email/dev_tls)
+// before this ever runs. See install.MergeFirstRunIntoCoreConfig for why
+// that distinction matters.
+func bootstrapCore(ctx context.Context, cfg agentConfig, coreCfg schema.CoreConfig, configExisted bool) error {
+	// On a genuinely first boot (no ownbase.yaml on disk yet), merge
+	// domain/email/dev-TLS from first-run.env into coreCfg so Forgejo starts
+	// with the correct ROOT_URL and the seeded ownbase.yaml has them
+	// pre-filled. See MergeFirstRunIntoCoreConfig for why configExisted
+	// matters (in particular: never clobbering a `restore`'s restored
+	// ownbase.yaml).
 	firstRun := readFirstRunEnv()
-	if firstRun.ForgejoDomain != "" && coreCfg.Forgejo.Domain == "" {
-		coreCfg.Forgejo.Domain = firstRun.ForgejoDomain
-	}
-	if firstRun.CaddyEmail != "" && coreCfg.Caddy.Email == "" {
-		coreCfg.Caddy.Email = firstRun.CaddyEmail
-	}
-	if firstRun.DevTLS && !coreCfg.Caddy.DevTLS {
-		coreCfg.Caddy.DevTLS = true
-	}
+	coreCfg = install.MergeFirstRunIntoCoreConfig(coreCfg, firstRun, configExisted)
 
 	quadletDir := agentQuadletDir()
 

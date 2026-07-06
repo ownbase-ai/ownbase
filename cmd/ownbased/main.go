@@ -287,12 +287,14 @@ func run(cfg agentConfig) error {
 	// Idempotent: safe to call on every startup.
 	{
 		coreCfg := schema.CoreConfig{} // defaults apply
+		configExisted := false
 		if cfgOnDisk, err := schema.ParseConfigFile(
 			filepath.Join(cfg.checkoutPath, "ownbase.yaml"),
 		); err == nil {
 			coreCfg = cfgOnDisk.Core
+			configExisted = true
 		}
-		if err := bootstrapCore(context.Background(), cfg, coreCfg); err != nil {
+		if err := bootstrapCore(context.Background(), cfg, coreCfg, configExisted); err != nil {
 			return fmt.Errorf("bootstrap core: %w", err)
 		}
 	}
@@ -636,12 +638,14 @@ func run(cfg agentConfig) error {
 			// tick finds the file without waiting for the 5-minute backstop.
 			if isCheckoutMissingError(err) {
 				coreCfg := schema.CoreConfig{}
+				configExisted := false
 				if cfgOnDisk, parseErr := schema.ParseConfigFile(
 					filepath.Join(cfg.checkoutPath, "ownbase.yaml"),
 				); parseErr == nil {
 					coreCfg = cfgOnDisk.Core
+					configExisted = true
 				}
-				if bErr := bootstrapCore(context.Background(), cfg, coreCfg); bErr != nil {
+				if bErr := bootstrapCore(context.Background(), cfg, coreCfg, configExisted); bErr != nil {
 					fmt.Fprintf(os.Stderr, "ownbased: bootstrap retry (non-fatal): %v\n", bErr)
 				}
 			}

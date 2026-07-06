@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/ownbase/ownbase/internal/install"
+	"github.com/ownbase/ownbase/internal/schema"
 )
 
 // Tier-1 tests: pure logic that does not require a Linux host.
@@ -134,6 +135,67 @@ func TestFirstRunEnv_DevTLS(t *testing.T) {
 	env = install.ReadFirstRunEnv(path)
 	if env.DevTLS {
 		t.Error("expected DevTLS=false when DEV_TLS is absent")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MergeFirstRunIntoCoreConfig
+// ---------------------------------------------------------------------------
+
+// TestMergeFirstRunIntoCoreConfig_FirstBoot verifies that on a genuinely
+// first boot (configExisted=false) — before ownbase.yaml has ever existed —
+// first-run.env's domain/email/dev-TLS values are merged into an empty
+// CoreConfig, exactly like a freshly seeded ownbase.yaml would have.
+func TestMergeFirstRunIntoCoreConfig_FirstBoot(t *testing.T) {
+	firstRun := install.FirstRunEnv{ForgejoDomain: "forgejo.mybase.test", DevTLS: true}
+	got := install.MergeFirstRunIntoCoreConfig(schema.CoreConfig{}, firstRun, false)
+
+	if got.Forgejo.Domain != "forgejo.mybase.test" {
+		t.Errorf("Forgejo.Domain = %q, want forgejo.mybase.test", got.Forgejo.Domain)
+	}
+	if !got.Caddy.DevTLS {
+		t.Error("Caddy.DevTLS = false, want true (DEV_TLS=1 on first boot)")
+	}
+}
+
+// TestMergeFirstRunIntoCoreConfig_RestoreDoesNotOverride is the regression
+// test for the Bugbot finding "First-run overrides restored dev_tls": a
+// `restore` writes a first-run.env with DevTLS=true (whatever `create`
+// resolved for this run), but the daemon's --rebuild path has already
+// restored a real ownbase.yaml from the backup snapshot before this ever
+// runs (configExisted=true) — that restored config's own (non-dev-TLS,
+// real-domain) settings must survive untouched.
+func TestMergeFirstRunIntoCoreConfig_RestoreDoesNotOverride(t *testing.T) {
+	restored := schema.CoreConfig{
+		Forgejo: schema.ForgejoCoreConfig{Domain: "git.realdomain.com"},
+		Caddy:   schema.CaddyCoreConfig{Email: "ops@realdomain.com"},
+	}
+	firstRun := install.FirstRunEnv{ForgejoDomain: "forgejo.mybase.test", DevTLS: true}
+
+	got := install.MergeFirstRunIntoCoreConfig(restored, firstRun, true)
+
+	if got.Forgejo.Domain != "git.realdomain.com" {
+		t.Errorf("Forgejo.Domain = %q, want the restored git.realdomain.com to survive unchanged", got.Forgejo.Domain)
+	}
+	if got.Caddy.Email != "ops@realdomain.com" {
+		t.Errorf("Caddy.Email = %q, want the restored ops@realdomain.com to survive unchanged", got.Caddy.Email)
+	}
+	if got.Caddy.DevTLS {
+		t.Error("Caddy.DevTLS = true, want false — first-run.env must not force dev-TLS onto a restored Base")
+	}
+}
+
+// TestMergeFirstRunIntoCoreConfig_NoOverwriteOfExistingFirstBootValues
+// verifies the pre-existing "don't clobber an explicit value" guard for
+// domain/email still holds on a first boot (e.g. a hand-seeded checkout).
+func TestMergeFirstRunIntoCoreConfig_NoOverwriteOfExistingFirstBootValues(t *testing.T) {
+	cfg := schema.CoreConfig{Forgejo: schema.ForgejoCoreConfig{Domain: "already-set.example.com"}}
+	firstRun := install.FirstRunEnv{ForgejoDomain: "forgejo.mybase.test"}
+
+	got := install.MergeFirstRunIntoCoreConfig(cfg, firstRun, false)
+
+	if got.Forgejo.Domain != "already-set.example.com" {
+		t.Errorf("Forgejo.Domain = %q, want the pre-existing value to win over first-run.env", got.Forgejo.Domain)
 	}
 }
 
