@@ -23,6 +23,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/ownbase/ownbase/internal/fsowner"
 )
 
 // DefaultRepoPath is the canonical on-Base path for the bare repo.
@@ -73,6 +75,17 @@ func Bootstrap(repoPath, checkoutPath string) error {
 	}
 
 	return nil
+}
+
+// SetRepoOwner grants adminUser (the SSH account ownbasectl and the operator
+// use to reach this Base) write access to the bare repo at repoPath, which
+// the daemon otherwise creates and owns as root (see install.sh's systemd
+// unit). Without this, `git push` over SSH as adminUser fails with a
+// permission error even though the repo exists. A no-op when adminUser is
+// empty (see internal/install.ReadAdminUser). Safe to call on every daemon
+// start — chowning an already-correctly-owned tree is a cheap no-op.
+func SetRepoOwner(repoPath, adminUser string) error {
+	return fsowner.Chown(repoPath, adminUser)
 }
 
 // InstallHook writes (or overwrites) the post-receive hook in the bare repo.

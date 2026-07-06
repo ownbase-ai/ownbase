@@ -3,6 +3,7 @@ package repos
 import (
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"testing"
 )
@@ -74,11 +75,55 @@ func TestFetchRefAt_FetchesNewRefOnDemand(t *testing.T) {
 }
 
 func TestFetchRef_NoopWhenExternalURLOrRefEmpty(t *testing.T) {
-	if err := FetchRef("anything", "", "main"); err != nil {
+	if err := FetchRef("anything", "", "main", ""); err != nil {
 		t.Fatalf("FetchRef with empty externalURL should be a no-op, got %v", err)
 	}
-	if err := FetchRef("anything", "https://example.com/repo.git", ""); err != nil {
+	if err := FetchRef("anything", "https://example.com/repo.git", "", ""); err != nil {
 		t.Fatalf("FetchRef with empty ref should be a no-op, got %v", err)
+	}
+}
+
+func TestEnsureRepoAtWithOwner_ChownsToAdminUser(t *testing.T) {
+	// Chowning to the current user is a no-op ownership change (you always
+	// own your own files) but still exercises the chown call end to end
+	// without requiring root privileges in CI.
+	current, err := user.Current()
+	if err != nil {
+		t.Skipf("cannot determine current user: %v", err)
+	}
+
+	root := t.TempDir()
+	repoPath := filepath.Join(root, "services/auth")
+
+	if err := ensureRepoAtWithOwner(repoPath, "", current.Username); err != nil {
+		t.Fatalf("ensureRepoAtWithOwner: %v", err)
+	}
+	if !isBareRepo(repoPath) {
+		t.Fatalf("expected bare repo at %s", repoPath)
+	}
+
+	// Idempotent: calling again (repo already exists) still succeeds and
+	// re-applies the chown.
+	if err := ensureRepoAtWithOwner(repoPath, "", current.Username); err != nil {
+		t.Fatalf("ensureRepoAtWithOwner (second call): %v", err)
+	}
+}
+
+func TestEnsureRepoAtWithOwner_EmptyAdminUserSkipsChown(t *testing.T) {
+	root := t.TempDir()
+	repoPath := filepath.Join(root, "services/auth")
+
+	if err := ensureRepoAtWithOwner(repoPath, "", ""); err != nil {
+		t.Fatalf("ensureRepoAtWithOwner with empty adminUser should succeed, got %v", err)
+	}
+}
+
+func TestEnsureRepoAtWithOwner_UnknownAdminUserReturnsError(t *testing.T) {
+	root := t.TempDir()
+	repoPath := filepath.Join(root, "services/auth")
+
+	if err := ensureRepoAtWithOwner(repoPath, "", "no-such-user-should-exist-anywhere"); err == nil {
+		t.Fatal("expected an error for an unknown admin user")
 	}
 }
 

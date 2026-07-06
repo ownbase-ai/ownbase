@@ -12,6 +12,11 @@
 // Every repo is backed up locally (see internal/backup), so a Base is
 // self-contained: the external git host is only consulted when a new ref is
 // requested that hasn't been fetched yet.
+//
+// Repos are created by the daemon, which runs as root (see install.sh's
+// systemd unit) — EnsureRepo/EnsureRepos chown each repo to the configured
+// admin user (internal/fsowner) so a direct `git push` over SSH as that
+// user actually has write access to it.
 package repos
 
 import (
@@ -21,6 +26,7 @@ import (
 	"path/filepath"
 
 	"github.com/ownbase/ownbase/internal/compiler"
+	"github.com/ownbase/ownbase/internal/fsowner"
 	"github.com/ownbase/ownbase/internal/schema"
 )
 
@@ -49,20 +55,26 @@ func HasRef(name, ref string) bool {
 // exist locally. For source services (externalURL empty) it creates an
 // empty bare repo that the user pushes into directly (over SSH, exactly like
 // the config repo). Idempotent: a no-op when the repo already exists.
-func EnsureRepo(name, externalURL string) error {
-	return ensureRepoAt(RepoPath(name), externalURL)
+//
+// adminUser, when non-empty, is chowned onto the repo (see internal/fsowner)
+// so a direct git push over SSH as that account has write access — the
+// daemon that creates the repo runs as root, so without this only root (or
+// the ownbasectl config/service API path) could write to it. Pass "" to
+// skip this step (e.g. a local dev/test build with no installer run).
+func EnsureRepo(name, externalURL, adminUser string) error {
+	return ensureRepoAtWithOwner(RepoPath(name), externalURL, adminUser)
 }
 
 // FetchRef fetches the given ref from externalURL into the local bare repo
 // for name when it is not already present locally. This is the on-demand
 // fetch triggered when a ref: is pinned to a value that has not yet been
 // pulled from the external source. A no-op when externalURL or ref is empty,
-// or when the ref is already present locally.
-func FetchRef(name, externalURL, ref string) error {
+// or when the ref is already present locally. See EnsureRepo for adminUser.
+func FetchRef(name, externalURL, ref, adminUser string) error {
 	if externalURL == "" || ref == "" {
 		return nil
 	}
-	if err := EnsureRepo(name, externalURL); err != nil {
+	if err := EnsureRepo(name, externalURL, adminUser); err != nil {
 		return err
 	}
 	return fetchRefAt(RepoPath(name), externalURL, ref)
@@ -74,8 +86,8 @@ func FetchRef(name, externalURL, ref string) error {
 // collected and returned rather than aborting early, so a problem with one
 // service's repo does not block the others from being ensured. Callers
 // should log the returned errors as non-fatal — the next reconcile tick (or
-// timer backstop) retries.
-func EnsureRepos(cfg *schema.OwnbaseConfig) []error {
+// timer backstop) retries. See EnsureRepo for adminUser.
+func EnsureRepos(cfg *schema.OwnbaseConfig, adminUser string) []error {
 	if cfg == nil {
 		return nil
 	}
@@ -90,12 +102,12 @@ func EnsureRepos(cfg *schema.OwnbaseConfig) []error {
 		if repoName == "" {
 			continue // invalid service decl; schema.Validate already rejects this
 		}
-		if err := EnsureRepo(repoName, externalURL); err != nil {
+		if err := EnsureRepo(repoName, externalURL, adminUser); err != nil {
 			errs = append(errs, fmt.Errorf("service %q: ensure repo %q: %w", name, repoName, err))
 			continue
 		}
 		if externalURL != "" && svc.Ref != "" {
-			if err := FetchRef(repoName, externalURL, svc.Ref); err != nil {
+			if err := FetchRef(repoName, externalURL, svc.Ref, adminUser); err != nil {
 				errs = append(errs, fmt.Errorf("service %q: fetch ref %q: %w", name, svc.Ref, err))
 			}
 		}
@@ -144,6 +156,20 @@ func ensureRepoAt(repoPath, externalURL string) error {
 	out, err := exec.Command("git", "clone", "--bare", "--mirror", externalURL, repoPath).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git clone --bare --mirror %s -> %s: %w\n%s", externalURL, repoPath, err, out)
+	}
+	return nil
+}
+
+// ensureRepoAtWithOwner is ensureRepoAt plus a chown of the repo to
+// adminUser (see internal/fsowner). Re-applied on every call, not just on
+// first creation: cheap, and self-heals if the admin user changed or a
+// previous chown failed. A no-op chown when adminUser is empty.
+func ensureRepoAtWithOwner(repoPath, externalURL, adminUser string) error {
+	if err := ensureRepoAt(repoPath, externalURL); err != nil {
+		return err
+	}
+	if err := fsowner.Chown(repoPath, adminUser); err != nil {
+		return fmt.Errorf("chown %s to %q: %w", repoPath, adminUser, err)
 	}
 	return nil
 }

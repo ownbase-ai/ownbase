@@ -227,6 +227,16 @@ func run(cfg agentConfig) error {
 		if err := githost.InstallHook(cfg.repoPath); err != nil {
 			return fmt.Errorf("install hook: %w", err)
 		}
+		// Grant the admin SSH user write access to the bare repo — the
+		// daemon creates it as root, so without this a direct `git push`
+		// over SSH (the documented way to edit ownbase.yaml) fails with a
+		// permission error. Non-fatal: ownbasectl config/service (the
+		// API-based commit path) works regardless.
+		if adminUser := install.ReadAdminUser(install.AdminUserPath); adminUser != "" {
+			if err := githost.SetRepoOwner(cfg.repoPath, adminUser); err != nil {
+				fmt.Fprintf(os.Stderr, "ownbased: set repo owner (non-fatal): %v\n", err)
+			}
+		}
 		// Seed a template ownbase.yaml (and README) on a brand-new config
 		// repo. A no-op once the user (or a prior boot) has committed a real
 		// config — see internal/install/seed.go.
@@ -874,7 +884,13 @@ func reconcileLoop(
 	// pinned ref: not yet available locally. Idempotent and non-fatal — a
 	// service whose external source is temporarily unreachable is skipped;
 	// the reconcile continues with whatever is already on disk.
-	for _, err := range repos.EnsureRepos(cfg) {
+	//
+	// Each repo is chowned to the admin SSH user (read fresh on every tick,
+	// not cached) so a repo for a brand-new service is pushable immediately,
+	// and so the daemon picks up a change to /opt/ownbase/admin-user without
+	// a restart.
+	adminUser := install.ReadAdminUser(install.AdminUserPath)
+	for _, err := range repos.EnsureRepos(cfg, adminUser) {
 		fmt.Fprintf(os.Stderr, "ownbased: ensure repos: %v (non-fatal)\n", err)
 	}
 

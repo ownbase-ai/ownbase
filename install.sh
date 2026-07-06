@@ -69,6 +69,17 @@ OWNBASE_FORCE_REBUILD="${OWNBASE_FORCE_REBUILD:-0}"
 #   Example: "ssh-ed25519 AAAA... you@laptop"
 OWNBASE_OWNER_SSH_KEY="${OWNBASE_OWNER_SSH_KEY:-}"
 
+# OWNBASE_ADMIN_USER: the OS account this installer is running under (via
+#   sudo) — root for most remote servers, ubuntu for a local Multipass VM.
+#   This is the same account that owns the SSH key above and that
+#   `ownbasectl create` registers as --ssh-user for this Base. Persisted to
+#   /opt/ownbase/admin-user (see write_admin_user) so the daemon can chown
+#   bare repos it creates (as root) to this user, granting it `git push`
+#   access over SSH. $SUDO_USER is reliably set here: install.sh is always
+#   invoked as `sudo bash install.sh` or `sudo -E bash install.sh`, even
+#   when the invoking user is already root (see cmd/ownbasectl/create.go).
+OWNBASE_ADMIN_USER="${OWNBASE_ADMIN_USER:-${SUDO_USER:-ubuntu}}"
+
 # OWNBASE_DRIVEN_BY_CTL: set to 1 by `ownbasectl create`, which registers
 # the profile automatically after the install — the completion footer then
 # skips the manual `ownbasectl adopt` instructions.
@@ -306,6 +317,19 @@ write_first_run_env() {
     info "First-run config saved for daemon bootstrap."
 }
 
+# write_admin_user persists OWNBASE_ADMIN_USER to /opt/ownbase/admin-user so
+# the daemon (which runs as root) can chown bare repos it creates to this
+# account, granting it `git push` access over SSH. Unlike first-run.env,
+# this file is never deleted — the daemon reads it every time it ensures a
+# repo exists (config repo on first boot, or a new service's repo added at
+# any point after install), not just once.
+write_admin_user() {
+    local admin_user_file="${OWNBASE_BASE_DIR}/admin-user"
+    install -o root -g root -m 0644 /dev/null "$admin_user_file"
+    printf '%s' "$OWNBASE_ADMIN_USER" > "$admin_user_file"
+    info "Admin user ($OWNBASE_ADMIN_USER) saved for repo ownership."
+}
+
 # generate_token produces a random 32-char alphanumeric token.
 generate_token() {
     tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 32 || true
@@ -391,6 +415,7 @@ main() {
     install_binary
     run_rebuild_if_requested
     write_first_run_env "$CADDY_EMAIL"
+    write_admin_user
     write_api_token "$api_token"
     install_systemd_service
     enable_service
@@ -400,14 +425,14 @@ main() {
     # push directly to the config/service bare repos.
     if [[ -n "$OWNBASE_OWNER_SSH_KEY" ]]; then
         local invoker_home
-        invoker_home="$(getent passwd "${SUDO_USER:-ubuntu}" | cut -d: -f6)"
+        invoker_home="$(getent passwd "$OWNBASE_ADMIN_USER" | cut -d: -f6)"
         local auth_keys="${invoker_home}/.ssh/authorized_keys"
         mkdir -p "${invoker_home}/.ssh"
         chmod 700 "${invoker_home}/.ssh"
         if ! grep -qF "$OWNBASE_OWNER_SSH_KEY" "$auth_keys" 2>/dev/null; then
             printf '%s\n' "$OWNBASE_OWNER_SSH_KEY" >> "$auth_keys"
             chmod 600 "$auth_keys"
-            chown -R "${SUDO_USER:-ubuntu}:${SUDO_USER:-ubuntu}" "${invoker_home}/.ssh"
+            chown -R "${OWNBASE_ADMIN_USER}:${OWNBASE_ADMIN_USER}" "${invoker_home}/.ssh"
             info "Owner SSH key added to ${auth_keys} (for ownbasectl)"
         fi
     fi
