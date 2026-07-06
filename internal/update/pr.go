@@ -1,22 +1,19 @@
 package update
 
 // pr.go contains helpers for committing field edits to ownbase.yaml on the
-// Forgejo config repo (used by blank-ref resolution) and YAML-editing utilities.
+// local config repo (used by blank-ref resolution) and YAML-editing utilities.
 //
 // The PR-generation path (OpenUpdatePR, branch creation, PR body templates)
 // has been removed. Updates are now driven by the user editing ref: and
 // committing directly — see docs/decisions.md ("Updates and drift").
 
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
-	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -122,85 +119,30 @@ func isHex(s string) bool {
 }
 
 // ---------------------------------------------------------------------------
-// Forgejo file-commit helpers (used by blank-ref resolution)
+// Local config-repo commit helper (used by blank-ref resolution)
 // ---------------------------------------------------------------------------
 
-// CommitFile commits content to path in the Forgejo config repo on branch
-// main, creating the file if it does not exist or updating it in place if it
-// does. Exported so callers outside the update loop (e.g. the daemon's
-// /backup/configure API) can persist an ownbase.yaml edit through the same
-// front-door commit path used by blank-ref resolution — never a local git
-// commit that could race with the Forgejo→bare-repo sync.
+// CommitFile writes content to path (relative to cfg.CheckoutPath), then
+// commits and pushes it from the checkout to its origin — the local bare
+// repo at /opt/ownbase/repo. This is the single front-door for programmatic
+// ownbase.yaml edits (blank-ref resolution, the daemon's /backup/configure
+// API): always a real commit through the checkout, exactly like a user's
+// own `git push`, so the post-receive hook and reconcile loop see it the
+// same way regardless of who made the change.
 func CommitFile(ctx context.Context, cfg Config, path, content, commitMsg string) error {
-	return forgejoCommitFile(ctx, cfg, path, content, commitMsg)
-}
-
-func forgejoCommitFile(ctx context.Context, cfg Config, path, content, commitMsg string) error {
-	sha, _ := forgejoGetFileSHA(ctx, cfg, "main", path)
-
-	payload := map[string]any{
-		"message": commitMsg,
-		"content": base64.StdEncoding.EncodeToString([]byte(content)),
-		"branch":  "main",
+	_ = ctx // no network I/O; kept for API symmetry with the update loop
+	fullPath := filepath.Join(cfg.CheckoutPath, path)
+	if err := os.WriteFile(fullPath, []byte(content), 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", fullPath, err)
 	}
-
-	apiPath := fmt.Sprintf("/api/v1/repos/%s/%s/contents/%s", cfg.ForgejoUser, cfg.RepoName, path)
-
-	if sha != "" {
-		payload["sha"] = sha
-		bodyBytes, _ := json.Marshal(payload)
-		return forgejoPut(ctx, cfg, apiPath, bodyBytes, http.StatusOK)
+	if out, err := exec.Command("git", "-C", cfg.CheckoutPath, "add", path).CombinedOutput(); err != nil {
+		return fmt.Errorf("git add %s: %w\n%s", path, err, out)
 	}
-	bodyBytes, _ := json.Marshal(payload)
-	return forgejoPost(ctx, cfg, apiPath, bodyBytes, http.StatusCreated)
-}
-
-func forgejoGetFileSHA(ctx context.Context, cfg Config, branch, path string) (string, error) {
-	url := fmt.Sprintf("%s/api/v1/repos/%s/%s/contents/%s?ref=%s",
-		cfg.ForgejoURL, cfg.ForgejoUser, cfg.RepoName, path, branch)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return "", err
+	if out, err := exec.Command("git", "-C", cfg.CheckoutPath, "commit", "-m", commitMsg).CombinedOutput(); err != nil {
+		return fmt.Errorf("git commit: %w\n%s", err, out)
 	}
-	req.Header.Set("Authorization", "token "+cfg.ForgejoToken)
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
-	if err != nil {
-		return "", err
+	if out, err := exec.Command("git", "-C", cfg.CheckoutPath, "push", "origin", "HEAD").CombinedOutput(); err != nil {
+		return fmt.Errorf("git push: %w\n%s", err, out)
 	}
-	defer resp.Body.Close()
-	var result struct {
-		SHA string `json:"sha"`
-	}
-	_ = json.NewDecoder(resp.Body).Decode(&result)
-	return result.SHA, nil
-}
-
-func forgejoPost(ctx context.Context, cfg Config, path string, body []byte, allowedStatuses ...int) error {
-	return forgejoRequest(ctx, cfg, http.MethodPost, path, body, allowedStatuses...)
-}
-
-func forgejoPut(ctx context.Context, cfg Config, path string, body []byte, allowedStatuses ...int) error {
-	return forgejoRequest(ctx, cfg, http.MethodPut, path, body, allowedStatuses...)
-}
-
-func forgejoRequest(ctx context.Context, cfg Config, method, path string, body []byte, allowedStatuses ...int) error {
-	url := cfg.ForgejoURL + path
-	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "token "+cfg.ForgejoToken)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	for _, s := range allowedStatuses {
-		if resp.StatusCode == s {
-			return nil
-		}
-	}
-	b, _ := io.ReadAll(resp.Body)
-	return fmt.Errorf("%s %s: status %d: %s", method, path, resp.StatusCode, b)
+	return nil
 }

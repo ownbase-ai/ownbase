@@ -107,7 +107,7 @@ func TestParseUFWStatus_Inactive(t *testing.T) {
 	}
 }
 
-func TestParseUFWStatus_ForgejoPort(t *testing.T) {
+func TestParseUFWStatus_CustomPort(t *testing.T) {
 	out := `Status: active
 
 To                         Action      From
@@ -120,7 +120,7 @@ To                         Action      From
 `
 	fs := secwatch.ParseUFWStatus(out)
 	if !fs.AllowedPorts[3000] {
-		t.Error("expected Forgejo port 3000 in AllowedPorts")
+		t.Error("expected port 3000 in AllowedPorts")
 	}
 }
 
@@ -227,11 +227,10 @@ func TestParseJournaldSSH_Empty(t *testing.T) {
 // ExpectedAllowlist
 // ---------------------------------------------------------------------------
 
-func TestExpectedAllowlist_NoForgejo(t *testing.T) {
+func TestExpectedAllowlist_Defaults(t *testing.T) {
 	cfg := &schema.OwnbaseConfig{
-		// Forgejo has a domain → no direct port opened.
 		Core: schema.CoreConfig{
-			Forgejo: schema.ForgejoCoreConfig{Domain: "git.example.com"},
+			Caddy: schema.CaddyCoreConfig{Email: "admin@example.com"},
 		},
 	}
 	list := secwatch.ExpectedAllowlist(cfg, 22)
@@ -240,22 +239,6 @@ func TestExpectedAllowlist_NoForgejo(t *testing.T) {
 	}
 	if !list[80] || !list[443] {
 		t.Error("ports 80 and 443 should always be expected")
-	}
-	if list[3000] {
-		t.Error("Forgejo port 3000 should NOT be expected when domain is set")
-	}
-}
-
-func TestExpectedAllowlist_WithForgejoPort(t *testing.T) {
-	cfg := &schema.OwnbaseConfig{
-		// No domain → Forgejo port is opened directly.
-		Core: schema.CoreConfig{
-			Forgejo: schema.ForgejoCoreConfig{Port: 3000},
-		},
-	}
-	list := secwatch.ExpectedAllowlist(cfg, 22)
-	if !list[3000] {
-		t.Error("Forgejo port 3000 should be expected when no domain is set")
 	}
 }
 

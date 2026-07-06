@@ -21,12 +21,12 @@ func TestSetCoreBackupConfig_NoCoreBlock(t *testing.T) {
 }
 
 func TestSetCoreBackupConfig_CoreBlockNoBackup(t *testing.T) {
-	in := "schema_version: v1\ncore:\n  forgejo:\n    domain: git.example.com\nservices: {}\n"
+	in := "schema_version: v1\ncore:\n  caddy:\n    email: you@example.com\nservices: {}\n"
 	out := SetCoreBackupConfig(in, "/opt/ownbase/backup", "", "")
 
 	assertParsesWithBackup(t, out, "/opt/ownbase/backup", "", "")
-	if !strings.Contains(out, "domain: git.example.com") {
-		t.Errorf("expected forgejo.domain preserved, got:\n%s", out)
+	if !strings.Contains(out, "email: you@example.com") {
+		t.Errorf("expected caddy.email preserved, got:\n%s", out)
 	}
 }
 

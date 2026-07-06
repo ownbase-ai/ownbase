@@ -61,10 +61,10 @@ func (s VulnSummary) Total() int {
 // Produced by RunningContainers and passed to GatherVulns / GatherImageVulns.
 type ContainerTarget struct {
 	// Service is the container name used in status and CLI output
-	// (e.g. "ownbase-core-forgejo").
+	// (e.g. "ownbase-core-caddy").
 	Service string
 	// Image is the full image reference as reported by podman
-	// (e.g. "codeberg.org/forgejo/forgejo:9.0").
+	// (e.g. "docker.io/library/caddy:2-alpine").
 	Image string
 }
 

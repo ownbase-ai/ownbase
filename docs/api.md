@@ -93,22 +93,15 @@ Schema (`schema_version: v3`):
 
 ---
 
-## Core packages
+## Core package
 
 ### `GET /core/status` — core package state (read-only)
 
-Behind `ownbasectl upgrade` (check-only mode). Reports each core package's pinned image, digest, and running state:
+Behind `ownbasectl upgrade` (check-only mode). Reports the core package's pinned image, digest, and running state:
 
 ```json
 {
   "packages": [
-    {
-      "name": "Forgejo",
-      "container": "ownbase-core-forgejo",
-      "image": "codeberg.org/forgejo/forgejo:15.0.3",
-      "digest": "sha256:…",
-      "running": true
-    },
     {
       "name": "Caddy",
       "container": "ownbase-core-caddy",
@@ -120,9 +113,9 @@ Behind `ownbasectl upgrade` (check-only mode). Reports each core package's pinne
 }
 ```
 
-### `POST /upgrade` — pull + restart core packages
+### `POST /upgrade` — pull + restart the core package
 
-Behind `ownbasectl upgrade --apply`. Pulls the latest pinned images for Forgejo and Caddy and restarts their containers. **Streams** progress as `text/plain`; the final line is the sentinel `---OK---` on success (its absence means the upgrade failed even though the HTTP status was already committed as 200). Triggers a vulnerability rescan on completion.
+Behind `ownbasectl upgrade --apply`. Pulls the latest pinned image for Caddy and restarts its container. **Streams** progress as `text/plain`; the final line is the sentinel `---OK---` on success (its absence means the upgrade failed even though the HTTP status was already committed as 200). Triggers a vulnerability rescan on completion.
 
 ---
 
@@ -141,6 +134,26 @@ Returns `503` if the daemon is still initialising.
 ### `POST /security/fix` — apply host OS package patches
 
 Behind `ownbasectl security fix`. Runs `apt-get update` + `apt-get upgrade -y` on the Base. **Streams** the apt output as `text/plain`, ending with `---OK---` on success. Triggers a vulnerability rescan on completion. Returns `501` on non-Ubuntu/Debian platforms.
+
+---
+
+## Config
+
+### `GET /config` — read the current ownbase.yaml
+
+Behind `ownbasectl config get`. Returns the raw YAML document from the checkout as `text/x-yaml`, not JSON.
+
+### `POST /config` — atomically replace ownbase.yaml
+
+Behind `ownbasectl config set` and `ownbasectl service add/remove/update` (which `GET /config`, edit the document locally, and `POST` the whole thing back — there is no partial-update endpoint). Validates the new document as well-formed `ownbase.yaml`, then commits it through the daemon's front-door commit path — exactly like a manual `git push` to `/opt/ownbase/repo` — and wakes the reconcile loop immediately.
+
+Request:
+
+```json
+{"content": "schema_version: v1\nservices: {}\n", "message": "feat(service): add crm"}
+```
+
+`message` is optional (defaults to a generic ownbasectl message). Response: `{"status": "applied"}`. Returns `400` when `content` is empty or fails validation.
 
 ---
 
@@ -186,15 +199,7 @@ Secrets are age-encrypted YAML files at `/opt/ownbase/secrets/<service>.yaml.age
 
 ---
 
-## Credentials and tokens
-
-### `GET /credentials/forgejo` — Forgejo admin credentials
-
-Behind `ownbasectl forgejo <name>`. Reads the persisted admin password (`/opt/ownbase/forgejo-admin-pass`):
-
-```json
-{"username": "ownbase", "password": "…"}
-```
+## Tokens
 
 ### `POST /token/reset` — rotate the API Bearer token
 

@@ -83,9 +83,9 @@ jobs:
         run: go test -tags=integration -timeout 30m ./...
 
   # Tier 2 root — same Ubuntu 24.04 VM but runs install + bootstrap tests as
-  # root. These tests use rootful Podman (install-level operations, UFW, the
-  # ownbase-core-forgejo bootstrap container). Each job gets a fresh VM so
-  # there is no conflict with the rootless tier2 job above.
+  # root. These tests use rootful Podman (install-level operations, UFW).
+  # Each job gets a fresh VM so there is no conflict with the rootless
+  # tier2 job above.
   tier2-root:
     name: Tier 2 root (install + bootstrap)
     runs-on: ubuntu-24.04
@@ -97,9 +97,6 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-
-      - name: Pre-pull Forgejo image (rootful Podman storage)
-        run: sudo podman pull codeberg.org/forgejo/forgejo:15.0.3
 
       - name: go test (integration, root)
         # -p 1 forces sequential execution so PassZero (install) finishes

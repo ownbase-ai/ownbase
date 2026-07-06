@@ -60,7 +60,7 @@ func TestHelpListsAllCommands(t *testing.T) {
 	for _, want := range []string{
 		"create", "adopt", "list", "delete", "restore", "compile", "plan",
 		"apply", "status", "checkup", "updates", "security", "backup",
-		"secrets", "forgejo", "upgrade", "version",
+		"secrets", "upgrade", "config", "service", "version",
 	} {
 		if !strings.Contains(help, want) {
 			t.Errorf("top-level help missing command %q", want)
@@ -78,10 +78,14 @@ func TestBaseTargetingCommandsRequireName(t *testing.T) {
 		{"updates"},
 		{"security"},
 		{"upgrade"},
-		{"forgejo"},
 		{"delete"},
 		{"backup", "status"},
 		{"secrets", "get", "svc", "key"}, // wrong arg count: missing base name
+		{"config", "get"},
+		{"config", "set"},
+		{"service", "add", "svc"},    // wrong arg count: missing base name
+		{"service", "remove", "svc"}, // wrong arg count: missing base name
+		{"service", "update", "svc"}, // wrong arg count: missing base name
 	}
 	for _, args := range cases {
 		root := newRootCmd()

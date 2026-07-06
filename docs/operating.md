@@ -8,9 +8,9 @@
 
 2. **The only way to change what's running is `ownbase.yaml` + a commit.** Never `podman run`, `systemctl edit`, or hand-edit anything under `runtime/` — those files are compiler output and get overwritten on the next reconcile. See [ownbase-yaml.md](ownbase-yaml.md) for the schema.
 
-3. **Push to the Base's own Forgejo, not GitHub.** The Base's Git host is local. Commit and push there; the daemon reconciles automatically (hook-triggered — seconds, not minutes). To track an external GitHub repo, declare it with `mirror:` and let the daemon manage the Forgejo mirror.
+3. **Push to the Base's own config repo, not GitHub.** It's a local, remote-less bare repo — no hosted git server in between. `ownbasectl config set`/`service add|update|remove` push there for you, or push directly over SSH by hand; the daemon reconciles automatically (hook-triggered — seconds, not minutes). To track an external GitHub repo, declare it with `mirror:` and let the daemon manage the local mirror.
 
-4. **Use `ownbasectl` for everything else** — status, secrets, backups, security, core-package upgrades. See [cli.md](cli.md) for the full command reference, or [api.md](api.md) to call the daemon's HTTP API directly.
+4. **Use `ownbasectl` for everything else** — config, services, status, secrets, backups, security, core-package upgrades. See [cli.md](cli.md) for the full command reference, or [api.md](api.md) to call the daemon's HTTP API directly.
 
 5. **Updating a service = edit `ref:` and commit.** There is no other update mechanism. The daemon never opens PRs or mutates the repo on its own initiative, with one transparent exception: it resolves a blank `ref:` to a concrete commit SHA and commits that pin back.
 
@@ -21,7 +21,7 @@
 | Task | How |
 |---|---|
 | See what's deployed and healthy | `ownbasectl status <base>` (declared services: `ownbase.yaml`) |
-| Deploy or change a service | Edit `ownbase.yaml`, commit, push to the Base's Forgejo |
+| Deploy or change a service | `ownbasectl service add/update/remove <base> <name> ...`, or edit `ownbase.yaml` and push |
 | Update a service | Edit its `ref:`, commit, push |
 | See what's behind | `ownbasectl updates <base>` |
 | Set a secret | `ownbasectl secrets set <base> <service> KEY=value` |

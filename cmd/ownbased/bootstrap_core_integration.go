@@ -22,20 +22,17 @@ import (
 // with system-level systemctl (no --user), so no user D-Bus session is needed.
 func runningAsRoot() bool { return os.Getuid() == 0 }
 
-// bootstrapCore installs and starts the core Quadlet units (Forgejo + Caddy)
-// then calls install.BootstrapCore to create the admin user, token, base repo,
-// and webhook. Safe to call on every agent startup — every step is idempotent.
+// bootstrapCore installs and starts the core Quadlet units (Caddy) as
+// systemd services. Safe to call on every agent startup — every step is
+// idempotent.
 //
-// This runs after pass zero and before the main reconcile loop so that core
-// packages are always healthy before user services are reconciled.
+// This runs after pass zero and before the main reconcile loop so that the
+// core package is always healthy before user services are reconciled.
 func bootstrapCore(ctx context.Context, cfg agentConfig, coreCfg schema.CoreConfig) error {
-	// On first install, merge domain/email from first-run.env into coreCfg so
-	// Forgejo starts with the correct ROOT_URL and the seeded ownbase.yaml has
-	// the domain pre-filled — all before ownbase.yaml exists on disk.
+	// On first install, merge the ACME email from first-run.env into coreCfg
+	// so Caddy starts with the correct email — all before ownbase.yaml exists
+	// on disk.
 	firstRun := readFirstRunEnv()
-	if firstRun.ForgejoDomain != "" && coreCfg.Forgejo.Domain == "" {
-		coreCfg.Forgejo.Domain = firstRun.ForgejoDomain
-	}
 	if firstRun.CaddyEmail != "" && coreCfg.Caddy.Email == "" {
 		coreCfg.Caddy.Email = firstRun.CaddyEmail
 	}
@@ -109,28 +106,9 @@ func bootstrapCore(ctx context.Context, cfg agentConfig, coreCfg schema.CoreConf
 		}
 	}
 
-	// 6. Run install.BootstrapCore: wait for Forgejo, create admin/token/repo/webhook.
-	// This is fully idempotent — if already done, each step is a fast no-op.
-	// Use the container IP directly to bypass localhost port-forwarding races.
-	forgejoBaseURL := discoverForgejoURL(fmt.Sprintf("http://localhost:%d", core.DefaultForgejoPort))
-	bootstrapCfg := install.CoreBootstrapConfig{
-		CoreConfig:      coreCfg,
-		BareRepoPath:    cfg.repoPath,
-		TokenPath:       install.DefaultTokenPath,
-		ForgejoBaseURL:  forgejoBaseURL,
-		AgentWebhookURL: fmt.Sprintf("http://host.containers.internal:%s/api/v1/hook/push", statusPort(cfg.statusAddr)),
-		AdminPassword:   firstRun.Password,
-		OwnerSSHKey:     firstRun.SSHKey,
-		DryRun:          cfg.dryRun,
-	}
-	if err := install.BootstrapCore(ctx, bootstrapCfg); err != nil {
-		// Non-fatal: Forgejo may be starting up; the token may already exist.
-		// The reconcile loop will work with whatever token is already on disk.
-		fmt.Fprintf(os.Stderr, "ownbased: bootstrap core (non-fatal): %v\n", err)
-	} else {
-		// Credentials consumed — delete the one-time file.
-		deleteFirstRunEnv()
-	}
+	// Credentials (if any) were only ever used for Forgejo bootstrap, which no
+	// longer exists — delete the one-time file so it doesn't linger on disk.
+	deleteFirstRunEnv()
 
 	return nil
 }
@@ -149,50 +127,12 @@ func agentQuadletDir() string {
 	return filepath.Join(home, ".config/containers/systemd")
 }
 
-// statusPort extracts just the port from an addr like "0.0.0.0:7070".
-func statusPort(addr string) string {
-	if idx := strings.LastIndex(addr, ":"); idx >= 0 {
-		return addr[idx+1:]
-	}
-	return "7070"
-}
-
-// discoverForgejoURL returns the URL that the agent should use to reach
-// Forgejo. On systems where rootful Podman's port forwarding is unreliable
-// (DNAT rules set up asynchronously), we bypass localhost:3000 and talk
-// directly to the container IP. Falls back to cfg.forgejoURL if the
-// container isn't running.
-func discoverForgejoURL(defaultURL string) string {
-	port := "3000"
-	if defaultURL != "" {
-		// Extract port from default URL if non-standard.
-		if idx := strings.LastIndex(defaultURL, ":"); idx >= 0 {
-			if p := defaultURL[idx+1:]; p != "3000" && len(p) > 0 {
-				port = p
-			}
-		}
-	}
-	out, err := exec.Command(
-		"podman", "inspect", "--format",
-		"{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
-		core.ForgejoContainerName,
-	).Output()
-	if err != nil {
-		return defaultURL
-	}
-	ip := strings.TrimSpace(string(out))
-	if ip == "" {
-		return defaultURL
-	}
-	return "http://" + ip + ":" + port
-}
-
 const firstRunEnvPath = install.FirstRunEnvPath
 
-// readFirstRunEnv reads owner credentials from the one-time first-run file
-// written by install.sh. Returns a zero-value FirstRunEnv if the file does
-// not exist. The file is NOT deleted here — deleteFirstRunEnv does that after
-// a successful bootstrap so that a failed bootstrap retries with the same values.
+// readFirstRunEnv reads owner/install credentials from the one-time
+// first-run file written by install.sh. Returns a zero-value FirstRunEnv if
+// the file does not exist. The file is NOT deleted here — deleteFirstRunEnv
+// does that after bootstrapCore has consumed it.
 func readFirstRunEnv() install.FirstRunEnv {
 	return install.ReadFirstRunEnv(firstRunEnvPath)
 }

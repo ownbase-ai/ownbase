@@ -1,19 +1,20 @@
 // Package githost manages the on-Base bare repo, the post-receive hook, and
-// the working checkout the daemon reconciles from. Delivered in M4a (bare repo
-// + hook) and extended in M4b (Forgejo as a reconciled service).
+// the working checkout the daemon reconciles from.
 //
 // Layout on a running Base:
 //
 //	/opt/ownbase/
 //	  repo/        # bare git repo — the irreducible, user-owned source of truth
 //	  checkout/    # working clone the daemon reads ownbase.yaml from
+//	  repos/       # one bare repo per service (see internal/repos)
 //	  runtime/     # compiler output written by the daemon (never by hand)
 //	  logs/        # audit log and other daemon logs
 //	  daemon.pid   # daemon PID for SIGUSR1 hook signaling
 //
-// The bare repo is the canonical source of truth. Forgejo (M4b) is wired as a
-// remote of it — not the other way around. The filesystem repo, not the
-// service, is what reconcile can never depend on being up.
+// The bare repo at repo/ is the canonical source of truth: ownbasectl pushes
+// directly to it over SSH; the post-receive hook signals the daemon, which
+// pulls into checkout/ and reconciles. There is no intermediary git host —
+// the filesystem repo is what reconcile can never depend on being up.
 package githost
 
 import (
@@ -22,6 +23,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/ownbase/ownbase/internal/fsowner"
 )
 
 // DefaultRepoPath is the canonical on-Base path for the bare repo.
@@ -38,14 +41,21 @@ const DefaultPIDPath = "/opt/ownbase/daemon.pid"
 // push, without polling. The timer backstop still catches drift that arrives
 // without a commit.
 //
-// The hook is intentionally minimal: it reads the PID file and sends SIGUSR1.
-// If the daemon is not running the signal is silently ignored (|| true).
+// The hook runs as whoever pushed — the admin SSH user for a direct `git
+// push` — while the daemon runs as root. Sending a signal requires a UID
+// match or root, so a plain `kill` here would silently fail for a non-root
+// admin user (e.g. "ubuntu" on a local VM). `sudo -n pkill` uses the narrow,
+// single-command NOPASSWD grant installed at
+// internal/install.NotifySudoersPath; for a root admin user (most remote
+// installs) it just works via the stock sudoers file. If neither applies
+// (sudoers grant not yet installed, or the daemon isn't running) the signal
+// is silently skipped (|| true) and the timer backstop catches it instead.
 const HookScript = `#!/bin/sh
 # OwnBase post-receive hook — triggers the daemon reconcile loop on push.
 # Never hand-edit: reinstalled by the daemon on each startup.
 PIDFILE=/opt/ownbase/daemon.pid
 if [ -f "$PIDFILE" ]; then
-  kill -USR1 "$(cat "$PIDFILE")" 2>/dev/null || true
+  sudo -n /usr/bin/pkill -USR1 -F "$PIDFILE" 2>/dev/null || true
 fi
 `
 
@@ -71,6 +81,43 @@ func Bootstrap(repoPath, checkoutPath string) error {
 		}
 	}
 
+	return nil
+}
+
+// SetRepoOwner grants adminUser (the SSH account ownbasectl and the operator
+// use to reach this Base) write access to the bare repo at repoPath, which
+// the daemon otherwise creates and owns as root (see install.sh's systemd
+// unit). Without this, `git push` over SSH as adminUser fails with a
+// permission error even though the repo exists. A no-op when adminUser is
+// empty (see internal/install.ReadAdminUser). Safe to call on every daemon
+// start — chowning an already-correctly-owned tree is a cheap no-op.
+func SetRepoOwner(repoPath, adminUser string) error {
+	return fsowner.Chown(repoPath, adminUser)
+}
+
+// TrustAllRepos tells git, machine-wide, that it is safe to operate on a
+// repository owned by a different user than the current process. This is
+// required once SetRepoOwner/repos.EnsureRepo chown a bare repo to
+// adminUser: the daemon (root) still needs to read, fetch into, and be
+// pushed to that repo (git push's receive-pack runs as whatever SSH user
+// connected, but the daemon's own pulls/seeds/fetches run as root), and
+// git refuses by default to touch a repo whose owner doesn't match the
+// calling user (the "dubious ownership" check, CVE-2022-24765).
+//
+// A blanket `safe.directory = *` is appropriate here — unlike a shared
+// multi-tenant host, a Base has exactly one admin user and one root
+// daemon, both already fully trusted with the whole machine. Written to
+// the system-wide git config (/etc/gitconfig) so it applies regardless of
+// $HOME, and to every account (root and adminUser alike) rather than just
+// whichever user happens to invoke git first.
+//
+// Idempotent: --replace-all overwrites any prior value instead of
+// appending a duplicate. Safe to call on every daemon start.
+func TrustAllRepos() error {
+	out, err := exec.Command("git", "config", "--system", "--replace-all", "safe.directory", "*").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git config --system safe.directory: %w\n%s", err, out)
+	}
 	return nil
 }
 

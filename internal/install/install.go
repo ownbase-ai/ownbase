@@ -34,10 +34,6 @@ type PassZeroConfig struct {
 	// SSHPort is the SSH port to allow through the firewall. Default: 22.
 	SSHPort int
 
-	// ForgejoPort is the port Forgejo listens on. Default: 3000.
-	// The firewall opens this port so the user can reach the git host.
-	ForgejoPort int
-
 	// DryRun logs what would be done without making changes.
 	DryRun bool
 }
@@ -50,9 +46,6 @@ func (cfg *PassZeroConfig) withDefaults() PassZeroConfig {
 	if c.SSHPort == 0 {
 		c.SSHPort = 22
 	}
-	// ForgejoPort has no default. Callers pass the effective port (e.g. 3000)
-	// for direct-access mode, or 0 when a domain is configured and Caddy
-	// proxies Forgejo on 443 (UFW should not open a direct port in that case).
 	return c
 }
 
@@ -79,7 +72,6 @@ type HardeningReport struct {
 	Firewall    StepStatus
 	AutoUpdates StepStatus
 	Fail2ban    StepStatus
-	GitSSH      StepStatus
 	NoExposedDB StepStatus
 
 	// Trivy is the vulnerability scanner installation step. Non-fatal:
@@ -99,7 +91,7 @@ type HardeningReport struct {
 // Trivy is excluded — its installation failure is non-fatal.
 func (r HardeningReport) OK() bool {
 	for _, s := range []StepStatus{r.OS, r.Podman, r.Linger, r.Firewall,
-		r.AutoUpdates, r.Fail2ban, r.GitSSH, r.NoExposedDB} {
+		r.AutoUpdates, r.Fail2ban, r.NoExposedDB} {
 		if !s.Done {
 			return false
 		}
@@ -118,8 +110,7 @@ func (r HardeningReport) OK() bool {
 //  4. Configure UFW firewall.
 //  5. Enable automatic security updates.
 //  6. Install and configure fail2ban.
-//  7. Configure git SSH multiplexing (AuthorizedKeysCommand shims).
-//  8. Verify no database ports are publicly reachable.
+//  7. Verify no database ports are publicly reachable.
 //
 // Any step failure returns immediately. The caller (agent main) logs the
 // error and exits, so systemd will restart the service and PassZero will
@@ -163,11 +154,6 @@ func PassZero(ctx context.Context, cfg PassZeroConfig) (HardeningReport, error) 
 		return r, fmt.Errorf("container-dns: %w", s.Err)
 	}
 
-	r.GitSSH = ensureGitSSH(ctx, c)
-	if r.GitSSH.Err != nil {
-		return r, fmt.Errorf("git-ssh: %w", r.GitSSH.Err)
-	}
-
 	r.NoExposedDB = verifyNoExposedDB(ctx, c)
 	if r.NoExposedDB.Err != nil {
 		return r, fmt.Errorf("exposed-db check: %w", r.NoExposedDB.Err)
@@ -202,7 +188,6 @@ func CheckHardeningState(ctx context.Context, cfg PassZeroConfig) HardeningRepor
 	r.Firewall = checkFirewallState(ctx)
 	r.AutoUpdates = checkAutoUpdatesState(ctx)
 	r.Fail2ban = checkFail2banState(ctx)
-	r.GitSSH = checkGitSSHState(ctx)
 	r.NoExposedDB = verifyNoExposedDB(ctx, c)
 	r.Trivy = checkTrivyState(ctx)
 	r.Restic = checkResticState(ctx)

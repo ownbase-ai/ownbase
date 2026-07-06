@@ -65,7 +65,7 @@ func TestHardeningReport_OK_AllDone(t *testing.T) {
 	r := install.HardeningReport{
 		OS: done, Podman: done, Linger: done,
 		Firewall: done, AutoUpdates: done, Fail2ban: done,
-		GitSSH: done, NoExposedDB: done,
+		NoExposedDB: done,
 	}
 	if !r.OK() {
 		t.Error("HardeningReport.OK() should be true when all steps are Done")
@@ -77,7 +77,7 @@ func TestHardeningReport_OK_OneFailed(t *testing.T) {
 	r := install.HardeningReport{
 		OS: done, Podman: install.StepStatus{Done: false},
 		Linger: done, Firewall: done, AutoUpdates: done, Fail2ban: done,
-		GitSSH: done, NoExposedDB: done,
+		NoExposedDB: done,
 	}
 	if r.OK() {
 		t.Error("HardeningReport.OK() should be false when any step is not Done")

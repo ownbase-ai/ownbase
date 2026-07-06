@@ -313,7 +313,7 @@ func printSecurityReport(base string, body []byte) error {
 					label := svc
 					if image != "" && image != svc {
 						// Strip @sha256:... digest so we show the human-readable
-						// tag (e.g. "codeberg.org/forgejo/forgejo:10") rather
+						// tag (e.g. "docker.io/library/caddy:2-alpine") rather
 						// than an opaque hash tail.
 						if i := strings.Index(image, "@sha256:"); i != -1 {
 							image = image[:i]
@@ -383,7 +383,7 @@ func printSecurityReport(base string, body []byte) error {
 	fmt.Println("  tampering is not visible here.")
 	fmt.Printf("  Use 'ownbasectl security scan %s'   to trigger an immediate rescan.\n", base)
 	fmt.Printf("  Use 'ownbasectl security fix %s'    to apply available OS package patches.\n", base)
-	fmt.Printf("  Use 'ownbasectl upgrade %s --apply' to pull updated Forgejo/Caddy images\n", base)
+	fmt.Printf("  Use 'ownbasectl upgrade %s --apply' to pull an updated Caddy image\n", base)
 	fmt.Println("    and fix image CVEs (image CVEs can only be fixed by pulling a newer")
 	fmt.Println("    image from the upstream maintainer — 'security fix' only helps the host OS).")
 	fmt.Printf("  Use 'ownbasectl security %s --json' for the raw status data.\n", base)

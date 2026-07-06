@@ -123,10 +123,10 @@ func runBackupSetup(base, repo string, credFlags backupCredFlags, interval, veri
 	}
 
 	fmt.Println("==> Running the first backup now (this may take a while for large volumes) ...")
-	// The config commit above lands on Forgejo directly; it reaches the
-	// checkout the daemon reads from only after the next reconcile pulls it
-	// in (the daemon wakes the reconcile loop immediately on commit, but
-	// that happens concurrently with this call). Retry briefly, but only for
+	// The config commit above lands on the local bare repo directly; it
+	// reaches the checkout the daemon reads from only after the next
+	// reconcile pulls it in (the daemon wakes the reconcile loop immediately
+	// on commit, but that happens concurrently with this call). Retry briefly, but only for
 	// that specific "not configured yet" race — a permanent failure (bad
 	// restic credentials, unreachable repo) should surface immediately
 	// rather than being retried for 30 seconds as if it might resolve itself.

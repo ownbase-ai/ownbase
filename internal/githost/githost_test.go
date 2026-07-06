@@ -48,6 +48,43 @@ func TestBootstrap_Idempotent(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// TrustAllRepos
+// ---------------------------------------------------------------------------
+
+func TestTrustAllRepos_SetsSafeDirectoryWildcard(t *testing.T) {
+	// TrustAllRepos always targets the real system git config
+	// (`git config --system`), so redirect it to a temp file via
+	// GIT_CONFIG_SYSTEM (respected by git >= 2.32) instead of touching the
+	// test machine's actual /etc/gitconfig.
+	cfgPath := filepath.Join(t.TempDir(), "gitconfig")
+	t.Setenv("GIT_CONFIG_SYSTEM", cfgPath)
+
+	if err := githost.TrustAllRepos(); err != nil {
+		t.Fatalf("TrustAllRepos: %v", err)
+	}
+
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read redirected system gitconfig: %v", err)
+	}
+	if !strings.Contains(string(data), "directory = *") {
+		t.Errorf("expected safe.directory = * in system config, got:\n%s", data)
+	}
+
+	// Idempotent: a second call replaces rather than duplicates the value.
+	if err := githost.TrustAllRepos(); err != nil {
+		t.Fatalf("TrustAllRepos (second call): %v", err)
+	}
+	data, err = os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read redirected system gitconfig (second read): %v", err)
+	}
+	if n := strings.Count(string(data), "directory = *"); n != 1 {
+		t.Errorf("expected exactly one safe.directory entry after two calls, got %d in:\n%s", n, data)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // InstallHook
 // ---------------------------------------------------------------------------
 
@@ -242,23 +279,5 @@ func TestWritePIDFile_WritesCurrentPID(t *testing.T) {
 	pid := strings.TrimSpace(string(data))
 	if pid == "" || pid == "0" {
 		t.Errorf("unexpected PID content: %q", pid)
-	}
-}
-
-// TestDefaultForgejoRepoName_UsedByBootstrapAndAgent ensures that the constant
-// used by BootstrapCore to create the Forgejo repo matches the value the agent
-// uses as the default for its --repo-name flag. A mismatch causes the agent to
-// look for a repo that doesn't exist (sync fails with "repository not found").
-//
-// If this test fails, check:
-//   - githost.DefaultForgejoRepoName
-//   - the --repo-name flag default in cmd/ownbased/main.go
-func TestDefaultForgejoRepoName_MatchesAgentFlagDefault(t *testing.T) {
-	// The canonical name is the constant. Document it here so a rename is
-	// intentional and forces this test to be updated.
-	const wantName = "ownbase"
-	if githost.DefaultForgejoRepoName != wantName {
-		t.Errorf("DefaultForgejoRepoName = %q, want %q — update this test if the name was intentionally changed",
-			githost.DefaultForgejoRepoName, wantName)
 	}
 }

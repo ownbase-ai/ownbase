@@ -1,8 +1,6 @@
 schema_version: v1
 
 core:
-  forgejo:
-    domain: git.example.com
   caddy:
     email: admin@example.com
 

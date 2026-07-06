@@ -24,11 +24,11 @@ For a local VM, plain `ownbasectl delete <name>` also destroys the VM (it asks f
 
 Export is always available — the source of truth already lives in your repos and your data is in open formats. Nothing here requires OwnBase to still be running afterwards.
 
-**Code and config.** Every repo lives on the Base's Forgejo. Clone what you want to keep:
+**Code and config.** Every repo is a local bare git repo on the Base itself. Clone what you want to keep over SSH (from the admin user's account, e.g. `ubuntu`):
 
 ```bash
-git clone ssh://git@<forgejo-host>/ownbase/ownbase.git      # the config repo (ownbase.yaml)
-git clone ssh://git@<forgejo-host>/services/<name>.git      # each source-built service
+git clone ssh://ubuntu@<base-host>/opt/ownbase/repo                        # the config repo (ownbase.yaml)
+git clone ssh://ubuntu@<base-host>/opt/ownbase/repos/services/<name>       # each source-built or mirrored service
 ```
 
 **Service data.** Data lives in Podman volumes named `ownbase-<service>-<volume>` (`ownbase-<service>-data` for the single-volume shorthand). Export any of them on the Base:
@@ -54,7 +54,7 @@ systemctl disable --now ownbased
 rm /etc/systemd/system/ownbased.service
 systemctl daemon-reload
 
-# 2. Stop and remove the managed services (user services + Forgejo + Caddy)
+# 2. Stop and remove the managed services (user services + Caddy)
 podman ps -a --format '{{.Names}}' | grep '^ownbase-' | xargs -r podman rm -f
 rm -f /etc/containers/systemd/ownbase-*
 systemctl daemon-reload

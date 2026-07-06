@@ -14,8 +14,9 @@
 //	security  — network exposure + SSH access monitor + CVE scan
 //	backup    — configure/run/check remote backups
 //	secrets   — view and manage per-service secrets
-//	forgejo   — retrieve Forgejo credentials
-//	upgrade   — check/apply updates to core packages (Forgejo, Caddy)
+//	upgrade   — check/apply updates to the core package (Caddy)
+//	config    — read/replace ownbase.yaml (agent-first, non-interactive)
+//	service   — add/remove/update a service in ownbase.yaml
 //
 // Local subcommands operate on a repo checkout and take no Base name:
 //
@@ -79,8 +80,9 @@ Start here:
 		newSecurityCmd(),
 		newBackupCmd(),
 		newSecretsCmd(),
-		newForgejoCmd(),
 		newUpgradeCmd(),
+		newConfigCmd(),
+		newServiceCmd(),
 		newCompileCmd(),
 		newPlanCmd(),
 		newApplyCmd(),

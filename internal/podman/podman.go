@@ -24,6 +24,7 @@ import (
 
 	"github.com/ownbase/ownbase/internal/core"
 	"github.com/ownbase/ownbase/internal/reconcile"
+	"github.com/ownbase/ownbase/internal/repos"
 	"github.com/ownbase/ownbase/internal/schema"
 )
 
@@ -35,8 +36,9 @@ import (
 //     The owner is detected at runtime; both paths use the same code.
 //
 // For source-built services, the Applier clones the repo at the pinned ref
-// from the local Forgejo instance and runs `podman build` before starting
-// the Quadlet unit. ForgejoURL and ForgejoToken are required for this path.
+// from the local bare repo under /opt/ownbase/repos/ (see internal/repos)
+// and runs `podman build` before starting the Quadlet unit. No network
+// access or auth token is needed: the clone is a local filesystem path.
 //
 // All resources it creates carry the "ownbase-" prefix and are visible to
 // runtime.QueryCurrentState. Rollback removes unit files and stops services
@@ -51,19 +53,6 @@ type Applier struct {
 	// detector sees them on the next reconcile tick.
 	// Example: "/opt/ownbase/checkout/runtime"
 	RuntimeDir string
-
-	// ForgejoURL is the base URL of the on-Base Forgejo instance, used to
-	// construct git clone URLs for source-built services.
-	// Example: "http://localhost:3000"
-	ForgejoURL string
-
-	// ForgejoUser is the Forgejo user used as the git clone username and as
-	// the default repo owner when source paths lack an explicit org prefix.
-	ForgejoUser string
-
-	// ForgejoToken is the Forgejo API token embedded in clone URLs for auth.
-	// If empty, unauthenticated clones are attempted (works for public repos).
-	ForgejoToken string
 
 	// SecretsDir is the directory containing age-encrypted secrets files,
 	// one per service: <SecretsDir>/<service>.yaml.age. Defaults to
@@ -134,9 +123,10 @@ func (p *Applier) start(a reconcile.PlannedAction) error {
 		return fmt.Errorf("start %q: no unit content in planned action", a.Action.Target)
 	}
 
-	// For source-built containers, build the image from the local Forgejo repo
-	// before installing the Quadlet unit. Image-bundled containers (IsImageBundled
-	// flag in the unit: no BuildSource comment) are pulled by Podman on start.
+	// For source-built containers, build the image from the local bare repo
+	// under /opt/ownbase/repos/ before installing the Quadlet unit.
+	// Image-bundled containers (IsImageBundled flag in the unit: no
+	// BuildSource comment) are pulled by Podman on start.
 	if strings.HasSuffix(a.UnitFilename, ".container") {
 		src, ref, dockerfile, buildCtx := parseBuildProvenance(a.UnitContent)
 		if src != "" {
@@ -361,19 +351,18 @@ func (p *Applier) reload(a reconcile.PlannedAction) error {
 // ---------------------------------------------------------------------------
 
 // buildImage builds localhost/<containerName>:local from the source repo at
-// the given ref. It clones the repo from the local Forgejo instance, checks
-// out the pinned ref, and runs `podman build`.
+// the given ref. It clones the local bare repo under /opt/ownbase/repos/
+// (see internal/repos), checks out the pinned ref, and runs `podman build`.
 //
 // containerName is e.g. "ownbase-auth"; imageName is "localhost/ownbase-auth:local".
-// source is the Forgejo repo path (e.g. "services/auth").
+// source is the local bare-repo name (e.g. "services/auth" or "mirrors-postgres").
 // ref is the branch, tag, or commit SHA; empty means the default branch.
 // dockerfile is relative to the repo root; empty means "Dockerfile".
 // buildCtx is a subdirectory to use as the build context; empty means root.
 func (p *Applier) buildImage(containerName, source, ref, dockerfile, buildCtx string) error {
 	imageName := "localhost/" + containerName + ":local"
 
-	owner, repo := splitSourcePath(source, p.forgejoUser())
-	cloneURL := buildCloneURL(p.ForgejoURL, owner, repo)
+	repoPath := repos.RepoPath(source)
 
 	// Clone into a temp directory.
 	tmpDir, err := os.MkdirTemp("", "ownbase-build-*")
@@ -382,7 +371,7 @@ func (p *Applier) buildImage(containerName, source, ref, dockerfile, buildCtx st
 	}
 	defer os.RemoveAll(tmpDir)
 
-	if err := gitCloneAt(cloneURL, ref, p.ForgejoToken, tmpDir); err != nil {
+	if err := gitCloneAt(repoPath, ref, tmpDir); err != nil {
 		return fmt.Errorf("git clone %s@%s: %w", source, ref, err)
 	}
 
@@ -412,60 +401,35 @@ func (p *Applier) buildImage(containerName, source, ref, dockerfile, buildCtx st
 	return nil
 }
 
-func (p *Applier) forgejoUser() string {
-	if p.ForgejoUser != "" {
-		return p.ForgejoUser
-	}
-	return "ownbase"
-}
-
-// gitCloneAt performs a shallow clone of cloneURL into destDir. When ref is a
-// tag or branch name it uses --branch for a depth-1 clone. When ref looks like
-// a commit SHA it clones without --branch and then checks out the SHA.
-//
-// token is passed via GIT_CONFIG_COUNT/KEY/VALUE env vars so that it never
-// appears in the process argv or in git's own error/log output (M14).
-func gitCloneAt(cloneURL, ref, token, destDir string) error {
+// gitCloneAt performs a local clone of the bare repo at repoPath into
+// destDir. When ref is a tag or branch name it uses --branch for a depth-1
+// clone. When ref looks like a commit SHA it clones without --branch and
+// then checks out the SHA. Because repoPath is always a local filesystem
+// path (no HTTP/SSH remote), no authentication is needed and the clone
+// hard-links objects instead of transferring them over the network.
+func gitCloneAt(repoPath, ref, destDir string) error {
 	var cloneArgs []string
 	isCommit := len(ref) == 40 && isHexStr(ref)
 
 	if ref != "" && !isCommit {
 		// Tag or branch: shallow clone at the named ref.
-		cloneArgs = []string{"clone", "--depth=1", "--branch", ref, cloneURL, destDir}
+		cloneArgs = []string{"clone", "--depth=1", "--branch", ref, repoPath, destDir}
 	} else {
 		// Empty ref (default branch) or commit SHA: regular shallow clone.
-		cloneArgs = []string{"clone", "--depth=1", cloneURL, destDir}
+		cloneArgs = []string{"clone", "--depth=1", repoPath, destDir}
 	}
 
-	cmd := exec.Command("git", cloneArgs...)
-	// Pass the token via environment rather than URL so it never appears in argv.
-	// GIT_CONFIG_COUNT/KEY/VALUE was introduced in git 2.31 (Ubuntu 22.04: 2.34).
-	if token != "" {
-		cmd.Env = append(os.Environ(),
-			"GIT_CONFIG_COUNT=1",
-			"GIT_CONFIG_KEY_0=http.extraHeader",
-			"GIT_CONFIG_VALUE_0=Authorization: token "+token,
-		)
-	}
-	out, err := cmd.CombinedOutput()
+	out, err := exec.Command("git", cloneArgs...).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("git clone: %w\n%s", err, scrubToken(string(out), token))
+		return fmt.Errorf("git clone: %w\n%s", err, out)
 	}
 
 	if isCommit {
 		// Commit SHAs require a fetch + checkout after the initial clone.
-		fetchCmd := exec.Command("git", "-C", destDir, "fetch", "--depth=1", "origin", ref)
-		if token != "" {
-			fetchCmd.Env = append(os.Environ(),
-				"GIT_CONFIG_COUNT=1",
-				"GIT_CONFIG_KEY_0=http.extraHeader",
-				"GIT_CONFIG_VALUE_0=Authorization: token "+token,
-			)
-		}
-		fetchOut, err := fetchCmd.CombinedOutput()
+		fetchOut, err := exec.Command("git", "-C", destDir, "fetch", "--depth=1", "origin", ref).CombinedOutput()
 		if err != nil {
 			// Non-fatal: the commit may already be present in the shallow clone.
-			_ = scrubToken(string(fetchOut), token)
+			_ = fetchOut
 		}
 		coOut, err := exec.Command("git", "-C", destDir, "checkout", ref).CombinedOutput()
 		if err != nil {
@@ -473,18 +437,6 @@ func gitCloneAt(cloneURL, ref, token, destDir string) error {
 		}
 	}
 	return nil
-}
-
-// splitSourcePath splits a Forgejo repo path (e.g. "services/auth") into
-// owner and repo. If the path has no slash, defaultOwner is used.
-// Mirrors the parseSourcePath function in internal/update/detect.go; kept
-// here to avoid a cross-package dependency.
-func splitSourcePath(sourcePath, defaultOwner string) (owner, repo string) {
-	parts := strings.SplitN(sourcePath, "/", 2)
-	if len(parts) == 2 {
-		return parts[0], parts[1]
-	}
-	return defaultOwner, sourcePath
 }
 
 func isHexStr(s string) bool {

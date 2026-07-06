@@ -1,13 +1,8 @@
 schema_version: v1
 
 # Test fixture: mirror: service alongside a source: service.
-# Used to verify that mirror services resolve to a Forgejo path and compile
-# correctly (build from mirrors/<basename>, not a registry image).
-
-core:
-  forgejo:
-    domain: git.example.com
-    port: 3000
+# Used to verify that mirror services resolve to a local bare repo and
+# compile correctly (build from mirrors-<basename>, not a registry image).
 
 services:
   postgres:

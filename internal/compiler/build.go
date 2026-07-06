@@ -56,17 +56,7 @@ func build(in Input) RuntimeModel {
 		})
 	}
 
-	// Forgejo core vhost: add a Caddy route when a public domain is configured.
-	// Forgejo binds to 127.0.0.1:port; Caddy proxies the domain to it and
-	// provisions a TLS certificate automatically via Let's Encrypt.
-	if in.Config.Core.Forgejo.Domain != "" {
-		port := in.Config.Core.Forgejo.EffectivePort()
-		model.Routes = append(model.Routes, RouteModel{
-			Host:     in.Config.Core.Forgejo.Domain,
-			Upstream: fmt.Sprintf("localhost:%d", port),
-		})
-		model.ACMEEmail = in.Config.Core.Caddy.Email
-	}
+	model.ACMEEmail = in.Config.Core.Caddy.Email
 
 	sort.Slice(model.Routes, func(i, j int) bool {
 		return model.Routes[i].Host < model.Routes[j].Host
@@ -92,11 +82,11 @@ func buildContainer(name string, svc schema.ServiceDecl) ContainerModel {
 		Env:          svc.Env,
 	}
 
-	// All user services build from a local Forgejo repo.
-	// source: uses the path directly; mirror: derives the path as mirrors/<basename>.
+	// All user services build from a local bare repo under /opt/ownbase/repos/.
+	// source: uses the path directly; mirror: derives the name as mirrors-<basename>.
 	buildSource := svc.Source
 	if buildSource == "" && svc.Mirror != "" {
-		buildSource = MirrorForgejoPath(svc.Mirror)
+		buildSource = MirrorRepoName(svc.Mirror)
 	}
 	c.Image = fmt.Sprintf("localhost/ownbase-%s:local", name)
 	c.BuildSource = buildSource
@@ -169,17 +159,17 @@ func buildContainer(name string, svc schema.ServiceDecl) ContainerModel {
 	return c
 }
 
-// MirrorForgejoPath derives the Forgejo repo path for an external git mirror URL.
-// The convention is "mirrors-<basename>" as a flat name under the Forgejo admin
-// user, e.g. ownbase/mirrors-postgres. Using a dash (not a slash) means no
-// Forgejo organization is required — the repo is owned by the default user.
+// MirrorRepoName derives the local bare-repo name for an external git mirror
+// URL. The convention is "mirrors-<basename>", stored at
+// /opt/ownbase/repos/mirrors-<basename>. Using a dash (not a slash) keeps the
+// repo name flat — no nested directories required.
 //
 // Examples:
 //
 //	"https://github.com/docker-library/postgres" → "mirrors-postgres"
 //	"https://github.com/org/crm.git"             → "mirrors-crm"
 //	"git@github.com:org/myapp.git"               → "mirrors-myapp"
-func MirrorForgejoPath(mirrorURL string) string {
+func MirrorRepoName(mirrorURL string) string {
 	u := strings.TrimRight(mirrorURL, "/")
 	u = strings.TrimSuffix(u, ".git")
 	// Handle git@host:org/repo form.

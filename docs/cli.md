@@ -23,7 +23,7 @@ ownbasectl secrets list mybase
 
 ## How commands reach a Base
 
-Commands that talk to a Base (`status`, `updates`, `security`, `secrets`, `forgejo`, `upgrade`, `backup`, `checkup`) open an SSH tunnel to the host in the named profile (`~/.ownbase/config`) and call the daemon's HTTP API through it (see [api.md](api.md)). The API port is never exposed to the network. Host keys are verified against `~/.ownbase/known_hosts` (trust-on-first-use, like the `ssh` CLI).
+Commands that talk to a Base (`status`, `updates`, `security`, `secrets`, `config`, `service`, `upgrade`, `backup`, `checkup`) open an SSH tunnel to the host in the named profile (`~/.ownbase/config`) and call the daemon's HTTP API through it (see [api.md](api.md)). The API port is never exposed to the network. Host keys are verified against `~/.ownbase/known_hosts` (trust-on-first-use, like the `ssh` CLI).
 
 ---
 
@@ -39,7 +39,7 @@ ownbasectl create mybase
 
 # Fresh remote Ubuntu 22.04/24.04 server
 ownbasectl create mybase --remote root@mybase.example.com \
-  --forgejo-domain git.yourdomain.com --caddy-email you@example.com
+  --caddy-email you@example.com
 ```
 
 | Flag | Default | Meaning |
@@ -49,8 +49,7 @@ ownbasectl create mybase --remote root@mybase.example.com \
 | `--ssh-key` | `~/.ssh/id_ed25519` | SSH private key for `--remote` |
 | `--ssh-port` | `22` | SSH port for `--remote` (persisted in the profile) |
 | `--cpus` / `--memory` / `--disk` | `2` / `2` GB / `15` GB | VM sizing (local VM only) |
-| `--forgejo-domain` | — | Public domain for the Forgejo UI (optional; without it Forgejo is at `http://<host>:3000`) |
-| `--caddy-email` | — | ACME contact email for automatic TLS (used with `--forgejo-domain`) |
+| `--caddy-email` | — | ACME contact email for automatic TLS on public domains |
 | `--yes`, `-y` | `false` | Skip confirmation prompts (e.g. overwriting an existing local VM) |
 
 If a local VM with the same name already exists, `create` asks before deleting it (`--yes` skips the prompt; non-interactive runs proceed as before).
@@ -161,21 +160,52 @@ Fixing CVEs by location:
 | Location | Command | What it does |
 |---|---|---|
 | Host OS packages | `ownbasectl security fix <name>` | `apt-get upgrade` on the Base; auto-rescans after |
-| Forgejo / Caddy images | `ownbasectl upgrade <name> --apply` | Pulls latest pinned image, restarts container; auto-rescans after |
+| Caddy image | `ownbasectl upgrade <name> --apply` | Pulls latest pinned image, restarts container; auto-rescans after |
 | Image CVE with no fix | — | Wait for the upstream maintainer to release an updated image |
 
 ### `upgrade <name>`
 
-Check or apply updates to the OwnBase core packages (Forgejo, Caddy). Core packages are managed by OwnBase — not by `ownbase.yaml` — and this command is the only supported way to update them.
+Check or apply updates to the OwnBase core package (Caddy). The core package is managed by OwnBase — not by `ownbase.yaml` — and this command is the only supported way to update it.
 
 ```bash
-ownbasectl upgrade mybase             # check: image + digest + running state per core package
-ownbasectl upgrade mybase --apply     # pull latest pinned images, restart core containers (streams progress)
+ownbasectl upgrade mybase             # check: image + digest + running state
+ownbasectl upgrade mybase --apply     # pull latest pinned image, restart the container (streams progress)
 ```
 
 ---
 
-## Secrets and Forgejo
+## Config and services
+
+### `config get|set <name>`
+
+Read or atomically replace `ownbase.yaml` — the agent-first way to script config changes without an editor.
+
+```bash
+ownbasectl config get mybase                       # print the current ownbase.yaml
+ownbasectl config get mybase --json                # same, decoded to JSON
+
+ownbasectl config set mybase --file ./ownbase.yaml # validate locally, then push
+cat ownbase.yaml | ownbasectl config set mybase    # or read from stdin
+```
+
+`set` validates the whole document locally before sending it, then pushes it through the daemon's front-door `/config` endpoint — the same commit path a manual `git push` to `/opt/ownbase/repo` takes. Exit code is non-zero on validation failure or transport error, so this is safe to call unattended from a script or an AI agent.
+
+### `service add|remove|update <name> <service> ...`
+
+Structured, non-interactive edits to the `services:` map — a thin, scriptable layer over `config get`/`config set`.
+
+```bash
+ownbasectl service add mybase crm --mirror https://github.com/org/crm --ref main --port 3000 --domain crm.example.com
+ownbasectl service update mybase crm --ref v2.3.0        # bump the pinned ref
+ownbasectl service update mybase crm --port 4000 --domain crm.example.com
+ownbasectl service remove mybase crm
+```
+
+`add` requires exactly one of `--source`/`--mirror`. `update` only touches the fields whose flags were explicitly passed — every other field of the service keeps its current value. `--env` merges into the existing list (new values win on a duplicate key); `--requires` replaces the list entirely when passed. All three subcommands accept `--json` for structured output.
+
+---
+
+## Secrets
 
 ### `secrets list|get|set|delete <name> ...`
 
@@ -190,10 +220,6 @@ ownbasectl secrets delete mybase myapp DB_URL
 ```
 
 Plaintext travels only inside the SSH tunnel; the age private key never leaves the Base.
-
-### `forgejo <name>`
-
-Print the Forgejo admin username and password (from `/opt/ownbase/forgejo-admin-pass` on the Base). Useful after a fresh install to log into the Forgejo web UI.
 
 ---
 

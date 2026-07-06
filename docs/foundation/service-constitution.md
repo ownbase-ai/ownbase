@@ -64,7 +64,7 @@ That is what "replaceable" means in practice.
 
 ## Alternative providers
 
-A service that is not part of OwnBase — forked, self-written, or taken from elsewhere — can stand in for any default service as long as it honestly satisfies all five rules above and can be declared under `ownbase.yaml` like any other service (a Forgejo repo with a Dockerfile). Using one never weakens these rules.
+A service that is not part of OwnBase — forked, self-written, or taken from elsewhere — can stand in for any default service as long as it honestly satisfies all five rules above and can be declared under `ownbase.yaml` like any other service (a local bare repo with a Dockerfile). Using one never weakens these rules.
 
 ## The test
 

@@ -20,11 +20,12 @@ type RepoMode string
 
 // OwnbaseConfig is the parsed, validated form of ownbase.yaml.
 //
-// All user services must be built from a Forgejo repo — either a local
-// source: path or a mirror: of an external git URL that OwnBase mirrors
-// into the local Forgejo instance. Registry images are never a valid
-// service source; core packages (Forgejo, Caddy) are managed by the
-// installer and configured via the core: block.
+// All user services must be built from a local bare git repo under
+// /opt/ownbase/repos/ — either a source: repo that the user pushes into
+// directly over SSH, or a mirror: of an external git URL that OwnBase
+// clones and keeps locally. Registry images are never a valid service
+// source; the core Caddy package is managed by the installer and
+// configured via the core: block.
 type OwnbaseConfig struct {
 	SchemaVersion string                 `yaml:"schema_version"`
 	Core          CoreConfig             `yaml:"core,omitempty"`
@@ -32,13 +33,12 @@ type OwnbaseConfig struct {
 }
 
 // CoreConfig holds configuration (not versions) for OwnBase core packages.
-// Core packages (Forgejo, Caddy) are managed by the OwnBase installer and
-// updater — not by ownbase.yaml. This block only configures them: set
+// Caddy (the reverse proxy) is managed by the OwnBase installer and
+// updater — not by ownbase.yaml. This block only configures it: set
 // domains, ports, TLS email. It does not control what version runs.
 type CoreConfig struct {
-	Forgejo ForgejoCoreConfig `yaml:"forgejo,omitempty"`
-	Caddy   CaddyCoreConfig   `yaml:"caddy,omitempty"`
-	Backup  BackupCoreConfig  `yaml:"backup,omitempty"`
+	Caddy  CaddyCoreConfig  `yaml:"caddy,omitempty"`
+	Backup BackupCoreConfig `yaml:"backup,omitempty"`
 }
 
 // BackupCoreConfig configures the restic backup engine.
@@ -100,35 +100,6 @@ func (b BackupCoreConfig) EffectiveVerifyInterval() (time.Duration, error) {
 	return d, nil
 }
 
-// ForgejoCoreConfig configures the built-in git host.
-type ForgejoCoreConfig struct {
-	// Domain is the public hostname for the Forgejo UI.
-	// When set, Caddy proxies this domain to Forgejo.
-	// Example: "git.mysite.com"
-	Domain string `yaml:"domain,omitempty"`
-
-	// Port is the host port Forgejo listens on. Defaults to 3000.
-	Port int `yaml:"port,omitempty"`
-}
-
-// EffectivePort returns the Forgejo port, defaulting to 3000.
-func (f ForgejoCoreConfig) EffectivePort() int {
-	if f.Port > 0 {
-		return f.Port
-	}
-	return 3000
-}
-
-// EffectivePortOrZeroIfDomain returns 0 when a domain is configured (Caddy
-// proxies external traffic on 443; no direct port should be opened in UFW).
-// Returns the effective port when no domain is set (direct-access mode).
-func (f ForgejoCoreConfig) EffectivePortOrZeroIfDomain() int {
-	if f.Domain != "" {
-		return 0
-	}
-	return f.EffectivePort()
-}
-
 // CaddyCoreConfig configures the built-in reverse proxy.
 type CaddyCoreConfig struct {
 	// Email is used for ACME/Let's Encrypt certificate issuance.
@@ -140,22 +111,26 @@ type CaddyCoreConfig struct {
 // The map key is the instance name (e.g. "crm", "crm-staging", "worker").
 //
 // Exactly one of Source or Mirror must be set:
-//   - source-built: Source is a local Forgejo repo path built directly.
-//   - mirror-built: Mirror is an external git URL; OwnBase creates a Forgejo
-//     pull-mirror at mirrors/<basename> and builds from it.
+//   - source-built: Source names a local bare repo under
+//     /opt/ownbase/repos/ that the user pushes into directly over SSH
+//     (exactly like the config repo). OwnBase never creates or populates
+//     this repo's contents — only the empty bare repo, on first sight.
+//   - mirror-built: Mirror is an external git URL; OwnBase clones it into a
+//     local bare repo under /opt/ownbase/repos/ and builds from it.
 //
-// Registry images (image:) are never a valid user service source. Core
-// packages (Forgejo, Caddy) are installed by the OwnBase installer and
-// configured via the top-level core: block.
+// Registry images (image:) are never a valid user service source. The core
+// Caddy package is installed by the OwnBase installer and configured via
+// the top-level core: block.
 type ServiceDecl struct {
-	// Source is the Forgejo repo path, e.g. "services/auth" or "org/crm".
-	// Always a local Forgejo path — never a URL. Use mirror: for external repos.
+	// Source names a local bare repo under /opt/ownbase/repos/, e.g.
+	// "services/auth" or "org/crm". Never a URL. Use mirror: for external
+	// repos that OwnBase should clone and track itself.
 	Source string `yaml:"source,omitempty"`
 
-	// Mirror is an external git URL to pull-mirror into Forgejo, e.g.
+	// Mirror is an external git URL to clone into a local bare repo, e.g.
 	// "https://github.com/docker-library/postgres". The agent creates and
-	// maintains the Forgejo pull-mirror automatically. The derived Forgejo
-	// path is mirrors/<basename-of-url>. Mutually exclusive with Source.
+	// maintains the local bare mirror automatically. The derived local repo
+	// name is mirrors-<basename-of-url>. Mutually exclusive with Source.
 	Mirror string `yaml:"mirror,omitempty"`
 
 	// Mode is deprecated and has no behavioral effect. It is kept here so that
@@ -308,7 +283,7 @@ func (s ServiceDecl) validate(name string, allServices map[string]ServiceDecl) e
 		return fmt.Errorf("service %q: source and mirror are mutually exclusive", name)
 	}
 	if hasSource && (strings.HasPrefix(s.Source, "http://") || strings.HasPrefix(s.Source, "https://")) {
-		return fmt.Errorf("service %q: source must be a Forgejo repo path (e.g. \"services/auth\"), not a URL — "+
+		return fmt.Errorf("service %q: source must be a repo-relative path (e.g. \"services/auth\"), not a URL — "+
 			"use mirror: for external repos instead", name)
 	}
 	if hasMirror && !isGitURL(s.Mirror) {

@@ -72,90 +72,6 @@ func TestParseStartProvenance_NoDirectives(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// buildCloneURL — M14: token must NOT appear in the URL (M14)
-// ---------------------------------------------------------------------------
-
-func TestBuildCloneURL_NoTokenInURL(t *testing.T) {
-	tests := []struct {
-		baseURL string
-		owner   string
-		repo    string
-		want    string
-	}{
-		{
-			baseURL: "http://localhost:3000",
-			owner:   "ownbase",
-			repo:    "auth",
-			want:    "http://localhost:3000/ownbase/auth.git",
-		},
-		{
-			baseURL: "https://git.example.com",
-			owner:   "myorg",
-			repo:    "services",
-			want:    "https://git.example.com/myorg/services.git",
-		},
-		{
-			baseURL: "http://localhost:3000/",
-			owner:   "ownbase",
-			repo:    "crm",
-			want:    "http://localhost:3000/ownbase/crm.git",
-		},
-	}
-	for _, tc := range tests {
-		got := buildCloneURL(tc.baseURL, tc.owner, tc.repo)
-		if got != tc.want {
-			t.Errorf("buildCloneURL(%q, %q, %q) = %q, want %q",
-				tc.baseURL, tc.owner, tc.repo, got, tc.want)
-		}
-		// Critical: no `:token@` style embedding should be present.
-		if contains(got, "@") {
-			t.Errorf("buildCloneURL output contains '@' (possible credential embedding): %q", got)
-		}
-	}
-}
-
-// TestBuildCloneURL_NeverEmbedToken verifies that passing any combination of
-// inputs never produces a URL with an embedded credential.
-func TestBuildCloneURL_NeverEmbedToken(t *testing.T) {
-	// Even if called with a base URL that looks like it has credentials, the
-	// function should produce a clean URL for owner/repo.
-	got := buildCloneURL("http://localhost:3000", "ownbase", "my-service")
-	if contains(got, "token") || contains(got, "secret") || contains(got, "@") {
-		t.Errorf("buildCloneURL produced URL with embedded credential: %q", got)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// scrubToken — M14: credentials must be removed from error strings
-// ---------------------------------------------------------------------------
-
-func TestScrubToken_RemovesToken(t *testing.T) {
-	token := "ghs_supersecrettoken"
-	input := "fatal: could not access 'http://x-token:ghs_supersecrettoken@localhost:3000/ownbase/auth.git'"
-	want := "fatal: could not access 'http://x-token:<redacted>@localhost:3000/ownbase/auth.git'"
-	got := scrubToken(input, token)
-	if got != want {
-		t.Errorf("scrubToken:\n  got  %q\n  want %q", got, want)
-	}
-}
-
-func TestScrubToken_EmptyToken_NoChange(t *testing.T) {
-	input := "some error message"
-	got := scrubToken(input, "")
-	if got != input {
-		t.Errorf("scrubToken with empty token changed input: %q → %q", input, got)
-	}
-}
-
-func TestScrubToken_TokenNotInString_NoChange(t *testing.T) {
-	input := "some harmless error"
-	got := scrubToken(input, "supersecret")
-	if got != input {
-		t.Errorf("scrubToken changed string when token was absent: %q → %q", input, got)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // quadletDirFor — root-aware Quadlet install directory (A: applier root parity)
 // ---------------------------------------------------------------------------
 
@@ -225,17 +141,6 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
-}
-
-func contains(s, sub string) bool {
-	return len(sub) > 0 && len(s) >= len(sub) && func() bool {
-		for i := 0; i <= len(s)-len(sub); i++ {
-			if s[i:i+len(sub)] == sub {
-				return true
-			}
-		}
-		return false
-	}()
 }
 
 // ---------------------------------------------------------------------------

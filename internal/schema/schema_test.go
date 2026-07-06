@@ -45,7 +45,7 @@ func TestParseConfig_InvalidFixtures(t *testing.T) {
 		{"missing-schema-version.yaml", "schema_version"},
 		{"unknown-schema-version.yaml", "schema_version"},
 		{"missing-build-context.yaml", "source"},
-		{"source-is-url.yaml", "Forgejo repo path"},
+		{"source-is-url.yaml", "repo-relative path"},
 		{"mirror-is-not-url.yaml", "mirror must be a git URL"},
 		{"missing-capability-provider.yaml", "capability"},
 		{"unknown-field.yaml", "unexpected_field"},
@@ -212,25 +212,8 @@ func TestParseConfig_CoreConfig_ParsesFromFixture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if cfg.Core.Forgejo.Domain != "git.example.com" {
-		t.Errorf("core.forgejo.domain = %q, want git.example.com", cfg.Core.Forgejo.Domain)
-	}
 	if cfg.Core.Caddy.Email != "admin@example.com" {
 		t.Errorf("core.caddy.email = %q, want admin@example.com", cfg.Core.Caddy.Email)
-	}
-}
-
-func TestParseConfig_CoreConfig_EffectivePort_Default(t *testing.T) {
-	cfg := schema.ForgejoCoreConfig{}
-	if got := cfg.EffectivePort(); got != 3000 {
-		t.Errorf("EffectivePort() = %d, want 3000", got)
-	}
-}
-
-func TestParseConfig_CoreConfig_EffectivePort_Custom(t *testing.T) {
-	cfg := schema.ForgejoCoreConfig{Port: 4000}
-	if got := cfg.EffectivePort(); got != 4000 {
-		t.Errorf("EffectivePort() = %d, want 4000", got)
 	}
 }
 

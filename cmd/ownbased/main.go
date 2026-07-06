@@ -36,6 +36,7 @@ import (
 	"github.com/ownbase/ownbase/internal/githost"
 	"github.com/ownbase/ownbase/internal/install"
 	"github.com/ownbase/ownbase/internal/reconcile"
+	"github.com/ownbase/ownbase/internal/repos"
 	"github.com/ownbase/ownbase/internal/runtime"
 	"github.com/ownbase/ownbase/internal/schema"
 	"github.com/ownbase/ownbase/internal/secrets"
@@ -68,9 +69,9 @@ const (
 	// Bind to loopback only — the status API contains sensitive data
 	// (audit records, security posture, service topology) and must not be
 	// reachable from the network without auth. Relying solely on UFW is
-	// insufficient (docs/decisions.md); the same rule applies here. Forgejo
-	// webhooks reach the agent via SIGUSR1 directly (not via the status
-	// port), so loopback is correct.
+	// insufficient (docs/decisions.md); the same rule applies here. The
+	// post-receive hook reaches the agent via SIGUSR1 directly (not via the
+	// status port), so loopback is correct.
 	DefaultStatusAddr = "127.0.0.1:7070"
 )
 
@@ -106,16 +107,6 @@ func main() {
 		"restore latest backup then exit (agent runs reconcile on the next start)")
 	forceRebuild := fs.Bool("force-rebuild", false,
 		"restore from an unverified backup snapshot (skips the Restorable guard — use deliberately)")
-	// Update flags (M7 / M10). Forgejo connection is derived by convention;
-	// these flags are overrides.
-	forgejoURL := fs.String("forgejo-url", "http://localhost:3000",
-		"base URL of the on-Base Forgejo instance")
-	forgejoToken := fs.String("forgejo-token", "",
-		"Forgejo API token (default: read from /opt/ownbase/forgejo-token)")
-	forgejoUser := fs.String("forgejo-user", "ownbase",
-		"Forgejo user that owns the config repository")
-	repoName := fs.String("repo-name", githost.DefaultForgejoRepoName,
-		"Forgejo repository name that holds ownbase.yaml")
 	updateInterval := fs.Duration("update-interval", DefaultUpdateInterval,
 		"how often to poll for service version updates (source ref and bundled-image digest)")
 	vulnScanInterval := fs.Duration("vuln-scan-interval", DefaultVulnScanInterval,
@@ -143,10 +134,6 @@ func main() {
 		backupRepo:       *backupRepo,
 		rebuild:          *rebuild,
 		forceRebuild:     *forceRebuild,
-		forgejoURL:       *forgejoURL,
-		forgejoToken:     *forgejoToken,
-		forgejoUser:      *forgejoUser,
-		repoName:         *repoName,
 		updateInterval:   *updateInterval,
 		vulnScanInterval: *vulnScanInterval,
 		statusAddr:       *statusAddr,
@@ -171,10 +158,6 @@ type agentConfig struct {
 	backupRepo       string
 	rebuild          bool
 	forceRebuild     bool
-	forgejoURL       string
-	forgejoToken     string
-	forgejoUser      string
-	repoName         string
 	updateInterval   time.Duration
 	vulnScanInterval time.Duration
 	statusAddr       string
@@ -222,21 +205,9 @@ func run(cfg agentConfig) error {
 	// Runs on every start (each step is idempotent). Skip on macOS / dev.
 	if !cfg.skipPassZero {
 		fmt.Fprintln(os.Stderr, "ownbased: running pass zero (host hardening) ...")
-		// Read ownbase.yaml before pass zero so the firewall rules can be tuned
-		// to the current config (e.g. omit port-3000 when a Forgejo domain is set).
-		pzCoreCfg := readCoreConfigFromDisk(cfg.checkoutPath)
-		// On first install, ownbase.yaml does not exist yet. Merge the domain from
-		// first-run.env so port 3000 stays closed from the very first boot when a
-		// domain was provided at install time.
-		if pzCoreCfg.Forgejo.Domain == "" {
-			if firstRun := install.ReadFirstRunEnv(install.FirstRunEnvPath); firstRun.ForgejoDomain != "" {
-				pzCoreCfg.Forgejo.Domain = firstRun.ForgejoDomain
-			}
-		}
 		report, err := install.PassZero(context.Background(), install.PassZeroConfig{
-			DryRun:      cfg.dryRun,
-			SSHPort:     cfg.sshPort,
-			ForgejoPort: pzCoreCfg.Forgejo.EffectivePortOrZeroIfDomain(),
+			DryRun:  cfg.dryRun,
+			SSHPort: cfg.sshPort,
 		})
 		if err != nil {
 			return fmt.Errorf("pass zero: %w", err)
@@ -250,11 +221,40 @@ func run(cfg agentConfig) error {
 
 	// Bootstrap: ensure the bare repo and checkout exist.
 	if !cfg.skipBootstrap {
+		// Must run before any git operation touches a repo that may already
+		// be chowned to the admin user (from a prior start) — otherwise the
+		// daemon's own git commands (seed, pull, fetch) fail with git's
+		// "dubious ownership" refusal. See githost.TrustAllRepos.
+		if err := githost.TrustAllRepos(); err != nil {
+			fmt.Fprintf(os.Stderr, "ownbased: trust local repos (non-fatal): %v\n", err)
+		}
 		if err := githost.Bootstrap(cfg.repoPath, cfg.checkoutPath); err != nil {
 			return fmt.Errorf("bootstrap: %w", err)
 		}
 		if err := githost.InstallHook(cfg.repoPath); err != nil {
 			return fmt.Errorf("install hook: %w", err)
+		}
+		// Grant the admin SSH user write access to the bare repo — the
+		// daemon creates it as root, so without this a direct `git push`
+		// over SSH (the documented way to edit ownbase.yaml) fails with a
+		// permission error. Non-fatal: ownbasectl config/service (the
+		// API-based commit path) works regardless.
+		if adminUser := install.ReadAdminUser(install.AdminUserPath); adminUser != "" {
+			if err := githost.SetRepoOwner(cfg.repoPath, adminUser); err != nil {
+				fmt.Fprintf(os.Stderr, "ownbased: set repo owner (non-fatal): %v\n", err)
+			}
+			// Let the post-receive hook (running as adminUser) wake this
+			// (root) process after a direct push — see githost.HookScript.
+			if err := install.EnsureNotifySudoers(adminUser); err != nil {
+				fmt.Fprintf(os.Stderr, "ownbased: ensure notify sudoers (non-fatal): %v\n", err)
+			}
+		}
+		// Seed a template ownbase.yaml (and README) on a brand-new config
+		// repo. A no-op once the user (or a prior boot) has committed a real
+		// config — see internal/install/seed.go.
+		firstRun := install.ReadFirstRunEnv(install.FirstRunEnvPath)
+		if err := install.SeedConfigRepo(cfg.checkoutPath, firstRun.CaddyEmail); err != nil {
+			fmt.Fprintf(os.Stderr, "ownbased: seed config repo (non-fatal): %v\n", err)
 		}
 		// Remove any stale OWNBASE.md left by a previous daemon version that
 		// wrote a generated status file to the checkout. The file is no longer
@@ -282,7 +282,7 @@ func run(cfg agentConfig) error {
 		}
 	}
 
-	// Bootstrap core packages (Forgejo + Caddy) as Quadlet units.
+	// Bootstrap the core package (Caddy) as a Quadlet unit.
 	// Reads the core: block from ownbase.yaml if present, otherwise uses defaults.
 	// Idempotent: safe to call on every startup.
 	{
@@ -296,11 +296,6 @@ func run(cfg agentConfig) error {
 			return fmt.Errorf("bootstrap core: %w", err)
 		}
 	}
-
-	// Discover the Forgejo container IP (if running) and prefer it over
-	// localhost:3000 so all internal HTTP calls bypass unreliable port
-	// forwarding. This replaces cfg.forgejoURL for everything downstream.
-	cfg.forgejoURL = discoverForgejoURL(cfg.forgejoURL)
 
 	// Write PID file so the post-receive hook can signal us via SIGUSR1.
 	if err := githost.WritePIDFile(cfg.pidPath); err != nil {
@@ -322,16 +317,6 @@ func run(cfg agentConfig) error {
 
 	checkpoint := authz.NewTrivialCheckpoint()
 
-	// Populate cfg.forgejoToken from the installer-written file when no flag
-	// was provided. This must happen before newApplier so the Applier carries
-	// the token for git clone operations (source-built services).
-	if cfg.forgejoToken == "" {
-		if token, err := install.ReadForgejoToken(install.DefaultTokenPath); err == nil {
-			cfg.forgejoToken = token
-			fmt.Fprintln(os.Stderr, "ownbased: using Forgejo token from /opt/ownbase/forgejo-token")
-		}
-	}
-
 	// Populate cfg.apiToken from the installer-written file when no flag
 	// was provided. The file is written by install.sh with mode 0600.
 	if cfg.apiToken == "" {
@@ -343,23 +328,20 @@ func run(cfg agentConfig) error {
 
 	// newApplier is provided by applier_default.go (noop) or
 	// applier_integration.go (real Podman) depending on build tags.
-	// The Applier carries Forgejo credentials so it can clone source-built
-	// service repos and run `podman build` before starting Quadlet units.
+	// For source-built services, the Applier clones the local bare repo
+	// under /opt/ownbase/repos/ (see internal/repos) — no credentials needed.
 	applier := newApplier(cfg)
 
-	// Webhook signal: Forgejo pushes to this channel when a push event fires
-	// the /api/v1/hook/push endpoint. Treated identically to SIGUSR1.
-	// Created before the HTTP server starts so the handler closure captures it.
-	webhookSig := make(chan struct{}, 4)
+	// reconcileSig carries "please reconcile now" wakeups from sources other
+	// than SIGUSR1: the backup API (ConfigureBackup/RunBackup) and the backup
+	// scheduler. Created before the HTTP server starts so the handler
+	// closures capture it.
+	reconcileSig := make(chan struct{}, 4)
 
-	// Build the Forgejo/update config here (moved up from below) so the
+	// Build the update-loop config here (moved up from below) so the
 	// ConfigureBackup API closure and reconcileOnce can both capture it.
 	updateCfg := update.Config{
 		CheckoutPath: cfg.checkoutPath,
-		ForgejoURL:   cfg.forgejoURL,
-		ForgejoToken: cfg.forgejoToken,
-		ForgejoUser:  cfg.forgejoUser,
-		RepoName:     cfg.repoName,
 		DryRun:       cfg.dryRun,
 	}
 
@@ -392,8 +374,9 @@ func run(cfg agentConfig) error {
 				}
 				return false
 			},
-			// UpgradeCore pulls the latest pinned images for Forgejo and Caddy
-			// and restarts them. Progress is written to w for streaming to the client.
+			// UpgradeCore pulls the latest pinned image for Caddy (the sole
+			// core package) and restarts it. Progress is written to w for
+			// streaming to the client.
 			UpgradeCore: func(w io.Writer) error {
 				upgradeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 				defer cancel()
@@ -405,7 +388,6 @@ func run(cfg agentConfig) error {
 					image     string
 					digest    string
 				}{
-					{"Forgejo", core.ForgejoContainerName, m.ForgejoImage, m.ForgejoDigest},
 					{"Caddy", core.CaddyContainerName, m.CaddyImage, m.CaddyDigest},
 				} {
 					imageRef := pkg.image
@@ -430,7 +412,7 @@ func run(cfg agentConfig) error {
 				return nil
 			},
 			// CoreStatus reports the pinned image/digest and running state of
-			// the core packages for `ownbasectl upgrade` (check-only).
+			// the core package (Caddy) for `ownbasectl upgrade` (check-only).
 			CoreStatus: func() []explain.CorePackageStatus {
 				m := core.Current
 				var out []explain.CorePackageStatus
@@ -440,7 +422,6 @@ func run(cfg agentConfig) error {
 					image     string
 					digest    string
 				}{
-					{"Forgejo", core.ForgejoContainerName, m.ForgejoImage, m.ForgejoDigest},
 					{"Caddy", core.CaddyContainerName, m.CaddyImage, m.CaddyDigest},
 				} {
 					running := false
@@ -459,17 +440,39 @@ func run(cfg agentConfig) error {
 				}
 				return out
 			},
-			// ConfigureBackup commits core.backup.repo (and optionally
-			// interval/verify_interval) to ownbase.yaml through the Forgejo
-			// front door. The independent backup scheduler (see
-			// backup_scheduler.go) picks up the change on its next poll —
-			// no restart needed. Requires a Forgejo token; on a bare
-			// machine that hasn't finished bootstrapping yet, this returns
-			// an error asking the caller to retry.
-			ConfigureBackup: func(repo, interval, verifyInterval string) error {
-				if updateCfg.ForgejoToken == "" {
-					return fmt.Errorf("forgejo not ready yet — retry in a moment")
+			// GetConfig reads the checkout's ownbase.yaml — the read side of
+			// `ownbasectl config get`.
+			GetConfig: func() (string, error) {
+				data, err := os.ReadFile(filepath.Join(cfg.checkoutPath, "ownbase.yaml"))
+				if err != nil {
+					return "", err
 				}
+				return string(data), nil
+			},
+			// SetConfig validates newContent as a well-formed ownbase.yaml,
+			// commits it through the local config-repo front door (see
+			// update.CommitFile) exactly like a user's own git push, then
+			// wakes the reconcile loop immediately so the change doesn't
+			// wait for the timer backstop. Used by `ownbasectl config set`
+			// and `ownbasectl service add/remove/update`.
+			SetConfig: func(newContent, commitMsg string) error {
+				if _, err := schema.ParseConfig(strings.NewReader(newContent)); err != nil {
+					return fmt.Errorf("resulting ownbase.yaml would be invalid: %w", err)
+				}
+				commitCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				if err := update.CommitFile(commitCtx, updateCfg, "ownbase.yaml", newContent, commitMsg); err != nil {
+					return fmt.Errorf("commit ownbase.yaml: %w", err)
+				}
+				signalReconcile(reconcileSig)
+				return nil
+			},
+			// ConfigureBackup commits core.backup.repo (and optionally
+			// interval/verify_interval) to ownbase.yaml through the local
+			// config-repo front door (see update.CommitFile). The independent
+			// backup scheduler (see backup_scheduler.go) picks up the change
+			// on its next poll — no restart needed.
+			ConfigureBackup: func(repo, interval, verifyInterval string) error {
 				cfgPath := filepath.Join(cfg.checkoutPath, "ownbase.yaml")
 				original, err := os.ReadFile(cfgPath)
 				if err != nil {
@@ -485,13 +488,12 @@ func run(cfg agentConfig) error {
 				if err := update.CommitFile(commitCtx, updateCfg, "ownbase.yaml", updated, msg); err != nil {
 					return fmt.Errorf("commit ownbase.yaml: %w", err)
 				}
-				// Wake the reconcile loop immediately (same signal the Forgejo
-				// push webhook uses) so the commit above — made directly
-				// against Forgejo, bypassing the bare repo — propagates into
-				// the checkout without waiting for the 5-minute backstop
-				// ticker. `ownbasectl backup setup` runs an immediate
-				// backup right after this call and needs the config on disk.
-				signalReconcile(webhookSig)
+				// Wake the reconcile loop immediately so the commit above
+				// propagates into the checkout without waiting for the
+				// 5-minute backstop ticker. `ownbasectl backup setup` runs an
+				// immediate backup right after this call and needs the
+				// config on disk.
+				signalReconcile(reconcileSig)
 				return nil
 			},
 			// RunBackup triggers one backup cycle immediately (ownbasectl
@@ -502,7 +504,7 @@ func run(cfg agentConfig) error {
 				status, err := runBackupNow(runCtx, cfg, auditLog)
 				// Refresh the cached /status payload either way — even a
 				// failed run updates LastError, which ownbasectl surfaces.
-				signalReconcile(webhookSig)
+				signalReconcile(reconcileSig)
 				if err != nil {
 					return explain.BackupRunStatus{}, err
 				}
@@ -516,18 +518,6 @@ func run(cfg agentConfig) error {
 				}
 				return out, nil
 			},
-		})
-		// Mount Forgejo push webhook.
-		mux.HandleFunc("/api/v1/hook/push", func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodPost {
-				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-				return
-			}
-			select {
-			case webhookSig <- struct{}{}:
-			default: // channel full — reconcile already queued
-			}
-			w.WriteHeader(http.StatusOK)
 		})
 		httpSrv := &http.Server{
 			Addr:    cfg.statusAddr,
@@ -624,7 +614,7 @@ func run(cfg agentConfig) error {
 
 	reconcileOnce := func(reason string) {
 		fmt.Fprintf(os.Stderr, "ownbased: reconcile triggered (%s)\n", reason)
-		state, err := reconcileLoop(cfg.checkoutPath, cfg.repoPath, checkpoint, applier, auditLog, cfg.dryRun, updateCfg)
+		state, err := reconcileLoop(cfg.checkoutPath, cfg.repoPath, checkpoint, applier, auditLog, cfg.dryRun)
 		if err != nil {
 			if isConfigError(err) {
 				fmt.Fprintf(os.Stderr, "ownbased: config error (fix ownbase.yaml and push): %v\n", err)
@@ -683,19 +673,17 @@ func run(cfg agentConfig) error {
 	// so backups activate as soon as `ownbasectl backup setup` commits
 	// a repo — no daemon restart required — and credential rotations via
 	// `ownbasectl secrets set <base> backup` take effect on the next poll too.
-	go runBackupScheduler(ctx, cfg, auditLog, webhookSig)
+	go runBackupScheduler(ctx, cfg, auditLog, reconcileSig)
 
-	// Update ticker: blank-ref resolution and drift reporting.
-	// Only active when a Forgejo token is configured.
-	var updateTicker <-chan time.Time
-	if updateCfg.ForgejoToken != "" {
-		ut := time.NewTicker(cfg.updateInterval)
-		defer ut.Stop()
-		updateTicker = ut.C
-		fmt.Fprintf(os.Stderr,
-			"ownbased: update loop enabled (forgejo=%s, interval=%s, resolves blank refs + reports drift)\n",
-			updateCfg.ForgejoURL, cfg.updateInterval)
-	}
+	// Update ticker: blank-ref resolution and drift reporting, read straight
+	// from each service's local bare repo — always active, no credentials
+	// needed.
+	updateTickerObj := time.NewTicker(cfg.updateInterval)
+	defer updateTickerObj.Stop()
+	updateTicker := updateTickerObj.C
+	fmt.Fprintf(os.Stderr,
+		"ownbased: update loop enabled (interval=%s, resolves blank refs + reports drift)\n",
+		cfg.updateInterval)
 
 	// Vulnerability scan ticker: runs trivy against the host OS packages and
 	// each service's container image on a configurable interval (default 24h).
@@ -724,8 +712,8 @@ func run(cfg agentConfig) error {
 		select {
 		case <-hookSig:
 			reconcileOnce("post-receive hook")
-		case <-webhookSig:
-			reconcileOnce("forgejo push webhook")
+		case <-reconcileSig:
+			reconcileOnce("manual reconcile signal")
 		case <-ticker.C:
 			reconcileOnce("timer backstop")
 		case <-updateTicker:
@@ -767,10 +755,11 @@ func run(cfg agentConfig) error {
 }
 
 // runRefResolveAndDrift reads the current ownbase.yaml, resolves any blank
-// ref: fields by committing the default-branch HEAD SHA to the Forgejo config
-// repo, and then computes drift for all services with concrete refs. The drift
-// snapshot is pushed into the status server so ownbasectl updates can read it.
-// Non-fatal — a transient error for one service is logged and skipped.
+// ref: fields by committing the default-branch HEAD SHA (read from each
+// service's local bare repo) to the config repo, and then computes drift for
+// all services with concrete refs. The drift snapshot is pushed into the
+// status server so ownbasectl updates can read it. Non-fatal — a transient
+// error for one service is logged and skipped.
 func runRefResolveAndDrift(ctx context.Context, checkoutPath string, cfg update.Config, al authz.AuditLogger, statusSrv *explain.StatusServer) {
 	cfgPath := filepath.Join(checkoutPath, "ownbase.yaml")
 	oc, err := schema.ParseConfigFile(cfgPath)
@@ -817,31 +806,6 @@ func runRefResolveAndDrift(ctx context.Context, checkoutPath string, cfg update.
 		fmt.Fprintln(os.Stderr, "ownbased: update: all services current")
 	} else {
 		fmt.Fprintf(os.Stderr, "ownbased: update: %d service(s) behind — run ownbasectl updates for details\n", behind)
-	}
-}
-
-// ensureMirrors ensures that a Forgejo pull-mirror exists for each mirror:
-// service declared in cfg. Idempotent and non-fatal — transient Forgejo errors
-// are logged and skipped. The compiler derives the Forgejo path from the URL
-// (mirrors/<basename>); here we ensure the corresponding repo exists as a
-// pull-mirror before trying to build from it.
-func ensureMirrors(ctx context.Context, cfg *schema.OwnbaseConfig, updateCfg update.Config) {
-	_ = ctx
-	fgCfg := githost.ForgejoConfig{
-		BaseURL:    updateCfg.ForgejoURL,
-		AdminToken: updateCfg.ForgejoToken,
-		RepoOwner:  updateCfg.ForgejoUser,
-	}
-	for name, svc := range cfg.Services {
-		if svc.Mirror == "" {
-			continue
-		}
-		basename := githost.MirrorForgejoRepoName(svc.Mirror)
-		if err := githost.CreateForgejoMirror(fgCfg, svc.Mirror, basename, ""); err != nil {
-			fmt.Fprintf(os.Stderr,
-				"ownbased: ensure mirror for %s (%s): %v (non-fatal)\n",
-				name, svc.Mirror, err)
-		}
 	}
 }
 
@@ -907,26 +871,8 @@ func reconcileLoop(
 	applier reconcile.Applier,
 	auditLog authz.AuditLogger,
 	dryRun bool,
-	updateCfg update.Config,
 ) (reconcileState, error) {
 	var state reconcileState
-
-	// 0. Sync Forgejo → bare repo (M10 front-door model).
-	// The user pushes to Forgejo; this step propagates those commits into the
-	// local bare repo before UpdateCheckout runs. Non-fatal: if Forgejo is not
-	// configured or is temporarily unreachable, the agent continues with
-	// whatever is already in the bare repo.
-	if updateCfg.ForgejoToken != "" && updateCfg.ForgejoURL != "" {
-		if err := githost.SyncBareRepoFromForgejo(
-			repoPath,
-			updateCfg.ForgejoURL,
-			updateCfg.ForgejoToken,
-			updateCfg.ForgejoUser,
-			updateCfg.RepoName,
-		); err != nil {
-			fmt.Fprintf(os.Stderr, "ownbased: sync from forgejo: %v\n", err)
-		}
-	}
 
 	// 1. Pull latest from the bare repo into the checkout.
 	if err := githost.UpdateCheckout(repoPath, checkoutPath); err != nil {
@@ -945,11 +891,19 @@ func reconcileLoop(
 		fmt.Fprintf(os.Stderr, "ownbased: warning: %s\n", w)
 	}
 
-	// 3. Ensure Forgejo pull-mirrors exist for all mirror: services.
-	// This is idempotent and non-fatal — if Forgejo is not reachable,
-	// the reconcile continues with source services as before.
-	if updateCfg.ForgejoToken != "" {
-		ensureMirrors(context.Background(), cfg, updateCfg)
+	// 3. Ensure a local bare repo exists for every service: cloning mirror:
+	// services from their external URL on first sight, and fetching any
+	// pinned ref: not yet available locally. Idempotent and non-fatal — a
+	// service whose external source is temporarily unreachable is skipped;
+	// the reconcile continues with whatever is already on disk.
+	//
+	// Each repo is chowned to the admin SSH user (read fresh on every tick,
+	// not cached) so a repo for a brand-new service is pushable immediately,
+	// and so the daemon picks up a change to /opt/ownbase/admin-user without
+	// a restart.
+	adminUser := install.ReadAdminUser(install.AdminUserPath)
+	for _, err := range repos.EnsureRepos(cfg, adminUser) {
+		fmt.Fprintf(os.Stderr, "ownbased: ensure repos: %v (non-fatal)\n", err)
 	}
 
 	// 4. Compile desired state.

@@ -239,8 +239,6 @@ func parseUFWPort(field string) int {
 // to be open, derived from ownbase.yaml and the configured SSH port.
 //
 // Always expected: SSH port, 80 (Caddy HTTP/ACME), 443 (Caddy HTTPS).
-// Conditionally expected: Forgejo port when no domain is configured
-// (direct-access mode; see schema.ForgejoCoreConfig.EffectivePortOrZeroIfDomain).
 func ExpectedAllowlist(cfg *schema.OwnbaseConfig, sshPort int) map[int]bool {
 	if sshPort <= 0 {
 		sshPort = 22
@@ -249,12 +247,6 @@ func ExpectedAllowlist(cfg *schema.OwnbaseConfig, sshPort int) map[int]bool {
 		sshPort: true,
 		80:      true,
 		443:     true,
-	}
-	if cfg != nil {
-		fp := cfg.Core.Forgejo.EffectivePortOrZeroIfDomain()
-		if fp > 0 {
-			allowed[fp] = true
-		}
 	}
 	return allowed
 }

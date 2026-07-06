@@ -35,7 +35,7 @@ type ContainerModel struct {
 	// build step for bundled containers.
 	IsImageBundled bool
 
-	// BuildSource is the Forgejo repo path (source-built only).
+	// BuildSource is the local repo path (source-built only).
 	BuildSource string
 	// BuildRef is the branch, tag, or commit SHA to check out.
 	BuildRef string
@@ -100,7 +100,7 @@ type ContainerModel struct {
 
 // VolumeMount binds a named Podman volume to a path inside a container.
 type VolumeMount struct {
-	// VolumeName is the Podman named volume (e.g. "ownbase-forgejo-data").
+	// VolumeName is the Podman named volume (e.g. "ownbase-core-caddy-data").
 	VolumeName string
 	// MountPath is the path inside the container (e.g. "/data").
 	MountPath string
