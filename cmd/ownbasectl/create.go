@@ -209,6 +209,16 @@ func baseCreateVM(name string, opts vmhost.LaunchOptions, forgejoDomain, caddyEm
 	}
 	fmt.Println("    VM launched.")
 
+	// Clear any /etc/hosts block a previous create for this name may have
+	// left behind. The VM (and its IP) are brand new, and this run may not
+	// end up enabling dev-TLS at all (--no-dev-tls, mkcert missing/failed
+	// below) — without this, a stale block from an earlier dev-TLS create
+	// would keep pointing hostnames at the old, now-wrong IP. Idempotent
+	// no-op when there was never a block for this name.
+	if err := removeHostsBlock(name); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not clear a previous /etc/hosts entry for %q (%v)\n", name, err)
+	}
+
 	if repoRoot != "" {
 		fmt.Println("==> Building ownbased for the VM (go build -tags=integration) ...")
 		binPath, cleanup, err := buildOwnbasedBinary(repoRoot)

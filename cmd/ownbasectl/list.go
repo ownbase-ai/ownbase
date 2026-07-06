@@ -161,16 +161,6 @@ func runBaseDelete(name string, keepVM, assumeYes bool) error {
 		}
 	}
 
-	// Clean up any dev-TLS /etc/hosts block for this Base. removeHostsBlock
-	// is idempotent — a safe no-op (no sudo prompt) when this Base never had
-	// a block, so it is fine to call unconditionally whenever the VM itself
-	// is being torn down.
-	if !keepVM {
-		if err := removeHostsBlock(name); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not remove /etc/hosts entry for %q: %v\n", name, err)
-		}
-	}
-
 	if hasProfile {
 		delete(cfg.Servers, name)
 		if err := serverconfig.Save(cfgPath, cfg); err != nil {
@@ -179,6 +169,21 @@ func runBaseDelete(name string, keepVM, assumeYes bool) error {
 		fmt.Printf("Removed profile %q.\n", name)
 	}
 
+	// Clean up any dev-TLS /etc/hosts block for this Base. removeHostsBlock
+	// is idempotent — a safe no-op (no sudo prompt) when this Base never had
+	// a block, so it is fine to call unconditionally whenever the VM itself
+	// is being torn down. A failure here (e.g. sudo denied) must not be
+	// reported as a clean delete: the Base is gone but a stale hostname
+	// mapping would keep resolving to its now-destroyed IP, so this returns
+	// a non-zero exit rather than an easy-to-miss warning.
+	var hostsErr error
+	if !keepVM {
+		hostsErr = removeHostsBlock(name)
+	}
+
 	fmt.Printf("Base %q deleted.\n", name)
+	if hostsErr != nil {
+		return fmt.Errorf("could not remove the /etc/hosts entry for %q (%w) — remove the '# BEGIN/END OWNBASE %s' block from /etc/hosts manually", name, hostsErr, name)
+	}
 	return nil
 }
