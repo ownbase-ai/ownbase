@@ -28,7 +28,11 @@ func runningAsRoot() bool { return os.Getuid() == 0 }
 //
 // This runs after pass zero and before the main reconcile loop so that the
 // core package is always healthy before user services are reconciled.
-func bootstrapCore(ctx context.Context, cfg agentConfig, coreCfg schema.CoreConfig) error {
+//
+// hasPublicDomain reports whether any service in ownbase.yaml currently has
+// a domain configured (schema.OwnbaseConfig.HasPublicDomain) — see
+// core.BuildCoreOutput for how it gates Caddy's published ports.
+func bootstrapCore(ctx context.Context, cfg agentConfig, coreCfg schema.CoreConfig, hasPublicDomain bool) error {
 	// On first install, merge the ACME email from first-run.env into coreCfg
 	// so Caddy starts with the correct email — all before ownbase.yaml exists
 	// on disk.
@@ -40,7 +44,7 @@ func bootstrapCore(ctx context.Context, cfg agentConfig, coreCfg schema.CoreConf
 	quadletDir := agentQuadletDir()
 
 	// 1. Generate core Quadlet units from the pinned manifest.
-	coreOut := core.BuildCoreOutput(coreCfg, core.Current)
+	coreOut := core.BuildCoreOutput(coreCfg, core.Current, hasPublicDomain)
 
 	// 2. Install core unit files to the Quadlet directory.
 	if err := os.MkdirAll(quadletDir, 0o755); err != nil {

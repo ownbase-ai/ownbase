@@ -34,6 +34,14 @@ type PassZeroConfig struct {
 	// SSHPort is the SSH port to allow through the firewall. Default: 22.
 	SSHPort int
 
+	// ExposeWebPorts controls whether the firewall allows inbound 80/443.
+	// Should be true only when at least one service in ownbase.yaml has a
+	// domain configured (schema.OwnbaseConfig.HasPublicDomain) — a
+	// domain-less Base (the default state of a fresh Base) has nothing for
+	// Caddy to route, so it exposes only SSH. Reach services directly with
+	// `ownbasectl dev` instead. Default: false (safest).
+	ExposeWebPorts bool
+
 	// DryRun logs what would be done without making changes.
 	DryRun bool
 }

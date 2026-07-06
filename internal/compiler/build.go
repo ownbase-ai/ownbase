@@ -45,15 +45,20 @@ func build(in Input) RuntimeModel {
 		model.Networks = append(model.Networks, NetworkModel{Name: "ownbase-internal"})
 	}
 
-	// Caddy routes: one per container that has both domain and port.
+	// Caddy routes: one per effective domain for every container that has
+	// both a domain and a port. Backends are addressed by Podman container
+	// name (not "localhost") because Caddy runs isolated on the
+	// ownbase-internal network and cannot reach host-loopback ports.
 	for _, c := range model.Containers {
-		if c.PublicDomain == "" || c.PublicPort == 0 {
+		if len(c.PublicDomains) == 0 || c.PublicPort == 0 {
 			continue
 		}
-		model.Routes = append(model.Routes, RouteModel{
-			Host:     c.PublicDomain,
-			Upstream: fmt.Sprintf("localhost:%d", c.PublicPort),
-		})
+		for _, domain := range c.PublicDomains {
+			model.Routes = append(model.Routes, RouteModel{
+				Host:     domain,
+				Upstream: fmt.Sprintf("%s:%d", c.Name, c.PublicPort),
+			})
+		}
 	}
 
 	model.ACMEEmail = in.Config.Core.Caddy.Email
@@ -76,10 +81,10 @@ func buildContainer(name string, svc schema.ServiceDecl) ContainerModel {
 	dataVolumeName := fmt.Sprintf("ownbase-%s-data", name)
 
 	c := ContainerModel{
-		Name:         containerName,
-		PublicDomain: svc.Domain,
-		PublicPort:   svc.Port,
-		Env:          svc.Env,
+		Name:          containerName,
+		PublicDomains: svc.EffectiveDomains(),
+		PublicPort:    svc.Port,
+		Env:           svc.Env,
 	}
 
 	// All user services build from a local bare repo under /opt/ownbase/repos/.

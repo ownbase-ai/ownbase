@@ -206,8 +206,9 @@ func run(cfg agentConfig) error {
 	if !cfg.skipPassZero {
 		fmt.Fprintln(os.Stderr, "ownbased: running pass zero (host hardening) ...")
 		report, err := install.PassZero(context.Background(), install.PassZeroConfig{
-			DryRun:  cfg.dryRun,
-			SSHPort: cfg.sshPort,
+			DryRun:         cfg.dryRun,
+			SSHPort:        cfg.sshPort,
+			ExposeWebPorts: hasPublicDomainOnDisk(cfg.checkoutPath),
 		})
 		if err != nil {
 			return fmt.Errorf("pass zero: %w", err)
@@ -287,12 +288,14 @@ func run(cfg agentConfig) error {
 	// Idempotent: safe to call on every startup.
 	{
 		coreCfg := schema.CoreConfig{} // defaults apply
+		hasPublicDomain := false
 		if cfgOnDisk, err := schema.ParseConfigFile(
 			filepath.Join(cfg.checkoutPath, "ownbase.yaml"),
 		); err == nil {
 			coreCfg = cfgOnDisk.Core
+			hasPublicDomain = cfgOnDisk.HasPublicDomain()
 		}
-		if err := bootstrapCore(context.Background(), cfg, coreCfg); err != nil {
+		if err := bootstrapCore(context.Background(), cfg, coreCfg, hasPublicDomain); err != nil {
 			return fmt.Errorf("bootstrap core: %w", err)
 		}
 	}
@@ -626,12 +629,14 @@ func run(cfg agentConfig) error {
 			// tick finds the file without waiting for the 5-minute backstop.
 			if isCheckoutMissingError(err) {
 				coreCfg := schema.CoreConfig{}
+				hasPublicDomain := false
 				if cfgOnDisk, parseErr := schema.ParseConfigFile(
 					filepath.Join(cfg.checkoutPath, "ownbase.yaml"),
 				); parseErr == nil {
 					coreCfg = cfgOnDisk.Core
+					hasPublicDomain = cfgOnDisk.HasPublicDomain()
 				}
-				if bErr := bootstrapCore(context.Background(), cfg, coreCfg); bErr != nil {
+				if bErr := bootstrapCore(context.Background(), cfg, coreCfg, hasPublicDomain); bErr != nil {
 					fmt.Fprintf(os.Stderr, "ownbased: bootstrap retry (non-fatal): %v\n", bErr)
 				}
 			}
@@ -821,6 +826,21 @@ func readCoreConfigFromDisk(checkoutPath string) schema.CoreConfig {
 	return cfg.Core
 }
 
+// hasPublicDomainOnDisk reports whether ownbase.yaml on disk currently has
+// any service with a domain configured (schema.OwnbaseConfig.HasPublicDomain).
+// Returns false — the safe default — when the file is missing or cannot be
+// parsed, e.g. on a Base's very first boot before any config has been pushed.
+// Used to gate both the firewall's web ports (pass zero) and Caddy's
+// published ports (bootstrapCore) on the same signal.
+func hasPublicDomainOnDisk(checkoutPath string) bool {
+	cfgPath := filepath.Join(checkoutPath, "ownbase.yaml")
+	cfg, err := schema.ParseConfigFile(cfgPath)
+	if err != nil {
+		return false
+	}
+	return cfg.HasPublicDomain()
+}
+
 // loadBackupConfig builds a backup.Config for one run. It parses ownbase.yaml
 // fresh on every call (so volume declarations are always current), decrypts
 // credentials from the conventional age-encrypted secret, and resolves all
@@ -909,14 +929,28 @@ func reconcileLoop(
 	// 4. Compile desired state.
 	desired := compiler.Compile(compiler.Input{Config: cfg})
 
-	// 4a. Write the informational snapshot files (Caddyfile, docker-compose.yml)
+	// 4a. Read the Caddyfile snapshot that is currently on disk — i.e. what
+	// was actually deployed as of the end of the previous cycle — BEFORE
+	// compiler.WriteOutput overwrites it with the newly-compiled desired
+	// content below. Reading it after WriteOutput (as this used to do) means
+	// the "did the Caddyfile change" comparison always sees identical
+	// content and a reload never fires, even on a Base's very first boot
+	// (where Caddy starts with its stock default config). caddyfileSnapshotAvailable
+	// distinguishes "no snapshot exists yet" (err != nil — force a reload,
+	// since we don't know what's actually deployed) from "a snapshot exists
+	// and is byte-identical" (skip the reload) — both cases previously
+	// looked identical (an empty string), silently hiding the bug.
+	runtimeDir := filepath.Join(checkoutPath, "runtime")
+	currentCaddyfileBeforeWrite, caddyfileReadErr := os.ReadFile(filepath.Join(runtimeDir, "Caddyfile"))
+	caddyfileSnapshotAvailable := caddyfileReadErr == nil
+
+	// 4b. Write the informational snapshot files (Caddyfile, docker-compose.yml)
 	// before drift detection so they are always present when the detector runs.
 	// These files are unconditionally regenerated from the compiler on every
 	// cycle, so writing them here does not hide meaningful drift — it only
 	// prevents a false-positive "missing_file" on first boot (when
 	// bootstrapCore already started containers but the agent has never written
 	// the snapshot yet).
-	runtimeDir := filepath.Join(checkoutPath, "runtime")
 	if _, err := compiler.WriteOutput(desired, checkoutPath); err != nil {
 		fmt.Fprintf(os.Stderr, "ownbased: write runtime snapshot (pre-drift): %v (non-fatal)\n", err)
 	}
@@ -930,11 +964,6 @@ func reconcileLoop(
 		fmt.Fprint(os.Stderr, reconcile.RenderDriftReport(driftEvents))
 	}
 	state.DriftEvents = driftEvents
-
-	// 6. Read current runtime snapshots for precise diffing.
-	// These are non-fatal: if the files don't exist yet (first boot), the diff
-	// falls back to simpler logic (no restart/Caddyfile-only-reload actions).
-	currentCaddyfile, _ := os.ReadFile(filepath.Join(runtimeDir, "Caddyfile"))
 
 	// 6b. Read currently-installed Quadlet unit files from the actual quadlet
 	// directory (e.g. /etc/containers/systemd/). This is the authoritative
@@ -969,9 +998,10 @@ func reconcileLoop(
 
 	// 8. Diff desired vs current.
 	plan, err := reconcile.Diff(desired, current, reconcile.DiffOptions{
-		CurrentCaddyfile: string(currentCaddyfile),
-		CurrentUnits:     currentUnits,
-		InstalledUnits:   installedUnits,
+		CurrentCaddyfile:           string(currentCaddyfileBeforeWrite),
+		CaddyfileSnapshotAvailable: caddyfileSnapshotAvailable,
+		CurrentUnits:               currentUnits,
+		InstalledUnits:             installedUnits,
 	})
 	if err != nil {
 		return state, fmt.Errorf("diff: %w", err)

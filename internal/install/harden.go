@@ -31,8 +31,15 @@ import (
 
 // ensureFirewall configures UFW to:
 //   - Deny all inbound by default.
-//   - Allow SSH (configurable port), HTTP (80), HTTPS (443).
+//   - Allow SSH (configurable port), and HTTP (80) + HTTPS (443) only when
+//     cfg.ExposeWebPorts is true (i.e. at least one service has a domain
+//     configured — see schema.OwnbaseConfig.HasPublicDomain).
 //   - Enable UFW if not already enabled.
+//
+// A domain-less Base (the default state of a fresh Base) therefore exposes
+// nothing but SSH externally: there is no Caddy route to serve on 80/443
+// yet, and the dev bridge (`ownbasectl dev`) reaches services directly over
+// SSH, bypassing Caddy entirely.
 //
 // Outbound is unrestricted (containers need to pull images, DNS, etc.).
 func ensureFirewall(ctx context.Context, cfg PassZeroConfig) StepStatus {
@@ -56,30 +63,39 @@ func ensureFirewall(ctx context.Context, cfg PassZeroConfig) StepStatus {
 		{"ufw", "default", "deny", "incoming"},
 		{"ufw", "default", "allow", "outgoing"},
 		{"ufw", "allow", fmt.Sprintf("%d/tcp", cfg.SSHPort), "comment", "SSH"},
-		{"ufw", "allow", "80/tcp", "comment", "HTTP"},
-		{"ufw", "allow", "443/tcp", "comment", "HTTPS"},
-		// Allow forwarding of packets that netavark has DNAT'd to container IPs.
-		// UFW's default deny-routed policy otherwise drops them after DNAT.
-		// Scoped to specific ports rather than the whole subnet so a container
-		// that accidentally publishes on 0.0.0.0 doesn't become externally
-		// reachable without an explicit UFW INPUT rule.
-		{"ufw", "route", "allow", "proto", "tcp", "from", "any", "to", "10.88.0.0/12", "port", "80", "comment", "Caddy HTTP forwarding"},
-		{"ufw", "route", "allow", "proto", "tcp", "from", "any", "to", "10.88.0.0/12", "port", "443", "comment", "Caddy HTTPS forwarding"},
+	}
+	if cfg.ExposeWebPorts {
+		cmds = append(cmds,
+			[]string{"ufw", "allow", "80/tcp", "comment", "HTTP"},
+			[]string{"ufw", "allow", "443/tcp", "comment", "HTTPS"},
+			// Allow forwarding of packets that netavark has DNAT'd to container
+			// IPs. UFW's default deny-routed policy otherwise drops them after
+			// DNAT. Scoped to specific ports rather than the whole subnet so a
+			// container that accidentally publishes on 0.0.0.0 doesn't become
+			// externally reachable without an explicit UFW INPUT rule.
+			[]string{"ufw", "route", "allow", "proto", "tcp", "from", "any", "to", "10.88.0.0/12", "port", "80", "comment", "Caddy HTTP forwarding"},
+			[]string{"ufw", "route", "allow", "proto", "tcp", "from", "any", "to", "10.88.0.0/12", "port", "443", "comment", "Caddy HTTPS forwarding"},
+		)
+	}
+	cmds = append(cmds,
 		// Allow containers to reach the aardvark-dns server (bound to Podman
 		// bridge gateway IPs). Podman uses 10.88.0.0/12 and 10.89.0.0/16 for
 		// container subnets; their DNS queries target the gateway IPs on UDP/53.
 		// Without these rules UFW's INPUT DROP policy silently discards the
 		// queries, breaking inter-container hostname resolution.
-		{"ufw", "allow", "proto", "udp", "from", "10.88.0.0/12", "to", "10.88.0.0/12", "port", "53", "comment", "Podman DNS (10.88.0.0/12)"},
-		{"ufw", "allow", "proto", "udp", "from", "10.89.0.0/16", "to", "10.89.0.0/16", "port", "53", "comment", "Podman DNS (10.89.0.0/16)"},
-	}
+		[]string{"ufw", "allow", "proto", "udp", "from", "10.88.0.0/12", "to", "10.88.0.0/12", "port", "53", "comment", "Podman DNS (10.88.0.0/12)"},
+		[]string{"ufw", "allow", "proto", "udp", "from", "10.89.0.0/16", "to", "10.89.0.0/16", "port", "53", "comment", "Podman DNS (10.89.0.0/16)"},
+	)
 	cmds = append(cmds, []string{"ufw", "--force", "enable"})
 	for _, args := range cmds {
 		if _, err := run(ctx, args[0], args[1:]...); err != nil {
 			return StepStatus{Err: fmt.Errorf("ufw %s: %w", args[1], err)}
 		}
 	}
-	return StepStatus{Done: true, Detail: fmt.Sprintf("UFW enabled: SSH(%d), 80, 443", cfg.SSHPort)}
+	if cfg.ExposeWebPorts {
+		return StepStatus{Done: true, Detail: fmt.Sprintf("UFW enabled: SSH(%d), 80, 443", cfg.SSHPort)}
+	}
+	return StepStatus{Done: true, Detail: fmt.Sprintf("UFW enabled: SSH(%d) only (no domain configured yet)", cfg.SSHPort)}
 }
 
 // checkFirewallState returns whether UFW is active without making changes.

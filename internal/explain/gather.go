@@ -86,13 +86,17 @@ func gatherServices(cfg *schema.OwnbaseConfig, running map[string]bool) []Servic
 	result := make([]ServiceStatus, 0, len(cfg.Services))
 	for name, decl := range cfg.Services {
 		isRunning := running["ownbase-"+name]
+		domains := decl.EffectiveDomains()
 		svc := ServiceStatus{
 			Name:     name,
 			Running:  isRunning,
 			Healthy:  isRunning,
-			Domain:   decl.Domain,
+			Domains:  domains,
 			Port:     decl.Port,
 			Requires: decl.Requires,
+		}
+		if len(domains) > 0 {
+			svc.Domain = domains[0]
 		}
 		if decl.Source != "" {
 			svc.Source = decl.Source

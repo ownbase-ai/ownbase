@@ -59,7 +59,13 @@ func TestDiff_AlreadyRunningProducesEmptyPlan(t *testing.T) {
 		}
 	}
 	current := runtime.FullFakeCurrentState(containers, networks, volumes)
-	plan, err := reconcile.Diff(desired, current, reconcile.DiffOptions{})
+	// A Caddyfile snapshot matching desired must be provided — otherwise the
+	// diff correctly assumes no snapshot exists yet and forces a reload (see
+	// TestDiff_CaddyfileReloadForcedWhenNoSnapshotAvailable).
+	plan, err := reconcile.Diff(desired, current, reconcile.DiffOptions{
+		CurrentCaddyfile:           desired.Caddyfile,
+		CaddyfileSnapshotAvailable: true,
+	})
 	if err != nil {
 		t.Fatalf("Diff: %v", err)
 	}
@@ -204,7 +210,10 @@ func TestRenderPlanText_AlreadyConverged(t *testing.T) {
 		}
 	}
 	current := runtime.FullFakeCurrentState(containers, networks, volumes)
-	plan, _ := reconcile.Diff(desired, current, reconcile.DiffOptions{})
+	plan, _ := reconcile.Diff(desired, current, reconcile.DiffOptions{
+		CurrentCaddyfile:           desired.Caddyfile,
+		CaddyfileSnapshotAvailable: true,
+	})
 	text := reconcile.RenderPlanText(plan)
 	if !strings.Contains(text, "converged") {
 		t.Errorf("plan text %q does not mention 'converged'", text)
@@ -709,7 +718,8 @@ func TestDiff_CaddyfileOnlyReloadWhenChanged(t *testing.T) {
 
 	// Provide a stale Caddyfile so the diff should emit a reload-only plan.
 	plan, err := reconcile.Diff(desired, current, reconcile.DiffOptions{
-		CurrentCaddyfile: "# stale Caddyfile\n",
+		CurrentCaddyfile:           "# stale Caddyfile\n",
+		CaddyfileSnapshotAvailable: true,
 	})
 	if err != nil {
 		t.Fatalf("Diff: %v", err)
@@ -744,7 +754,8 @@ func TestDiff_NoCaddyfileReloadWhenUnchanged(t *testing.T) {
 
 	// Current Caddyfile matches desired — no reload.
 	plan, err := reconcile.Diff(desired, current, reconcile.DiffOptions{
-		CurrentCaddyfile: desired.Caddyfile,
+		CurrentCaddyfile:           desired.Caddyfile,
+		CaddyfileSnapshotAvailable: true,
 	})
 	if err != nil {
 		t.Fatalf("Diff: %v", err)
@@ -753,5 +764,49 @@ func TestDiff_NoCaddyfileReloadWhenUnchanged(t *testing.T) {
 		if a.Action.Type == schema.ActionServiceReload {
 			t.Errorf("unexpected service.reload when Caddyfile is unchanged: %v", a.Description)
 		}
+	}
+}
+
+// TestDiff_CaddyfileReloadForcedWhenNoSnapshotAvailable verifies the actual
+// bug fix: on a Base's very first boot, runtime/Caddyfile does not exist yet
+// (CaddyfileSnapshotAvailable is false) even though Caddy is already running
+// its stock default config. The diff must still force a reload so the
+// compiled Caddyfile actually reaches Caddy, even when CurrentCaddyfile
+// happens to equal desired.Caddyfile (e.g. both are read as empty strings)
+// and even when no other actions are pending.
+func TestDiff_CaddyfileReloadForcedWhenNoSnapshotAvailable(t *testing.T) {
+	desired := testDesired(t)
+	if desired.Caddyfile == "" {
+		t.Skip("testDesired has no Caddyfile — skip Caddyfile snapshot test")
+	}
+
+	var containers, networks, volumes []string
+	for filename := range desired.QuadletUnits {
+		switch {
+		case strings.HasSuffix(filename, ".container"):
+			containers = append(containers, strings.TrimSuffix(filename, ".container"))
+		case strings.HasSuffix(filename, ".network"):
+			networks = append(networks, strings.TrimSuffix(filename, ".network"))
+		case strings.HasSuffix(filename, ".volume"):
+			volumes = append(volumes, strings.TrimSuffix(filename, ".volume"))
+		}
+	}
+	current := runtime.FullFakeCurrentState(containers, networks, volumes)
+
+	// No snapshot available at all (CaddyfileSnapshotAvailable left false) —
+	// CurrentCaddyfile is left at its zero value, which would look identical
+	// to an actually-empty-but-present snapshot without the flag.
+	plan, err := reconcile.Diff(desired, current, reconcile.DiffOptions{})
+	if err != nil {
+		t.Fatalf("Diff: %v", err)
+	}
+	hasReload := false
+	for _, a := range plan.Actions {
+		if a.Action.Type == schema.ActionServiceReload {
+			hasReload = true
+		}
+	}
+	if !hasReload {
+		t.Error("expected service.reload to be forced when no Caddyfile snapshot is available, even with no other actions")
 	}
 }
