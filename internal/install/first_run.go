@@ -30,6 +30,12 @@ type FirstRunEnv struct {
 	// CaddyEmail is the ACME/Let's Encrypt contact email for automatic TLS.
 	// Empty when not provided at install time.
 	CaddyEmail string
+
+	// DevTLS mirrors OWNBASE_DEV_TLS from install.sh: true when `ownbasectl
+	// create` staged a mkcert-signed certificate for local-VM HTTPS
+	// simulation (see internal/core.DevTLSHostDir). Never true for a
+	// --remote/production install.
+	DevTLS bool
 }
 
 // ReadFirstRunEnv parses the first-run configuration from the file at path.
@@ -57,6 +63,8 @@ func ReadFirstRunEnv(path string) FirstRunEnv {
 			env.ForgejoDomain = v
 		case "CADDY_EMAIL":
 			env.CaddyEmail = v
+		case "DEV_TLS":
+			env.DevTLS = v == "1"
 		}
 	}
 	return env

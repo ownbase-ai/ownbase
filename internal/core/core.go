@@ -60,6 +60,12 @@ const ForgejoDataVolume = "ownbase-core-forgejo-data"
 // CaddyDataVolume is the named volume for Caddy's persistent data (certs).
 const CaddyDataVolume = "ownbase-core-caddy-data"
 
+// DevTLSHostDir is the well-known path on the Base where the mkcert-signed
+// dev-TLS certificate (cert.pem, key.pem) is staged by install.sh before the
+// daemon's first run. Bind-mounted read-only into the Caddy container at
+// compiler.DevTLSMountDir when core.caddy.dev_tls is set.
+const DevTLSHostDir = "/opt/ownbase/dev-tls"
+
 // DefaultForgejoPort is the default host port Forgejo listens on.
 const DefaultForgejoPort = 3000
 
@@ -152,16 +158,29 @@ func buildCaddyModel(cfg schema.CoreConfig, m CoreManifest) compiler.ContainerMo
 	if cfg.Caddy.Email != "" {
 		env = append(env, "ACME_EMAIL="+cfg.Caddy.Email)
 	}
+	volumeMounts := []compiler.VolumeMount{
+		{VolumeName: CaddyDataVolume, MountPath: "/data"},
+	}
+	// dev_tls: bind-mount the mkcert certificate directory staged by
+	// install.sh (or ownbasectl dev-tls sync) so the Caddyfile's `tls`
+	// directives (compiler.DevTLSCertPath / DevTLSKeyPath) can find it.
+	// Read-only — Caddy never needs to write here (unlike /data, its ACME
+	// storage, which it fully owns).
+	if cfg.Caddy.DevTLS {
+		volumeMounts = append(volumeMounts, compiler.VolumeMount{
+			VolumeName: DevTLSHostDir,
+			MountPath:  compiler.DevTLSMountDir,
+			ReadOnly:   true,
+		})
+	}
 	return compiler.ContainerModel{
 		Name:           CaddyContainerName,
 		Image:          m.CaddyImage,
 		Digest:         m.CaddyDigest,
 		IsImageBundled: true,
 		Env:            env,
-		VolumeMounts: []compiler.VolumeMount{
-			{VolumeName: CaddyDataVolume, MountPath: "/data"},
-		},
-		Networks: []string{"ownbase-internal"},
+		VolumeMounts:   volumeMounts,
+		Networks:       []string{"ownbase-internal"},
 		// Caddy is the public web entrypoint: it must accept external traffic
 		// on 80 (ACME HTTP-01 + redirects) and 443 (HTTPS) on all interfaces.
 		HostPublishPorts: []int{80, 443},
@@ -239,7 +258,11 @@ func renderCoreContainer(c compiler.ContainerModel) string {
 		fmt.Fprintf(&b, "Network=%s.network\n", net)
 	}
 	for _, vm := range c.VolumeMounts {
-		fmt.Fprintf(&b, "Volume=%s:%s\n", vm.VolumeName, vm.MountPath)
+		if vm.ReadOnly {
+			fmt.Fprintf(&b, "Volume=%s:%s:ro\n", vm.VolumeName, vm.MountPath)
+		} else {
+			fmt.Fprintf(&b, "Volume=%s:%s\n", vm.VolumeName, vm.MountPath)
+		}
 	}
 	if c.PublicPort > 0 {
 		// Bind to all interfaces when no domain is configured (direct access

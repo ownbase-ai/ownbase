@@ -176,7 +176,7 @@ func BootstrapCore(ctx context.Context, cfg CoreBootstrapConfig) error {
 
 	// Seed template ownbase.yaml if the repo is brand new.
 	if !c.DryRun {
-		tmpl := buildTemplateOwnbaseYAML(c.CoreConfig.Forgejo.Domain, c.CoreConfig.Caddy.Email)
+		tmpl := buildTemplateOwnbaseYAML(c.CoreConfig.Forgejo.Domain, c.CoreConfig.Caddy.Email, c.CoreConfig.Caddy.DevTLS)
 		if err := githost.SeedBaseRepo(fgCfg, tmpl); err != nil {
 			return fmt.Errorf("bootstrap core: seed base repo: %w", err)
 		}
@@ -298,14 +298,19 @@ func generateAdminPassword() string {
 // Forgejo base repo during fresh installs. When domain and email are provided
 // (passed at install time via FORGEJO_DOMAIN / CADDY_EMAIL), they are written
 // as active values so the first reconcile configures Caddy/TLS immediately.
-// Otherwise the fields are left as commented-out examples.
-func buildTemplateOwnbaseYAML(domain, email string) string {
+// Otherwise the fields are left as commented-out examples. When devTLS is
+// true (ownbasectl create's default local-VM mode), core.caddy.dev_tls: true
+// is written instead of an ACME email so the first reconcile serves the
+// mkcert-signed certificate staged at internal/core.DevTLSHostDir.
+func buildTemplateOwnbaseYAML(domain, email string, devTLS bool) string {
 	forgejoLine := "    # domain: git.mysite.com  # optional: public hostname for the git UI"
 	if domain != "" {
 		forgejoLine = "    domain: " + domain
 	}
 	caddyLine := "    # email: you@example.com  # for automatic TLS certificates"
-	if email != "" {
+	if devTLS {
+		caddyLine = "    dev_tls: true  # local HTTPS simulation via mkcert — see docs/development.md"
+	} else if email != "" {
 		caddyLine = "    email: " + email
 	}
 	return `schema_version: v1

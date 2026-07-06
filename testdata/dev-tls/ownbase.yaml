@@ -1,0 +1,13 @@
+schema_version: v1
+
+core:
+  forgejo:
+    domain: forgejo.mybase.test
+  caddy:
+    dev_tls: true
+
+services:
+  app:
+    source: apps/app
+    port: 3000
+    domain: app.mybase.test

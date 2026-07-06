@@ -34,8 +34,12 @@ Commands that talk to a Base (`status`, `updates`, `security`, `secrets`, `forge
 Provision a Base end to end and register it in `~/.ownbase/config`.
 
 ```bash
-# Local Multipass VM (the default when --remote is omitted)
+# Local Multipass VM (the default when --remote is omitted) — gets real
+# HTTPS by default, see "dev-TLS" below
 ownbasectl create mybase
+
+# Local VM, plain HTTP on :3000 (today's pre-dev-TLS behavior)
+ownbasectl create mybase --no-dev-tls
 
 # Fresh remote Ubuntu 22.04/24.04 server
 ownbasectl create mybase --remote root@mybase.example.com \
@@ -49,11 +53,31 @@ ownbasectl create mybase --remote root@mybase.example.com \
 | `--ssh-key` | `~/.ssh/id_ed25519` | SSH private key for `--remote` |
 | `--ssh-port` | `22` | SSH port for `--remote` (persisted in the profile) |
 | `--cpus` / `--memory` / `--disk` | `2` / `2` GB / `15` GB | VM sizing (local VM only) |
-| `--forgejo-domain` | — | Public domain for the Forgejo UI (optional; without it Forgejo is at `http://<host>:3000`) |
-| `--caddy-email` | — | ACME contact email for automatic TLS (used with `--forgejo-domain`) |
+| `--forgejo-domain` | — | Public domain for the Forgejo UI (optional; without it a local VM defaults to dev-TLS — see below — and a remote server serves plain `http://<host>:3000`); implies `--no-dev-tls` |
+| `--caddy-email` | — | ACME contact email for automatic TLS (used with `--forgejo-domain`); implies `--no-dev-tls` |
+| `--no-dev-tls` | `false` | Disable local HTTPS simulation (mkcert + `/etc/hosts`) for a local VM; no-op for `--remote` |
+| `--dev-domain` | `<name>.test` | Base domain for dev-TLS (local VM only; e.g. `mybase.test` → `forgejo.mybase.test`) |
 | `--yes`, `-y` | `false` | Skip confirmation prompts (e.g. overwriting an existing local VM) |
 
 If a local VM with the same name already exists, `create` asks before deleting it (`--yes` skips the prompt; non-interactive runs proceed as before).
+
+### `dev-tls` and `vm` (local VM only)
+
+A local VM created without `--no-dev-tls`/`--forgejo-domain`/`--caddy-email` gets real HTTPS: `create` runs `mkcert -install` (trusts a local-only CA in the host's system/browser trust stores, once per machine), generates a wildcard certificate for `*.<name>.test`, transfers it into the VM, and Caddy serves it — no ACME, no public DNS, no rate limits. `/etc/hosts` gets a marked block so `https://forgejo.mybase.test` resolves to the VM's IP.
+
+```bash
+ownbasectl dev-tls sync <name>    # refresh /etc/hosts after adding a service with a new domain:
+ownbasectl dev-tls trust          # re-run mkcert -install (new machine, or after mkcert -uninstall)
+
+ownbasectl vm start <name>        # start a stopped local VM; re-detects its IP, updates the
+                                   # profile, and refreshes /etc/hosts for dev-TLS Bases
+ownbasectl vm stop <name>         # stop a local VM (data is preserved; IP will change on next start)
+ownbasectl vm restart <name>      # stop + start, same refresh as above
+ownbasectl vm list                # local-VM Bases and their current Multipass state
+ownbasectl vm ip <name>           # current Multipass IPv4; warns if it differs from the saved profile
+```
+
+`vm start`/`restart` replace the old manual `ownbasectl adopt --host <new-ip>` dance needed after every Multipass `stop`/`start` (the VM's DHCP-assigned IP very likely changes). If `mkcert` isn't installed on the host, `create` prints a warning with an install hint (`brew install mkcert nss`) and falls back to plain HTTP for that run — dev-TLS is best-effort and never blocks provisioning.
 
 ### `adopt <name> --host <host> --token <token>`
 

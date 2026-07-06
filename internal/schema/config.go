@@ -134,6 +134,14 @@ type CaddyCoreConfig struct {
 	// Email is used for ACME/Let's Encrypt certificate issuance.
 	// Required when using public domains with automatic TLS.
 	Email string `yaml:"email,omitempty"`
+
+	// DevTLS makes Caddy serve locally-trusted certificates (mkcert) mounted
+	// at /etc/caddy/certs for every domain-having site, instead of
+	// provisioning certificates via ACME/Let's Encrypt. This is a local
+	// development/simulation feature only — never used in production, and
+	// never combined with a real public domain pointed at this Base. When
+	// set, Email is ignored (no ACME account is contacted).
+	DevTLS bool `yaml:"dev_tls,omitempty"`
 }
 
 // ServiceDecl is one service instance entry in the services map.
@@ -278,6 +286,9 @@ func (c *OwnbaseConfig) Validate() error {
 			return err
 		}
 	}
+	if err := c.Core.Caddy.validate(c.Core.Forgejo.Domain, c.Services); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -337,6 +348,27 @@ func (s ServiceDecl) validate(name string, allServices map[string]ServiceDecl) e
 		seenVolNames[v.Name] = true
 	}
 	return nil
+}
+
+// validate checks the dev_tls invariant: it only makes sense when at least
+// one domain is configured (Forgejo's or a service's) for Caddy to serve
+// with the mkcert-signed certificate. forgejoDomain and services are passed
+// in rather than read from a receiver on OwnbaseConfig, keeping CaddyCoreConfig
+// self-contained and easy to unit test.
+func (c CaddyCoreConfig) validate(forgejoDomain string, services map[string]ServiceDecl) error {
+	if !c.DevTLS {
+		return nil
+	}
+	if strings.TrimSpace(forgejoDomain) != "" {
+		return nil
+	}
+	for _, svc := range services {
+		if strings.TrimSpace(svc.Domain) != "" {
+			return nil
+		}
+	}
+	return errors.New("core.caddy.dev_tls is set but no domain is configured — " +
+		"set core.forgejo.domain or a service domain: for Caddy to serve")
 }
 
 func (b BackupCoreConfig) validate() error {

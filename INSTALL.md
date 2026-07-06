@@ -72,10 +72,15 @@ ownbasectl create mybase --remote root@mybase.example.com \
 What `create` does, in order:
 
 1. Provisions the target — launches a fresh Ubuntu 24.04 VM via Multipass (deleting any existing VM with the same name first), or connects over SSH to the server you provisioned.
-2. Uploads the installer (embedded in `ownbasectl`) and runs it as root: it downloads the `ownbased` daemon release matching your `ownbasectl` version, verifies its minisign signature, then runs pass zero (Podman, UFW, fail2ban, unattended-upgrades, trivy) and the Forgejo + Caddy bootstrap.
-3. Reads the generated API token back and registers the Base as `mybase` in `~/.ownbase/config` — nothing to copy-paste.
+2. **Local VM only:** unless `--no-dev-tls` is passed, generates a locally-trusted [mkcert](https://github.com/FiloSottile/mkcert) HTTPS certificate for `*.mybase.test` and adds an `/etc/hosts` entry — see "Local HTTPS simulation" below.
+3. Uploads the installer (embedded in `ownbasectl`) and runs it as root: it downloads the `ownbased` daemon release matching your `ownbasectl` version, verifies its minisign signature, then runs pass zero (Podman, UFW, fail2ban, unattended-upgrades, trivy) and the Forgejo + Caddy bootstrap.
+4. Reads the generated API token back and registers the Base as `mybase` in `~/.ownbase/config` — nothing to copy-paste.
 
-Omit `--forgejo-domain`/`--caddy-email` if you don't have a domain yet; Forgejo is then reached directly at `http://<host>:3000`.
+On a remote server, omit `--forgejo-domain`/`--caddy-email` if you don't have a domain yet; Forgejo is then reached directly at `http://<host>:3000`.
+
+#### Local HTTPS simulation (dev-TLS)
+
+A local VM gets real HTTPS by default: `ownbasectl create mybase` ends with Forgejo at `https://forgejo.mybase.test`, trusted by this machine (mkcert) with no browser warning. This requires `mkcert` on the host (`brew install mkcert nss`) — if it's missing, `create` warns and falls back to plain `http://<vm-ip>:3000` automatically. Add a service with `domain: <name>.mybase.test` in `ownbase.yaml`, then run `ownbasectl dev-tls sync mybase` to pick up the new hostname. Skip all of this with `ownbasectl create mybase --no-dev-tls`. See [`dev-tls`/`vm` in the CLI reference](docs/cli.md#dev-tls-and-vm-local-vm-only) for the full command set.
 
 ```bash
 ownbasectl status mybase
@@ -121,19 +126,14 @@ This provisions a fresh VM (or `--remote <host>` for a fresh server), runs the i
 
 ### Pausing a local VM
 
-`create`/`delete` are the only VM lifecycle `ownbasectl` manages directly. To pause a local VM between sessions without losing anything, use Multipass itself — the Base and its data are untouched:
+To pause a local VM between sessions without losing anything, use `ownbasectl vm`:
 
 ```bash
-multipass stop mybase
-multipass start mybase
+ownbasectl vm stop mybase
+ownbasectl vm start mybase
 ```
 
-Multipass may hand the VM a new IP on restart. If `ownbasectl status mybase` stops connecting afterward:
-
-```bash
-multipass info mybase | grep IPv4
-ownbasectl adopt mybase --host <new-ip> --token <token>   # token: `sudo cat /opt/ownbase/api-token` on the VM
-```
+Multipass hands the VM a new IP on most restarts (it's DHCP-assigned); `vm start`/`vm restart` re-detect it, update the saved profile in `~/.ownbase/config`, and refresh `/etc/hosts` automatically if the Base uses dev-TLS — so `ownbasectl status mybase` and any `https://*.test` URLs keep working with no manual step. `ownbasectl vm list` shows every local-VM Base and its current Multipass state; `ownbasectl vm ip mybase` prints the live IP and flags a mismatch with the stored profile.
 
 ### Managing multiple Bases
 

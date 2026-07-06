@@ -91,6 +91,17 @@ OWNBASE_SSH_PORT="${OWNBASE_SSH_PORT:-22}"
 FORGEJO_DOMAIN="${FORGEJO_DOMAIN:-}"
 CADDY_EMAIL="${CADDY_EMAIL:-}"
 
+# OWNBASE_DEV_TLS: set to 1 by `ownbasectl create` (local VM, dev-TLS mode —
+# see docs/development.md). Seeds core.caddy.dev_tls: true into ownbase.yaml
+# so Caddy serves the mkcert-signed certificate staged at
+# OWNBASE_DEV_TLS_CERT_DIR instead of provisioning via ACME. Never set for
+# --remote/production installs.
+# OWNBASE_DEV_TLS_CERT_DIR: where ownbasectl transferred the mkcert wildcard
+# cert.pem/key.pem before running this script. Moved into
+# /opt/ownbase/dev-tls (core.DevTLSHostDir) for the Caddy container to mount.
+OWNBASE_DEV_TLS="${OWNBASE_DEV_TLS:-0}"
+OWNBASE_DEV_TLS_CERT_DIR="${OWNBASE_DEV_TLS_CERT_DIR:-/home/ubuntu/dev-tls}"
+
 # OwnBase release signing public key (minisign).
 # Generated with: minisign -G -p ownbase-release.pub -s ownbase-release.key
 # The matching secret key lives only in the MINISIGN_SECRET_KEY GitHub Actions
@@ -254,6 +265,36 @@ install_binary() {
 }
 
 # ---------------------------------------------------------------------------
+# Step 4.4: Stage dev-TLS certificate (mkcert, local VM only)
+# ---------------------------------------------------------------------------
+
+# stage_dev_tls_certs moves the mkcert-signed wildcard certificate that
+# `ownbasectl create` transferred into the VM at OWNBASE_DEV_TLS_CERT_DIR into
+# the well-known location the Caddy core container bind-mounts
+# (/opt/ownbase/dev-tls, see internal/core.DevTLSHostDir). Runs before the
+# daemon starts so the very first reconcile finds the certificate already in
+# place. A no-op unless OWNBASE_DEV_TLS=1.
+stage_dev_tls_certs() {
+    [[ "$OWNBASE_DEV_TLS" == "1" ]] || return 0
+
+    local cert_src="${OWNBASE_DEV_TLS_CERT_DIR}/cert.pem"
+    local key_src="${OWNBASE_DEV_TLS_CERT_DIR}/key.pem"
+    local dest_dir="${OWNBASE_BASE_DIR}/dev-tls"
+
+    [[ -f "$cert_src" ]] || die "OWNBASE_DEV_TLS=1 but $cert_src not found — did ownbasectl transfer the mkcert certificate?"
+    [[ -f "$key_src"  ]] || die "OWNBASE_DEV_TLS=1 but $key_src not found — did ownbasectl transfer the mkcert certificate?"
+
+    mkdir -p "$dest_dir"
+    cp "$cert_src" "${dest_dir}/cert.pem"
+    cp "$key_src" "${dest_dir}/key.pem"
+    chown -R root:root "$dest_dir"
+    chmod 0755 "$dest_dir"
+    chmod 0644 "${dest_dir}/cert.pem"
+    chmod 0600 "${dest_dir}/key.pem"
+    info "Dev-TLS certificate staged at $dest_dir"
+}
+
+# ---------------------------------------------------------------------------
 # Step 4.5: Rebuild mode — restore latest backup before the service starts
 # ---------------------------------------------------------------------------
 
@@ -304,9 +345,10 @@ write_first_run_env() {
     local ssh_key="$2"
     local forgejo_domain="$3"
     local caddy_email="$4"
+    local dev_tls="$5"
 
     # Nothing to write.
-    if [[ -z "$password" && -z "$ssh_key" && -z "$forgejo_domain" && -z "$caddy_email" ]]; then
+    if [[ -z "$password" && -z "$ssh_key" && -z "$forgejo_domain" && -z "$caddy_email" && "$dev_tls" != "1" ]]; then
         return
     fi
 
@@ -315,6 +357,7 @@ write_first_run_env() {
     [[ -n "$ssh_key"         ]] && printf 'OWNER_SSH_KEY=%s\n'   "$ssh_key"         >> "$first_run_file"
     [[ -n "$forgejo_domain"  ]] && printf 'FORGEJO_DOMAIN=%s\n'  "$forgejo_domain"  >> "$first_run_file"
     [[ -n "$caddy_email"     ]] && printf 'CADDY_EMAIL=%s\n'     "$caddy_email"     >> "$first_run_file"
+    [[ "$dev_tls" == "1"     ]] && printf 'DEV_TLS=1\n'                             >> "$first_run_file"
     info "Owner credentials saved for daemon first-run setup."
 }
 
@@ -424,7 +467,8 @@ main() {
     create_ownbase_user
     install_binary
     run_rebuild_if_requested
-    write_first_run_env "$owner_password" "$OWNBASE_OWNER_SSH_KEY" "$FORGEJO_DOMAIN" "$CADDY_EMAIL"
+    stage_dev_tls_certs
+    write_first_run_env "$owner_password" "$OWNBASE_OWNER_SSH_KEY" "$FORGEJO_DOMAIN" "$CADDY_EMAIL" "$OWNBASE_DEV_TLS"
     write_api_token "$api_token"
     write_forgejo_admin_pass "$owner_password"
     install_systemd_service
@@ -457,6 +501,9 @@ main() {
         info "    Password : ${owner_password}"
         if [[ -n "$FORGEJO_DOMAIN" ]]; then
         info "    URL      : https://${FORGEJO_DOMAIN}"
+        if [[ "$OWNBASE_DEV_TLS" == "1" ]]; then
+        info "               (dev-TLS: trusted once your host runs mkcert -install)"
+        fi
         fi
         info ""
     fi

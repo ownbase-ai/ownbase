@@ -235,6 +235,61 @@ func TestParseConfig_CoreConfig_EffectivePort_Custom(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// CaddyCoreConfig dev_tls
+// ---------------------------------------------------------------------------
+
+func TestCaddyCoreConfig_DevTLS_RequiresForgejoDomain_Valid(t *testing.T) {
+	cfg := &schema.OwnbaseConfig{
+		SchemaVersion: "v1",
+		Core: schema.CoreConfig{
+			Forgejo: schema.ForgejoCoreConfig{Domain: "forgejo.mybase.test"},
+			Caddy:   schema.CaddyCoreConfig{DevTLS: true},
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("expected valid config with dev_tls + forgejo domain, got: %v", err)
+	}
+}
+
+func TestCaddyCoreConfig_DevTLS_RequiresServiceDomain_Valid(t *testing.T) {
+	cfg := &schema.OwnbaseConfig{
+		SchemaVersion: "v1",
+		Core: schema.CoreConfig{
+			Caddy: schema.CaddyCoreConfig{DevTLS: true},
+		},
+		Services: map[string]schema.ServiceDecl{
+			"app": {Source: "services/app", Port: 8080, Domain: "app.mybase.test"},
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("expected valid config with dev_tls + service domain, got: %v", err)
+	}
+}
+
+func TestCaddyCoreConfig_DevTLS_NoDomain_Invalid(t *testing.T) {
+	cfg := &schema.OwnbaseConfig{
+		SchemaVersion: "v1",
+		Core: schema.CoreConfig{
+			Caddy: schema.CaddyCoreConfig{DevTLS: true},
+		},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for dev_tls with no domain configured")
+	} else if !strings.Contains(err.Error(), "dev_tls") {
+		t.Errorf("error %q does not mention dev_tls", err.Error())
+	}
+}
+
+func TestCaddyCoreConfig_DevTLS_Disabled_NoDomainOK(t *testing.T) {
+	cfg := &schema.OwnbaseConfig{
+		SchemaVersion: "v1",
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("expected valid config with dev_tls disabled and no domain, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Taxonomy tests
 // ---------------------------------------------------------------------------
 

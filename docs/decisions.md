@@ -117,6 +117,18 @@
 | CLI distribution | `ownbasectl` is a standalone binary (GoReleaser: darwin/linux × amd64/arm64), with `install.sh` embedded via `go:embed` so a released binary needs no checkout | `ownbasectl create` is the only supported install path — there is no `curl \| bash` |
 | Daemon version pinning | Release builds of `ownbasectl` set `OWNBASE_VERSION` to their own version so `install.sh` downloads the matching signed daemon | `ownbasectl` and the daemon stay in lockstep for released installs |
 
+## Local HTTPS simulation (dev-TLS)
+
+| Decision | Choice | Why |
+|---|---|---|
+| Local CA | **mkcert**, on by default for local Multipass VM `create` (never for `--remote`) | Real, browser-trusted HTTPS with zero public DNS/ACME dependency; `--no-dev-tls` opts out, `--forgejo-domain`/`--caddy-email` imply it (the user wants real ACME even on a VM) |
+| Why not Caddy `tls internal` | mkcert's CA is trusted by the host's system/browser stores (`mkcert -install`); Caddy's internal CA is trusted only by Caddy itself, so the browser would still show a warning | mkcert is the only piece that gets a *trusted-looking* padlock on the Mac making the request |
+| Cert delivery | Generated on the host (`ownbasectl`), transferred into the VM once, staged by `install.sh` to `/opt/ownbase/dev-tls/`, bind-mounted read-only into the Caddy container at `/etc/caddy/certs` | The mkcert CA private key never leaves the host; the VM only ever holds a leaf cert |
+| Hostname resolution | `/etc/hosts`, not `dnsmasq`/wildcard DNS, managed via a marked block (`# BEGIN/END OWNBASE <name>`) keyed by Base name | Simplest mechanism that works with no extra services; `sudo` prompts are an accepted, one-time-per-change cost for local dev |
+| Hostname refresh | `ownbasectl dev-tls sync` (new service `domain:`) and `ownbasectl vm start/restart` (VM IP changed) both call the same `/etc/hosts` writer (`cmd/ownbasectl/devtls.go`) | Two distinct triggers, one code path |
+| `ownbasectl vm` | New command group (`start`/`stop`/`restart`/`list`/`ip`) owning the Multipass lifecycle for local VMs | Multipass reassigns the VM's IP via DHCP on every `start`; this is the single point that re-detects it, updates the profile, and refreshes `/etc/hosts` — replacing a manual `adopt --host <new-ip>` |
+| mkcert missing | `create` prints a warning + install hint and falls back to plain HTTP for that run; never a hard failure | `make smoke-test`/CI have no mkcert installed and must keep working unmodified |
+
 ## Vulnerability scanning
 
 | Decision | Choice | Why |

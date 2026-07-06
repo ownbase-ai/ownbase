@@ -50,6 +50,8 @@ go run ./cmd/ownbasectl create ownbase-fresh
 
 `make smoke-test` and `make connect-vm` are thin aliases for this same command — the daemon binary is built fresh from this checkout every run, and the resulting profile is registered automatically, so there is no separate "connect" step. `create` always deletes any existing VM with the same name before launching, so re-running it is already "provision a clean VM" — no separate `multipass delete`/`launch` step needed.
 
+By default this now provisions **dev-TLS**: a locally-trusted ([mkcert](https://github.com/FiloSottile/mkcert)) HTTPS certificate for `*.ownbase-fresh.test`, with `/etc/hosts` pointed at the VM (see [cli.md](cli.md#dev-tls-and-vm-local-vm-only)) — so Forgejo ends up at `https://forgejo.ownbase-fresh.test`, not `http://<ip>:3000` (a domain is configured, so UFW does **not** open port 3000 directly). If `mkcert` isn't installed, `create` warns and falls back to the old plain-HTTP-on-`:3000` behavior automatically — nothing to configure for CI/machines without it. Pass `--no-dev-tls` to opt out explicitly.
+
 ### Watch the daemon
 
 ```bash
@@ -71,13 +73,16 @@ update detection enabled ...
 ### Verify after startup
 
 ```bash
-# Get the VM IP
-multipass info ownbase-fresh | grep IPv4
+# With dev-TLS (the default) — Forgejo is at https://forgejo.ownbase-fresh.test,
+# already trusted (mkcert) and already resolving (/etc/hosts), no flags needed
+curl -s https://forgejo.ownbase-fresh.test/api/healthz | python3 -m json.tool
 
-# From your Mac — Forgejo is at http://<VM-IP>:3000
+# With --no-dev-tls (or if mkcert fell back) — Forgejo is at http://<VM-IP>:3000
+multipass info ownbase-fresh | grep IPv4
 curl -s http://<VM-IP>:3000/api/healthz | python3 -m json.tool
 
-# Or open a VM shell and check from inside
+# Or open a VM shell and check from inside (works either way — Forgejo always
+# listens on localhost:3000 regardless of how it's reached from the host)
 multipass exec ownbase-fresh -- curl -s http://localhost:3000/api/healthz | python3 -m json.tool
 multipass exec ownbase-fresh -- sudo podman ps                  # both forgejo and caddy running
 multipass exec ownbase-fresh -- sudo systemctl list-units 'ownbase-*'   # 4 units loaded
@@ -94,6 +99,8 @@ go run ./cmd/ownbasectl status ownbase-fresh
 go run ./cmd/ownbasectl checkup ownbase-fresh
 go run ./cmd/ownbasectl forgejo ownbase-fresh
 ```
+
+Pausing the VM between sessions: `go run ./cmd/ownbasectl vm stop ownbase-fresh` / `vm start ownbase-fresh` — `vm start` re-detects the (very likely changed) DHCP IP, updates the profile, and refreshes `/etc/hosts` for the dev-TLS hostnames, so no manual `adopt` step is needed afterward.
 
 ## Agent-level bootstrap tests
 

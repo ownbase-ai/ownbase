@@ -69,6 +69,16 @@ type ServerProfile struct {
 	// that is what protects against destroying a coincidentally
 	// same-named local VM.
 	LocalVM *bool `yaml:"local_vm,omitempty"`
+
+	// DevTLSDomain is the base domain (e.g. "mybase.test") for which
+	// `ownbasectl create` generated a mkcert wildcard certificate and wrote
+	// an /etc/hosts block. Empty means this Base does not use dev-TLS —
+	// either it was created with --no-dev-tls, is a --remote Base, or
+	// mkcert was unavailable at create time and dev-TLS was skipped.
+	// `ownbasectl vm start/restart`, `dev-tls sync`, and `delete` all use
+	// this field to know whether there is an /etc/hosts block to maintain
+	// or remove for this Base.
+	DevTLSDomain string `yaml:"dev_tls_domain,omitempty"`
 }
 
 // KnownLocalVM reports whether the profile is definitely backed by a local

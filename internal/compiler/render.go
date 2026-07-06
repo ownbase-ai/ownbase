@@ -35,7 +35,7 @@ func render(model RuntimeModel) RuntimeOutput {
 		out.QuadletUnits[filename] = renderVolume(vol)
 	}
 
-	out.Caddyfile = renderCaddyfile(model.Routes, model.ACMEEmail)
+	out.Caddyfile = renderCaddyfile(model.Routes, model.ACMEEmail, model.DevTLS)
 	out.ComposeFile = renderCompose(model)
 
 	return out
@@ -62,9 +62,13 @@ func renderContainer(c ContainerModel) string {
 		fmt.Fprintf(&b, "Network=%s.network\n", net)
 	}
 
-	// Named volume mounts.
+	// Named volume mounts (or host-path bind mounts — see VolumeMount).
 	for _, vm := range c.VolumeMounts {
-		fmt.Fprintf(&b, "Volume=%s:%s\n", vm.VolumeName, vm.MountPath)
+		if vm.ReadOnly {
+			fmt.Fprintf(&b, "Volume=%s:%s:ro\n", vm.VolumeName, vm.MountPath)
+		} else {
+			fmt.Fprintf(&b, "Volume=%s:%s\n", vm.VolumeName, vm.MountPath)
+		}
 	}
 
 	// Public port — bound to loopback only, routed via Caddy.
@@ -163,12 +167,24 @@ func renderVolume(vol VolumeModel) string {
 	return b.String()
 }
 
-func renderCaddyfile(routes []RouteModel, acmeEmail string) string {
+// DevTLSMountDir, DevTLSCertPath, and DevTLSKeyPath are the paths inside the
+// Caddy container where the mkcert-signed wildcard certificate is mounted.
+// Exported so internal/core can bind-mount the same directory (from
+// /opt/ownbase/dev-tls on the host) without duplicating the path elsewhere.
+const (
+	DevTLSMountDir = "/etc/caddy/certs"
+	DevTLSCertPath = DevTLSMountDir + "/cert.pem"
+	DevTLSKeyPath  = DevTLSMountDir + "/key.pem"
+)
+
+func renderCaddyfile(routes []RouteModel, acmeEmail string, devTLS bool) string {
 	var b strings.Builder
 	b.WriteString(generatedHeader)
 	b.WriteString("\n")
 
-	if acmeEmail != "" {
+	// devTLS sites use a mounted mkcert certificate per site block instead of
+	// ACME, so the global email block never applies when devTLS is set.
+	if acmeEmail != "" && !devTLS {
 		fmt.Fprintf(&b, "{\n\temail %s\n}\n\n", acmeEmail)
 	}
 
@@ -179,6 +195,9 @@ func renderCaddyfile(routes []RouteModel, acmeEmail string) string {
 
 	for _, r := range routes {
 		fmt.Fprintf(&b, "%s {\n", r.Host)
+		if devTLS {
+			fmt.Fprintf(&b, "\ttls %s %s\n", DevTLSCertPath, DevTLSKeyPath)
+		}
 		fmt.Fprintf(&b, "\treverse_proxy %s\n", r.Upstream)
 		b.WriteString("}\n\n")
 	}

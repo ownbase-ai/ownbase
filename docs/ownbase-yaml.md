@@ -12,6 +12,7 @@ core:
     domain: git.yourdomain.com # public domain for the Forgejo UI (optional)
   caddy:
     email: you@example.com # ACME contact email for automatic TLS
+    # dev_tls: true # local HTTPS simulation (mkcert) instead of ACME — see below; mutually exclusive with email in practice
   backup:
     repo: s3:s3.amazonaws.com/my-bucket/ownbase # restic repository URL
     # interval: 1h          # optional, default 1h
@@ -62,6 +63,12 @@ services:
     add_capabilities: # caps to restore after DropCapability=ALL
       - NET_BIND_SERVICE # only set when the service genuinely needs them
 ```
+
+## Local HTTPS simulation (`core.caddy.dev_tls`)
+
+`dev_tls: true` makes Caddy serve locally-trusted certificates (via [mkcert](https://github.com/FiloSottile/mkcert)) instead of provisioning real ones via ACME. It requires at least one domain to be configured (`core.forgejo.domain` and/or a service `domain:`) — Caddy has nothing to terminate TLS for otherwise. Scope: **local Multipass VMs only**; never used for `--remote`/production Bases.
+
+You will not normally hand-write this field — `ownbasectl create` sets it (and everything else needed) automatically for local VMs unless `--no-dev-tls` is passed. See [cli.md](cli.md#dev-tls-and-vm-local-vm-only) for the full workflow, including how new service domains get picked up and how the VM's IP stays in sync after a stop/start.
 
 ## The no-registry rule
 

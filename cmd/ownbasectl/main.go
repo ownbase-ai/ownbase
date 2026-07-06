@@ -16,6 +16,8 @@
 //	secrets   — view and manage per-service secrets
 //	forgejo   — retrieve Forgejo credentials
 //	upgrade   — check/apply updates to core packages (Forgejo, Caddy)
+//	dev-tls   — manage local HTTPS simulation (mkcert) for a Base
+//	vm        — start/stop/restart a local VM, refreshing its IP + /etc/hosts
 //
 // Local subcommands operate on a repo checkout and take no Base name:
 //
@@ -84,6 +86,8 @@ Start here:
 		newCompileCmd(),
 		newPlanCmd(),
 		newApplyCmd(),
+		newDevTLSCmd(),
+		newVMCmd(),
 		newVersionCmd(),
 	)
 	return root

@@ -192,6 +192,22 @@ func (m *Multipass) IPv4(ctx context.Context, name string) (string, error) {
 	return info.IPv4[0], nil
 }
 
+// Stop stops the named VM (multipass stop). The VM's disk state is
+// preserved; its IPv4 address is released and will very likely change the
+// next time it is started (DHCP lease from Multipass's virtual network).
+func (m *Multipass) Stop(ctx context.Context, name string) error {
+	_, err := m.Runner.Run(ctx, "stop", name)
+	return err
+}
+
+// Start starts the named VM (multipass start). Callers that need the new
+// IPv4 address should poll IPv4 afterward — it is not immediately available
+// the instant this call returns (DHCP takes a few seconds).
+func (m *Multipass) Start(ctx context.Context, name string) error {
+	_, err := m.Runner.Run(ctx, "start", name)
+	return err
+}
+
 // State returns the current run state of the named VM (e.g. "Running",
 // "Stopped").
 func (m *Multipass) State(ctx context.Context, name string) (string, error) {

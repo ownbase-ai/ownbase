@@ -39,6 +39,9 @@ func bootstrapCore(ctx context.Context, cfg agentConfig, coreCfg schema.CoreConf
 	if firstRun.CaddyEmail != "" && coreCfg.Caddy.Email == "" {
 		coreCfg.Caddy.Email = firstRun.CaddyEmail
 	}
+	if firstRun.DevTLS && !coreCfg.Caddy.DevTLS {
+		coreCfg.Caddy.DevTLS = true
+	}
 
 	quadletDir := agentQuadletDir()
 

@@ -62,50 +62,97 @@ func TestCompile_ByteIdenticalFullInput(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCompile_Golden(t *testing.T) {
-	in := testInputMinimal(t)
-	out := compiler.Compile(in)
+	cases := []struct {
+		name       string
+		fixture    string
+		goldenDir  string
+		wantInFile map[string][]string // filename -> substrings that must appear
+		wantNotIn  map[string][]string // filename -> substrings that must NOT appear
+	}{
+		{
+			name:      "minimal",
+			fixture:   "../../testdata/minimal/ownbase.yaml",
+			goldenDir: "../../testdata/golden/minimal",
+		},
+		{
+			// dev-TLS: every route gets a `tls <cert> <key>` directive instead
+			// of a global ACME email block (internal/compiler/render.go).
+			name:      "dev-tls",
+			fixture:   "../../testdata/dev-tls/ownbase.yaml",
+			goldenDir: "../../testdata/golden/dev-tls",
+			wantInFile: map[string][]string{
+				"Caddyfile": {
+					"tls " + compiler.DevTLSCertPath + " " + compiler.DevTLSKeyPath,
+					"forgejo.mybase.test {",
+					"app.mybase.test {",
+				},
+			},
+			wantNotIn: map[string][]string{
+				"Caddyfile": {"{\n\temail "},
+			},
+		},
+	}
 
-	dir := t.TempDir()
-	written, err := compiler.WriteOutput(out, dir)
-	if err != nil {
-		t.Fatalf("WriteOutput: %v", err)
-	}
-	if len(written) == 0 {
-		t.Fatal("WriteOutput returned no files")
-	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := schema.ParseConfigFile(tc.fixture)
+			if err != nil {
+				t.Fatalf("parse config: %v", err)
+			}
+			out := compiler.Compile(compiler.Input{Config: cfg})
 
-	goldenDir := "../../testdata/golden/minimal"
-	if _, err := os.Stat(goldenDir); os.IsNotExist(err) {
-		t.Logf("golden dir %s does not exist; seeding it now", goldenDir)
-		if err := os.MkdirAll(filepath.Join(goldenDir, "runtime"), 0o755); err != nil {
-			t.Fatalf("mkdir golden: %v", err)
-		}
-		runtimeDir := filepath.Join(dir, "runtime")
-		entries, _ := os.ReadDir(runtimeDir)
-		for _, e := range entries {
-			data, _ := os.ReadFile(filepath.Join(runtimeDir, e.Name()))
-			_ = os.WriteFile(filepath.Join(goldenDir, "runtime", e.Name()), data, 0o644)
-		}
-		return
-	}
+			dir := t.TempDir()
+			written, err := compiler.WriteOutput(out, dir)
+			if err != nil {
+				t.Fatalf("WriteOutput: %v", err)
+			}
+			if len(written) == 0 {
+				t.Fatal("WriteOutput returned no files")
+			}
 
-	runtimeDir := filepath.Join(dir, "runtime")
-	entries, err := os.ReadDir(runtimeDir)
-	if err != nil {
-		t.Fatalf("read runtime dir: %v", err)
-	}
-	for _, e := range entries {
-		actual, _ := os.ReadFile(filepath.Join(runtimeDir, e.Name()))
-		goldenPath := filepath.Join(goldenDir, "runtime", e.Name())
-		golden, err := os.ReadFile(goldenPath)
-		if err != nil {
-			t.Errorf("golden file %s not found: %v", goldenPath, err)
-			continue
-		}
-		if string(actual) != string(golden) {
-			t.Errorf("output %s differs from golden:\nactual:\n%s\ngolden:\n%s",
-				e.Name(), actual, golden)
-		}
+			if _, err := os.Stat(tc.goldenDir); os.IsNotExist(err) {
+				t.Logf("golden dir %s does not exist; seeding it now", tc.goldenDir)
+				if err := os.MkdirAll(filepath.Join(tc.goldenDir, "runtime"), 0o755); err != nil {
+					t.Fatalf("mkdir golden: %v", err)
+				}
+				runtimeDir := filepath.Join(dir, "runtime")
+				entries, _ := os.ReadDir(runtimeDir)
+				for _, e := range entries {
+					data, _ := os.ReadFile(filepath.Join(runtimeDir, e.Name()))
+					_ = os.WriteFile(filepath.Join(tc.goldenDir, "runtime", e.Name()), data, 0o644)
+				}
+				return
+			}
+
+			runtimeDir := filepath.Join(dir, "runtime")
+			entries, err := os.ReadDir(runtimeDir)
+			if err != nil {
+				t.Fatalf("read runtime dir: %v", err)
+			}
+			for _, e := range entries {
+				actual, _ := os.ReadFile(filepath.Join(runtimeDir, e.Name()))
+				goldenPath := filepath.Join(tc.goldenDir, "runtime", e.Name())
+				golden, err := os.ReadFile(goldenPath)
+				if err != nil {
+					t.Errorf("golden file %s not found: %v", goldenPath, err)
+					continue
+				}
+				if string(actual) != string(golden) {
+					t.Errorf("output %s differs from golden:\nactual:\n%s\ngolden:\n%s",
+						e.Name(), actual, golden)
+				}
+				for _, want := range tc.wantInFile[e.Name()] {
+					if !strings.Contains(string(actual), want) {
+						t.Errorf("%s: expected to contain %q, got:\n%s", e.Name(), want, actual)
+					}
+				}
+				for _, notWant := range tc.wantNotIn[e.Name()] {
+					if strings.Contains(string(actual), notWant) {
+						t.Errorf("%s: expected NOT to contain %q, got:\n%s", e.Name(), notWant, actual)
+					}
+				}
+			}
+		})
 	}
 }
 

@@ -3,6 +3,7 @@ package install_test
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -105,6 +106,34 @@ func TestCheckHardeningState_NoPanic(t *testing.T) {
 func TestDefaultAgentUser(t *testing.T) {
 	if install.DefaultAgentUser != "ownbase" {
 		t.Errorf("DefaultAgentUser = %q, want %q", install.DefaultAgentUser, "ownbase")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FirstRunEnv dev_tls parsing
+// ---------------------------------------------------------------------------
+
+// TestFirstRunEnv_DevTLS verifies that DEV_TLS=1 in the first-run file is
+// parsed into FirstRunEnv.DevTLS, and that its absence (or any other value)
+// leaves DevTLS false. Pure-logic test — no root required.
+func TestFirstRunEnv_DevTLS(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "first-run.env")
+
+	if err := os.WriteFile(path, []byte("OWNER_PASSWORD=pw\nDEV_TLS=1\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	env := install.ReadFirstRunEnv(path)
+	if !env.DevTLS {
+		t.Error("expected DevTLS=true when DEV_TLS=1 is present")
+	}
+
+	if err := os.WriteFile(path, []byte("OWNER_PASSWORD=pw\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	env = install.ReadFirstRunEnv(path)
+	if env.DevTLS {
+		t.Error("expected DevTLS=false when DEV_TLS is absent")
 	}
 }
 

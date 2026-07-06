@@ -58,15 +58,24 @@ func build(in Input) RuntimeModel {
 
 	// Forgejo core vhost: add a Caddy route when a public domain is configured.
 	// Forgejo binds to 127.0.0.1:port; Caddy proxies the domain to it and
-	// provisions a TLS certificate automatically via Let's Encrypt.
+	// provisions a TLS certificate — automatically via Let's Encrypt, or from
+	// the mounted mkcert certificate when dev_tls is set (see model.DevTLS).
 	if in.Config.Core.Forgejo.Domain != "" {
 		port := in.Config.Core.Forgejo.EffectivePort()
 		model.Routes = append(model.Routes, RouteModel{
 			Host:     in.Config.Core.Forgejo.Domain,
 			Upstream: fmt.Sprintf("localhost:%d", port),
 		})
-		model.ACMEEmail = in.Config.Core.Caddy.Email
+		if !in.Config.Core.Caddy.DevTLS {
+			model.ACMEEmail = in.Config.Core.Caddy.Email
+		}
 	}
+
+	// DevTLS: Caddy serves every route with the mkcert-signed certificate
+	// mounted at /etc/caddy/certs instead of provisioning via ACME. Mutually
+	// exclusive with ACMEEmail — schema validation already requires at least
+	// one domain to be configured when dev_tls is set.
+	model.DevTLS = in.Config.Core.Caddy.DevTLS
 
 	sort.Slice(model.Routes, func(i, j int) bool {
 		return model.Routes[i].Host < model.Routes[j].Host

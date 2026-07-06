@@ -10,7 +10,15 @@ type RuntimeModel struct {
 	// ACMEEmail is propagated from core.caddy.email when a public domain is
 	// configured. When non-empty, renderCaddyfile emits a global Caddy block
 	// with the email so Let's Encrypt can provision TLS certificates.
+	// Never set when DevTLS is true — dev-TLS sites use a locally-trusted
+	// mkcert certificate instead of ACME.
 	ACMEEmail string
+
+	// DevTLS is propagated from core.caddy.dev_tls. When true, every route
+	// gets a `tls <cert> <key>` directive pointing at the mkcert-signed
+	// certificate mounted into the Caddy container, instead of relying on
+	// ACME/Let's Encrypt. Local development/simulation only.
+	DevTLS bool
 }
 
 // ContainerModel represents one rootless Podman container.
@@ -98,12 +106,20 @@ type ContainerModel struct {
 	SecurityOpts []string
 }
 
-// VolumeMount binds a named Podman volume to a path inside a container.
+// VolumeMount binds a named Podman volume — or, when VolumeName is an
+// absolute host path, a bind mount — to a path inside a container. Quadlet's
+// Volume= directive supports both forms with identical syntax, distinguished
+// only by whether the source starts with "/".
 type VolumeMount struct {
-	// VolumeName is the Podman named volume (e.g. "ownbase-forgejo-data").
+	// VolumeName is the Podman named volume (e.g. "ownbase-forgejo-data"), or
+	// an absolute host path (e.g. "/opt/ownbase/dev-tls") for a bind mount.
 	VolumeName string
 	// MountPath is the path inside the container (e.g. "/data").
 	MountPath string
+	// ReadOnly appends ":ro" to the Quadlet Volume= directive. Used for
+	// host-path bind mounts that the container must never write to, such as
+	// the mkcert dev-TLS certificate directory.
+	ReadOnly bool
 }
 
 // HealthProbeModel is the compiled form of a health probe declaration.

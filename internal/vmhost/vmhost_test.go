@@ -117,6 +117,30 @@ func TestDeleteIfExists_DeletesWhenPresent(t *testing.T) {
 	}
 }
 
+func TestStop(t *testing.T) {
+	r := newFakeRunner()
+	m := &Multipass{Runner: r}
+	if err := m.Stop(context.Background(), "ownbase-fresh"); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	got := strings.Join(r.calls[0], " ")
+	if got != "stop ownbase-fresh" {
+		t.Errorf("unexpected stop args: %q", got)
+	}
+}
+
+func TestStart(t *testing.T) {
+	r := newFakeRunner()
+	m := &Multipass{Runner: r}
+	if err := m.Start(context.Background(), "ownbase-fresh"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	got := strings.Join(r.calls[0], " ")
+	if got != "start ownbase-fresh" {
+		t.Errorf("unexpected start args: %q", got)
+	}
+}
+
 func TestList(t *testing.T) {
 	r := newFakeRunner()
 	r.responses["list"] = `{"list":[{"name":"a","state":"Running"},{"name":"b","state":"Stopped"}]}`

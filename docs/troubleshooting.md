@@ -83,7 +83,17 @@ sudo cat /opt/ownbase/forgejo-admin-pass
 - **`multipass: command not found`** — install it: `brew install --cask multipass` (macOS) or see [multipass.run/install](https://multipass.run/install).
 - **Launch hangs or times out** — first launch downloads an Ubuntu image; give it time. If Multipass itself is wedged: `multipass restart <name>`, or restart the Multipass daemon (macOS: `sudo launchctl kickstart -k system/com.canonical.multipassd`).
 - **VM exists but `list` shows "(unregistered)"** — the VM has no matching profile (created by hand, or profile removed). `ownbasectl delete <name>` cleans up both; re-running `create <name>` asks before replacing it.
-- **VM state is `Stopped`** — see [Pausing a local VM](../INSTALL.md#pausing-a-local-vm) to resume it and re-point the profile if the IP changed.
+- **VM state is `Stopped`, or `status`/dev-TLS URLs stop connecting after a restart** — Multipass reassigns the VM's IP by DHCP; `multipass stop`/`start` very likely changes it. Run `ownbasectl vm start <name>` (or `vm restart <name>`) instead of the raw `multipass` command — it re-detects the IP, updates the saved profile, and refreshes `/etc/hosts` for dev-TLS Bases automatically. `ownbasectl vm ip <name>` shows the current IP and flags a mismatch with the stored profile.
+
+---
+
+## Dev-TLS (local HTTPS simulation) issues
+
+- **Browser/`curl` shows an untrusted-certificate warning for `https://<name>.test` domains** — either `mkcert -install` was never run on this machine (`ownbasectl dev-tls trust`), or the domain falls outside the `*.<dev-domain>` wildcard (e.g. a service domain under a different base domain than the one `create`/`--dev-domain` used) — `ownbasectl dev-tls sync <name>` warns about any uncovered domain explicitly.
+- **`https://forgejo.<name>.test` (or a service domain) doesn't resolve / connection refused** — run `ownbasectl dev-tls sync <name>` to rewrite `/etc/hosts` for the Base's current domains. If the VM's IP recently changed (after a `multipass`/`vm` stop-start), use `ownbasectl vm start <name>` first — `dev-tls sync` does not re-detect the IP itself.
+- **A newly added service's `domain:` isn't reachable** — dev-TLS's wildcard cert already covers any `*.<dev-domain>` hostname, but `/etc/hosts` only knows about domains that existed the last time it was written. `ownbasectl dev-tls sync <name>` picks up the new one.
+- **`create` warned "mkcert not found on PATH" and fell back to plain HTTP** — install it (`brew install mkcert nss`) and re-run `create`, or use `http://<vm-ip>:3000` / `--no-dev-tls` if HTTPS simulation isn't needed.
+- **Don't want dev-TLS at all** — `ownbasectl create <name> --no-dev-tls` skips mkcert and `/etc/hosts` entirely, serving plain HTTP on `:3000` (today's pre-dev-TLS default).
 
 ---
 

@@ -161,6 +161,16 @@ func runBaseDelete(name string, keepVM, assumeYes bool) error {
 		}
 	}
 
+	// Clean up any dev-TLS /etc/hosts block for this Base. removeHostsBlock
+	// is idempotent — a safe no-op (no sudo prompt) when this Base never had
+	// a block, so it is fine to call unconditionally whenever the VM itself
+	// is being torn down.
+	if !keepVM {
+		if err := removeHostsBlock(name); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not remove /etc/hosts entry for %q: %v\n", name, err)
+		}
+	}
+
 	if hasProfile {
 		delete(cfg.Servers, name)
 		if err := serverconfig.Save(cfgPath, cfg); err != nil {

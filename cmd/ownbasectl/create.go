@@ -70,6 +70,8 @@ type baseTargetFlags struct {
 	diskGB        int
 	forgejoDomain string
 	caddyEmail    string
+	noDevTLS      bool
+	devDomain     string
 	assumeYes     bool
 }
 
@@ -83,8 +85,11 @@ func (f *baseTargetFlags) register(cmd *cobra.Command) {
 	fl.IntVar(&f.cpus, "cpus", 2, "VM CPU count (local VM only)")
 	fl.IntVar(&f.memoryGB, "memory", 2, "VM memory in GB (local VM only)")
 	fl.IntVar(&f.diskGB, "disk", 15, "VM disk in GB (local VM only)")
-	fl.StringVar(&f.forgejoDomain, "forgejo-domain", "", "public domain for the Forgejo UI (optional)")
-	fl.StringVar(&f.caddyEmail, "caddy-email", "", "ACME contact email for automatic TLS (used with --forgejo-domain)")
+	fl.StringVar(&f.forgejoDomain, "forgejo-domain", "", "public domain for the Forgejo UI (optional; implies --no-dev-tls)")
+	fl.StringVar(&f.caddyEmail, "caddy-email", "", "ACME contact email for automatic TLS (used with --forgejo-domain; implies --no-dev-tls)")
+	fl.BoolVar(&f.noDevTLS, "no-dev-tls", false,
+		"disable local HTTPS simulation (mkcert + /etc/hosts); local VMs get dev-TLS by default, remote servers never do")
+	fl.StringVar(&f.devDomain, "dev-domain", "", "base domain for dev-TLS (default \"<name>.test\"; local VM only)")
 	fl.BoolVarP(&f.assumeYes, "yes", "y", false, "skip confirmation prompts (e.g. overwriting an existing local VM)")
 }
 
@@ -96,7 +101,12 @@ func (f *baseTargetFlags) provision(name string, extraEnv map[string]string) err
 		return baseCreateRemote(name, host, user, f.sshKey, f.sshPort, f.forgejoDomain, f.caddyEmail, extraEnv)
 	}
 	opts := vmhost.LaunchOptions{CPUs: f.cpus, MemoryGB: f.memoryGB, DiskGB: f.diskGB}
-	return baseCreateVM(name, opts, f.forgejoDomain, f.caddyEmail, f.assumeYes, extraEnv)
+	// dev-TLS is the default for local VMs, but an explicit --forgejo-domain
+	// or --caddy-email signals the user wants the production ACME path even
+	// on a local VM (e.g. testing real-domain TLS) — --no-dev-tls is not
+	// needed in that case, dev-TLS just steps aside.
+	devTLS := !f.noDevTLS && f.forgejoDomain == "" && f.caddyEmail == ""
+	return baseCreateVM(name, opts, f.forgejoDomain, f.caddyEmail, devTLS, f.devDomain, f.assumeYes, extraEnv)
 }
 
 func newCreateCmd() *cobra.Command {
@@ -107,10 +117,17 @@ func newCreateCmd() *cobra.Command {
 		Long: `Provision a Base end to end and register it in ~/.ownbase/config so every
 other ownbasectl command works immediately afterward.
 
-With no --remote flag, a fresh local Multipass VM is launched. With
---remote, the installer runs over SSH on a fresh Ubuntu 22.04/24.04
-server you already provisioned.`,
-		Example: `  ownbasectl create mybase
+With no --remote flag, a fresh local Multipass VM is launched, and — unless
+--no-dev-tls, --forgejo-domain, or --caddy-email is given — it gets real
+HTTPS via a locally-trusted mkcert certificate for *.<name>.test, with
+Forgejo at https://forgejo.<name>.test (see 'ownbasectl dev-tls' and
+'ownbasectl vm').
+
+With --remote, the installer runs over SSH on a fresh Ubuntu 22.04/24.04
+server you already provisioned — dev-TLS never applies there; use
+--forgejo-domain + --caddy-email for real ACME/Let's Encrypt TLS.`,
+		Example: `  ownbasectl create mybase                          local VM, HTTPS at forgejo.mybase.test
+  ownbasectl create mybase --no-dev-tls             local VM, plain HTTP on :3000
   ownbasectl create mybase --remote root@mybase.example.com \
     --forgejo-domain git.yourdomain.com --caddy-email you@example.com`,
 		Args: cobra.ExactArgs(1),
@@ -148,7 +165,13 @@ func splitUserHost(remote, fallbackUser string) (host, user string) {
 //
 // extraEnv is merged into the installer's environment on top of the standard
 // vars — restore uses it to pass OWNBASE_REBUILD=1 and restic credentials.
-func baseCreateVM(name string, opts vmhost.LaunchOptions, forgejoDomain, caddyEmail string, assumeYes bool, extraEnv map[string]string) error {
+//
+// devTLS enables local HTTPS simulation (mkcert + /etc/hosts) for this VM;
+// devDomain overrides the default "<name>.test" base domain. Both are
+// no-ops when devTLS is false. mkcert being unavailable (or failing) is
+// never fatal — this function falls back to plain HTTP and prints a warning,
+// so `make smoke-test` and CI (which have no mkcert installed) keep working.
+func baseCreateVM(name string, opts vmhost.LaunchOptions, forgejoDomain, caddyEmail string, devTLS bool, devDomain string, assumeYes bool, extraEnv map[string]string) error {
 	// OWNBASE_DRIVEN_BY_CTL tells install.sh that the profile registration
 	// happens automatically, so its footer skips the manual `adopt` step.
 	env := map[string]string{"OWNBASE_DRIVEN_BY_CTL": "1"}
@@ -201,6 +224,43 @@ func baseCreateVM(name string, opts vmhost.LaunchOptions, forgejoDomain, caddyEm
 		env["OWNBASE_LOCAL_BINARY"] = "/home/ubuntu/ownbased"
 	}
 
+	// dev-TLS: generate a host-trusted mkcert wildcard certificate and
+	// transfer it into the VM *before* running install.sh, which stages it
+	// to /opt/ownbase/dev-tls and seeds core.caddy.dev_tls: true so Caddy's
+	// very first reconcile already serves HTTPS. Any failure here — mkcert
+	// missing, -install failing, cert generation failing, transfer failing —
+	// falls back to plain HTTP for this run rather than aborting create.
+	var devTLSDomain string
+	if devTLS {
+		domain := devDomain
+		if domain == "" {
+			domain = name + ".test"
+		}
+		if !mkcertAvailable() {
+			fmt.Fprintf(os.Stderr, "warning: dev-TLS is on by default but %s\n"+
+				"         continuing with plain HTTP for %q (pass --no-dev-tls to silence this warning)\n",
+				mkcertInstallHint, name)
+		} else if err := mkcertEnsureInstalled(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: mkcert -install failed (%v) — continuing with plain HTTP\n", err)
+		} else if certPath, keyPath, certCleanup, ok := generateDevTLSCert(domain); ok {
+			defer certCleanup()
+			fmt.Println("==> Transferring the dev-TLS certificate into the VM ...")
+			if _, err := m.Exec(ctx, name, "mkdir", "-p", "/home/ubuntu/dev-tls"); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not create /home/ubuntu/dev-tls in the VM (%v) — continuing with plain HTTP\n", err)
+			} else if err := m.Transfer(ctx, certPath, name, "/home/ubuntu/dev-tls/cert.pem"); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: transfer dev-TLS certificate failed (%v) — continuing with plain HTTP\n", err)
+			} else if err := m.Transfer(ctx, keyPath, name, "/home/ubuntu/dev-tls/key.pem"); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: transfer dev-TLS key failed (%v) — continuing with plain HTTP\n", err)
+			} else {
+				devTLSDomain = domain
+				env["OWNBASE_DEV_TLS"] = "1"
+				if forgejoDomain == "" {
+					forgejoDomain = "forgejo." + domain
+				}
+			}
+		}
+	}
+
 	fmt.Println("==> Transferring the installer into the VM ...")
 	scriptPath, scriptCleanup, err := writeEmbeddedInstallScript()
 	if err != nil {
@@ -241,12 +301,42 @@ func baseCreateVM(name string, opts vmhost.LaunchOptions, forgejoDomain, caddyEm
 		return err
 	}
 
-	if err := registerProfile(name, ip, serverconfig.DefaultSSHUser, serverconfig.DefaultSSHKey, 22, serverconfig.DefaultAPIPort, token, true); err != nil {
+	if err := registerProfile(name, ip, serverconfig.DefaultSSHUser, serverconfig.DefaultSSHKey, 22, serverconfig.DefaultAPIPort, token, true, devTLSDomain); err != nil {
 		return err
 	}
 
-	printBaseCreatedBanner(name, ip)
+	// Seed the initial /etc/hosts entry for Forgejo's dev-TLS hostname (the
+	// template ownbase.yaml has no services yet). 'ownbasectl dev-tls sync'
+	// picks up any domain: added to a service afterward.
+	if devTLSDomain != "" && forgejoDomain != "" {
+		if err := writeHostsBlock(name, ip, []string{forgejoDomain}); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not write /etc/hosts entry for %s (%v) — run 'ownbasectl dev-tls sync %s' manually\n",
+				forgejoDomain, err, name)
+		}
+	}
+
+	printBaseCreatedBanner(name, ip, devTLSDomain, forgejoDomain)
 	return nil
+}
+
+// generateDevTLSCert generates a wildcard mkcert certificate for domain in a
+// fresh temp directory, returning a cleanup func the caller must defer.
+// Returns ok=false (after printing a warning) on any failure — callers treat
+// that as "fall back to plain HTTP for this run", never as a hard error.
+func generateDevTLSCert(domain string) (certPath, keyPath string, cleanup func(), ok bool) {
+	dir, err := os.MkdirTemp("", "ownbase-dev-tls-*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not create temp dir for dev-TLS certificate (%v) — continuing with plain HTTP\n", err)
+		return "", "", func() {}, false
+	}
+	cleanup = func() { os.RemoveAll(dir) }
+	certPath, keyPath, err = mkcertGenerateWildcard(domain, dir)
+	if err != nil {
+		cleanup()
+		fmt.Fprintf(os.Stderr, "warning: %v — continuing with plain HTTP\n", err)
+		return "", "", func() {}, false
+	}
+	return certPath, keyPath, cleanup, true
 }
 
 // baseCreateRemote installs OwnBase on a fresh remote Ubuntu server over SSH,
@@ -300,11 +390,11 @@ func baseCreateRemote(name, host, sshUser, sshKey string, sshPort int, forgejoDo
 		return fmt.Errorf("read API token: got an empty token from /opt/ownbase/api-token — installer may not have completed")
 	}
 
-	if err := registerProfile(name, host, sshUser, sshKey, sshPort, serverconfig.DefaultAPIPort, strings.TrimSpace(token), false); err != nil {
+	if err := registerProfile(name, host, sshUser, sshKey, sshPort, serverconfig.DefaultAPIPort, strings.TrimSpace(token), false, ""); err != nil {
 		return err
 	}
 
-	printBaseCreatedBanner(name, host)
+	printBaseCreatedBanner(name, host, "", "")
 	return nil
 }
 
@@ -368,8 +458,10 @@ func waitForVMAPIToken(ctx context.Context, m *vmhost.Multipass, name string, ti
 // registerProfile saves (or overwrites) a Base profile in ~/.ownbase/config.
 // localVM marks whether this Base is a local Multipass VM (created by
 // `create` with no --remote) as opposed to a remote server (--remote) — see
-// ServerProfile.LocalVM.
-func registerProfile(name, host, sshUser, sshKey string, sshPort, apiPort int, token string, localVM bool) error {
+// ServerProfile.LocalVM. devTLSDomain is the dev-TLS base domain if this
+// create run enabled it (see ServerProfile.DevTLSDomain), or "" otherwise —
+// always "" for remote servers.
+func registerProfile(name, host, sshUser, sshKey string, sshPort, apiPort int, token string, localVM bool, devTLSDomain string) error {
 	cfgPath, err := serverconfig.DefaultConfigPath()
 	if err != nil {
 		return fmt.Errorf("locate config: %w", err)
@@ -380,13 +472,14 @@ func registerProfile(name, host, sshUser, sshKey string, sshPort, apiPort int, t
 	}
 
 	cfg.Servers[name] = serverconfig.ServerProfile{
-		Host:    host,
-		SSHUser: sshUser,
-		SSHKey:  sshKey,
-		SSHPort: sshPort,
-		APIPort: apiPort,
-		Token:   token,
-		LocalVM: &localVM,
+		Host:         host,
+		SSHUser:      sshUser,
+		SSHKey:       sshKey,
+		SSHPort:      sshPort,
+		APIPort:      apiPort,
+		Token:        token,
+		LocalVM:      &localVM,
+		DevTLSDomain: devTLSDomain,
 	}
 	if err := serverconfig.Save(cfgPath, cfg); err != nil {
 		return fmt.Errorf("save config: %w", err)
@@ -398,14 +491,23 @@ func registerProfile(name, host, sshUser, sshKey string, sshPort, apiPort int, t
 
 // printBaseCreatedBanner prints the "what's next" guidance every create run
 // ends with, pointing at the next step in the lifecycle: backup setup.
-func printBaseCreatedBanner(name, host string) {
+// devTLSDomain/forgejoDomain are both "" unless this create run enabled
+// dev-TLS, in which case the Forgejo dev-TLS URL and a reminder to sync
+// hostnames after adding services are shown up front.
+func printBaseCreatedBanner(name, host, devTLSDomain, forgejoDomain string) {
 	fmt.Println()
 	fmt.Println("════════════════════════════════════════════════════════════════")
 	fmt.Printf("  Base %q is up at %s\n", name, host)
+	if devTLSDomain != "" && forgejoDomain != "" {
+		fmt.Printf("  Forgejo (dev-TLS): https://%s\n", forgejoDomain)
+	}
 	fmt.Println("════════════════════════════════════════════════════════════════")
 	fmt.Println()
 	fmt.Println("  Next steps:")
 	fmt.Printf("    ownbasectl status %s          check it's healthy\n", name)
+	if devTLSDomain != "" {
+		fmt.Printf("    ownbasectl dev-tls sync %s    after adding a service with a domain:\n", name)
+	}
 	fmt.Printf("    ownbasectl backup setup %s    configure remote backups\n", name)
 	fmt.Printf("    ownbasectl checkup %s         full security + update + backup report\n", name)
 	fmt.Println()

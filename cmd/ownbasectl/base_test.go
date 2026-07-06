@@ -91,7 +91,7 @@ func TestRegisterProfile(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 
-	if err := registerProfile("mybase", "192.168.1.10", "ubuntu", "~/.ssh/id_ed25519", 22, 7070, "tok123", true); err != nil {
+	if err := registerProfile("mybase", "192.168.1.10", "ubuntu", "~/.ssh/id_ed25519", 22, 7070, "tok123", true, "mybase.test"); err != nil {
 		t.Fatalf("registerProfile: %v", err)
 	}
 
@@ -113,13 +113,16 @@ func TestRegisterProfile(t *testing.T) {
 	if !p.KnownLocalVM() {
 		t.Error("expected LocalVM=true for a profile registered via the VM path")
 	}
+	if p.DevTLSDomain != "mybase.test" {
+		t.Errorf("DevTLSDomain = %q, want %q", p.DevTLSDomain, "mybase.test")
+	}
 }
 
 func TestRegisterProfile_PersistsSSHPort(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 
-	if err := registerProfile("first", "1.1.1.1", "ubuntu", "", 2222, 7070, "tok1", false); err != nil {
+	if err := registerProfile("first", "1.1.1.1", "ubuntu", "", 2222, 7070, "tok1", false, ""); err != nil {
 		t.Fatalf("registerProfile first: %v", err)
 	}
 

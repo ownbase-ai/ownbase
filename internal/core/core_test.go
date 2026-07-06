@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ownbase/ownbase/internal/compiler"
 	"github.com/ownbase/ownbase/internal/core"
 	"github.com/ownbase/ownbase/internal/schema"
 )
@@ -155,6 +156,28 @@ func TestBuildCaddyModel_RunsAsImageDefaultUser(t *testing.T) {
 	unit := caddyUnit(t)
 	if strings.Contains(unit, "User=") {
 		t.Errorf("Caddy unit must not pin User= (breaks privileged-port bind + cert writes):\n%s", unit)
+	}
+}
+
+// TestBuildCaddyModel_DevTLS_MountsCertDir asserts that setting
+// core.caddy.dev_tls bind-mounts the mkcert certificate directory read-only
+// at the exact path the Caddyfile's `tls` directives reference
+// (compiler.DevTLSMountDir), and that a plain (non-dev-TLS) config gets no
+// such mount.
+func TestBuildCaddyModel_DevTLS_MountsCertDir(t *testing.T) {
+	out := core.BuildCoreOutput(schema.CoreConfig{Caddy: schema.CaddyCoreConfig{DevTLS: true}}, core.Current)
+	unit, ok := out.QuadletUnits[core.CaddyContainerName+".container"]
+	if !ok {
+		t.Fatal("core output missing Caddy container unit")
+	}
+	want := "Volume=" + core.DevTLSHostDir + ":" + compiler.DevTLSMountDir + ":ro"
+	if !strings.Contains(unit, want) {
+		t.Errorf("Caddy unit missing dev-TLS cert mount %q:\n%s", want, unit)
+	}
+
+	plainUnit := caddyUnit(t)
+	if strings.Contains(plainUnit, core.DevTLSHostDir) {
+		t.Errorf("Caddy unit without dev_tls must not mount the dev-TLS cert dir:\n%s", plainUnit)
 	}
 }
 
