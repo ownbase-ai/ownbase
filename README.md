@@ -4,6 +4,8 @@
 
 Grab a server or VM (cloud, home lab, anywhere) and OwnBase turns it into a **Base**: a hardened, self-updating home for your entire application layer. Everything above the OS is yours: services, databases, data, all running on hardware you control, with no third-party platform standing in between.
 
+**Your server. Your software. No subscriptions.**
+
 ## Why you'd want this
 
 - **You own everything.** The code, the server, the data, the config, the secrets, the backups, the domains. Nothing can be repriced, rate-limited, or shut down on you — and when you want to leave, you take all of it ([docs/uninstall.md](docs/uninstall.md)).
