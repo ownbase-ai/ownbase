@@ -121,8 +121,7 @@ func checkFirewallState(ctx context.Context, cfg PassZeroConfig) StepStatus {
 	if !strings.Contains(out, "Status: active") {
 		return StepStatus{Done: false, Detail: "UFW installed but not active"}
 	}
-	webPortsAllowed := ufwRuleAllowed(out, "80/tcp") && ufwRuleAllowed(out, "443/tcp")
-	if cfg.ExposeWebPorts != webPortsAllowed {
+	if !webPortsMatchDesired(out, cfg.ExposeWebPorts) {
 		return StepStatus{Done: false, Detail: "UFW active but web-port rules don't match the desired domain configuration"}
 	}
 	return StepStatus{Done: true, AlreadyOK: true, Detail: "UFW active"}
@@ -154,6 +153,22 @@ func ufwRuleAllowed(status, portProto string) bool {
 		}
 	}
 	return false
+}
+
+// webPortsMatchDesired reports whether `ufw status` output's 80/tcp and
+// 443/tcp rules both match exposeWebPorts — i.e. both allowed when true,
+// both NOT allowed when false.
+//
+// Each port is compared independently rather than folding them into a
+// single "are both open" bool with &&: that works for the true case (both
+// must be open to match) but silently breaks the false case, where a
+// partially-open state (e.g. 80 still allowed, 443 not) would AND down to
+// false — matching a desired "false" and leaving 80 exposed to the world
+// on a domain-less Base.
+func webPortsMatchDesired(status string, exposeWebPorts bool) bool {
+	port80Allowed := ufwRuleAllowed(status, "80/tcp")
+	port443Allowed := ufwRuleAllowed(status, "443/tcp")
+	return exposeWebPorts == port80Allowed && exposeWebPorts == port443Allowed
 }
 
 // SyncFirewallExposure re-evaluates UFW's web-port rules (80/443) against

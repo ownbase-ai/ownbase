@@ -175,25 +175,47 @@ To                         Action      From
 	}
 }
 
-// TestCheckFirewallState_RequiresBothWebPorts locks in the fix for "UFW
-// check ignores HTTPS rule": ExposeWebPorts must require both 80/tcp AND
-// 443/tcp to be allowed, not just 80/tcp, otherwise a partially-applied
-// firewall (e.g. 80 open, 443 still blocked) is reported as already
-// satisfying the desired state and sync silently skips reconfiguration.
-func TestCheckFirewallState_RequiresBothWebPorts(t *testing.T) {
-	const only80 = `Status: active
+// TestWebPortsMatchDesired locks in two fixes:
+//   - "UFW check ignores HTTPS rule": when ExposeWebPorts is true, both
+//     80/tcp AND 443/tcp must be allowed, not just 80/tcp — a partially
+//     applied firewall (80 open, 443 still blocked) must not read as
+//     already satisfying the desired state.
+//   - "UFW check ignores partial web ports": when ExposeWebPorts is false,
+//     both ports must be NOT allowed — a partially-closed firewall (e.g.
+//     80 still allowed, 443 closed) must not read as already satisfying
+//     the desired "closed" state either, or a public port stays exposed
+//     on a domain-less Base.
+func TestWebPortsMatchDesired(t *testing.T) {
+	const neither = `Status: active
 
 To                         Action      From
 --                         ------      ----
-22/tcp                     ALLOW       Anywhere
-80/tcp                     ALLOW       Anywhere`
+22/tcp                     ALLOW       Anywhere`
 
+	const only80 = neither + "\n80/tcp                     ALLOW       Anywhere"
+	const only443 = neither + "\n443/tcp                    ALLOW       Anywhere"
 	const both = only80 + "\n443/tcp                     ALLOW       Anywhere"
 
-	if got := ufwRuleAllowed(only80, "80/tcp") && ufwRuleAllowed(only80, "443/tcp"); got {
-		t.Error("only80: want web ports considered NOT fully allowed (443 missing)")
+	cases := []struct {
+		name           string
+		status         string
+		exposeWebPorts bool
+		want           bool
+	}{
+		{"want open, neither open", neither, true, false},
+		{"want open, only 80 open", only80, true, false},
+		{"want open, only 443 open", only443, true, false},
+		{"want open, both open", both, true, true},
+		{"want closed, neither open", neither, false, true},
+		{"want closed, only 80 open", only80, false, false},
+		{"want closed, only 443 open", only443, false, false},
+		{"want closed, both open", both, false, false},
 	}
-	if got := ufwRuleAllowed(both, "80/tcp") && ufwRuleAllowed(both, "443/tcp"); !got {
-		t.Error("both: want web ports considered fully allowed")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := webPortsMatchDesired(tc.status, tc.exposeWebPorts); got != tc.want {
+				t.Errorf("webPortsMatchDesired(status, %v) = %v, want %v", tc.exposeWebPorts, got, tc.want)
+			}
+		})
 	}
 }
