@@ -138,10 +138,6 @@ func bootstrapCore(ctx context.Context, cfg agentConfig, coreCfg schema.CoreConf
 		}
 	}
 
-	// Credentials (if any) were only ever used for Forgejo bootstrap, which no
-	// longer exists — delete the one-time file so it doesn't linger on disk.
-	deleteFirstRunEnv()
-
 	return nil
 }
 
@@ -159,18 +155,20 @@ func agentQuadletDir() string {
 	return filepath.Join(home, ".config/containers/systemd")
 }
 
-const firstRunEnvPath = install.FirstRunEnvPath
-
-// readFirstRunEnv reads owner/install credentials from the one-time
-// first-run file written by install.sh. Returns a zero-value FirstRunEnv if
-// the file does not exist. The file is NOT deleted here — deleteFirstRunEnv
-// does that after bootstrapCore has consumed it.
+// readFirstRunEnv reads the one-time first-run file written by install.sh
+// (currently just the ACME email). Returns a zero-value FirstRunEnv if the
+// file does not exist.
+//
+// The file is deliberately NOT deleted here: bootstrapCore now runs on
+// every reconcile tick (see syncCoreForConfig), not just once at daemon
+// startup, so deleting it on first use would make every subsequent call in
+// the same process see an empty CaddyEmail and regenerate Caddy's Quadlet
+// unit without the ACME email it was just configured with — silently
+// dropping it and forcing an unnecessary restart. Deletion instead happens
+// exactly once, from the one-time startup path in main.go, after the very
+// first bootstrapCore call (and, for a brand-new config repo, after
+// install.SeedConfigRepo has already persisted the email into ownbase.yaml
+// itself — the durable source of truth every later call reads from).
 func readFirstRunEnv() install.FirstRunEnv {
-	return install.ReadFirstRunEnv(firstRunEnvPath)
-}
-
-// deleteFirstRunEnv removes the one-time credentials file after the agent
-// has successfully consumed it. Errors are silently ignored.
-func deleteFirstRunEnv() {
-	install.DeleteFirstRunEnv(firstRunEnvPath)
+	return install.ReadFirstRunEnv(install.FirstRunEnvPath)
 }

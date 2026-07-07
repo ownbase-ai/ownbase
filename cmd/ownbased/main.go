@@ -298,6 +298,12 @@ func run(cfg agentConfig) error {
 		if err := bootstrapCore(context.Background(), cfg, coreCfg, hasPublicDomain); err != nil {
 			return fmt.Errorf("bootstrap core: %w", err)
 		}
+		// Delete the one-time first-run file exactly once, here, rather than
+		// inside bootstrapCore itself (which now also runs on every
+		// reconcile tick via syncCoreForConfig — see readFirstRunEnv for
+		// why deleting it there would silently drop the ACME email on the
+		// second call).
+		install.DeleteFirstRunEnv(install.FirstRunEnvPath)
 	}
 
 	// Write PID file so the post-receive hook can signal us via SIGUSR1.
