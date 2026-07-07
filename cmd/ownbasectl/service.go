@@ -37,18 +37,19 @@ prompts — safe to run from a script or an AI agent.`,
 // serviceFieldFlags are the ownbase.yaml ServiceDecl fields settable from
 // the command line, shared by `service add` and `service update`.
 type serviceFieldFlags struct {
-	source     string
-	mirror     string
-	ref        string
-	dockerfile string
-	context    string
-	port       int
-	domain     string
-	domains    []string
-	dataPath   string
-	database   string
-	requires   []string
-	env        []string
+	source          string
+	mirror          string
+	ref             string
+	dockerfile      string
+	context         string
+	port            int
+	domain          string
+	domains         []string
+	dataPath        string
+	database        string
+	requires        []string
+	env             []string
+	addCapabilities []string
 }
 
 func (f *serviceFieldFlags) register(cmd *cobra.Command) {
@@ -65,6 +66,7 @@ func (f *serviceFieldFlags) register(cmd *cobra.Command) {
 	fl.StringVar(&f.database, "database", "", "name of the Postgres database to provision")
 	fl.StringSliceVar(&f.requires, "requires", nil, "capability (service key) this service depends on; repeatable; replaces the full list")
 	fl.StringArrayVar(&f.env, "env", nil, "KEY=VALUE static environment variable to set; repeatable")
+	fl.StringSliceVar(&f.addCapabilities, "add-capabilities", nil, "Linux capability to add back after the default DropCapability=ALL, e.g. NET_BIND_SERVICE for a service that binds directly to a port below 1024; repeatable, replaces the full list; only set what the service genuinely needs")
 }
 
 func newServiceAddCmd() *cobra.Command {
@@ -117,18 +119,19 @@ func runServiceAdd(base, name string, f serviceFieldFlags, jsonOut bool) error {
 		cfg.Services = map[string]schema.ServiceDecl{}
 	}
 	cfg.Services[name] = schema.ServiceDecl{
-		Source:     f.source,
-		Mirror:     f.mirror,
-		Ref:        f.ref,
-		Dockerfile: f.dockerfile,
-		Context:    f.context,
-		Port:       f.port,
-		Domain:     f.domain,
-		Domains:    f.domains,
-		DataPath:   f.dataPath,
-		Database:   f.database,
-		Requires:   f.requires,
-		Env:        env,
+		Source:          f.source,
+		Mirror:          f.mirror,
+		Ref:             f.ref,
+		Dockerfile:      f.dockerfile,
+		Context:         f.context,
+		Port:            f.port,
+		Domain:          f.domain,
+		Domains:         f.domains,
+		DataPath:        f.dataPath,
+		Database:        f.database,
+		Requires:        f.requires,
+		Env:             env,
+		AddCapabilities: f.addCapabilities,
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -271,6 +274,9 @@ func runServiceUpdate(cmd *cobra.Command, base, name string, f serviceFieldFlags
 	}
 	if changed("requires") {
 		decl.Requires = f.requires
+	}
+	if changed("add-capabilities") {
+		decl.AddCapabilities = f.addCapabilities
 	}
 	if changed("env") {
 		newEnv, err := parseEnvPairs(f.env)

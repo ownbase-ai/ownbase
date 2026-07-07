@@ -199,10 +199,13 @@ ownbasectl service add mybase crm --mirror https://github.com/org/crm --ref main
 ownbasectl service update mybase crm --ref v2.3.0        # bump the pinned ref
 ownbasectl service update mybase crm --port 4000 --domain crm.example.com
 ownbasectl service update mybase crm --domains crm.example.com,crm.example.org  # serve two hostnames
+ownbasectl service add mybase hello --mirror https://github.com/traefik/whoami --ref master --port 80 --domain hello.example.com --add-capabilities NET_BIND_SERVICE
 ownbasectl service remove mybase crm
 ```
 
-`add` requires exactly one of `--source`/`--mirror`. `update` only touches the fields whose flags were explicitly passed — every other field of the service keeps its current value. `--env` merges into the existing list (new values win on a duplicate key); `--requires` and `--domains` replace their respective lists entirely when passed. `--domain` (singular) still works and is combined with `--domains`, deduplicated. All three subcommands accept `--json` for structured output.
+`add` requires exactly one of `--source`/`--mirror`. `update` only touches the fields whose flags were explicitly passed — every other field of the service keeps its current value. `--env` merges into the existing list (new values win on a duplicate key); `--requires`, `--domains`, and `--add-capabilities` replace their respective lists entirely when passed. `--domain` (singular) still works and is combined with `--domains`, deduplicated. All three subcommands accept `--json` for structured output.
+
+`--add-capabilities` restores Linux capabilities after the compiler's default `DropCapability=ALL` — every container starts with none. Only needed by the minority of images that bind directly to a port below 1024 (e.g. `traefik/whoami` on port 80), which requires `NET_BIND_SERVICE`; most images listen on an unprivileged port (3000, 8080, ...) and never need this.
 
 ---
 

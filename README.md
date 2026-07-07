@@ -54,29 +54,13 @@ Declare a service with one command — the daemon creates it and builds it from 
 ```bash
 ownbasectl service add mybase hello \
   --mirror https://github.com/traefik/whoami \
-  --ref master --port 80 --domain hello.example.com
+  --ref master --port 80 --domain hello.example.com \
+  --add-capabilities NET_BIND_SERVICE
 ```
 
 `--mirror` points at an external Git repo the daemon clones and maintains a local mirror of; use `--source <path>` instead to push your own code directly into a bare repo the daemon creates for you. Either way there's no image registry involved — every user service is built locally on the Base from source at the pinned `ref:`. You can also skip the CLI and edit `ownbase.yaml` by hand (`ownbasectl config get`/`set`, or `git push` straight to the Base) — see [docs/ownbase-yaml.md](docs/ownbase-yaml.md) for the full schema.
 
-Every container starts with every Linux capability dropped, so `whoami` — which listens directly on port 80, a privileged port — needs `NET_BIND_SERVICE` added back explicitly (there's no dedicated flag for this yet, so it goes through `config get`/`set`):
-
-```bash
-ownbasectl config get mybase   # copy the output, add the two lines below under the hello: service, then:
-ownbasectl config set mybase <<'EOF'
-schema_version: v1
-services:
-  hello:
-    mirror: https://github.com/traefik/whoami
-    ref: master
-    port: 80
-    domain: hello.example.com
-    add_capabilities:
-      - NET_BIND_SERVICE
-EOF
-```
-
-Most images listen on an unprivileged port (3000, 8080, ...) by default and never need this — it only comes up for the handful, like `whoami`, that default to 80/443 directly.
+`--add-capabilities` is only needed here because every container starts with every Linux capability dropped, and `whoami` listens directly on port 80 — a privileged port. Most images listen on an unprivileged port (3000, 8080, ...) by default and never need this flag at all.
 
 ```bash
 ownbasectl status mybase   # confirm "hello" is running and healthy
