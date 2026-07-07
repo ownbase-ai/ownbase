@@ -45,6 +45,10 @@ func runPlan(repoDir, fakeCurrent string) error {
 
 	desired := compiler.Compile(compiler.Input{Config: cfg})
 
+	// Read whatever Caddyfile snapshot already exists in repoDir's runtime/
+	// before writing to the temp dir below — see readCaddyfileSnapshot.
+	currentCaddyfile, caddyfileSnapshotAvailable := readCaddyfileSnapshot(repoDir)
+
 	// Write to a temp dir so plan is side-effect-free on the real runtime/.
 	tmpDir, err := os.MkdirTemp("", "ownbasectl-plan-*")
 	if err != nil {
@@ -63,7 +67,10 @@ func runPlan(repoDir, fakeCurrent string) error {
 		current = runtime.EmptyCurrentState()
 	}
 
-	plan, err := reconcile.Diff(desired, current, reconcile.DiffOptions{})
+	plan, err := reconcile.Diff(desired, current, reconcile.DiffOptions{
+		CurrentCaddyfile:           currentCaddyfile,
+		CaddyfileSnapshotAvailable: caddyfileSnapshotAvailable,
+	})
 	if err != nil {
 		return fmt.Errorf("diff: %w", err)
 	}
