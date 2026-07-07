@@ -51,29 +51,33 @@ func GatherVulns(ctx context.Context, targets []ContainerTarget) VulnStatus {
 		return VulnStatus{TrivyInstalled: false, ScannedAt: now}
 	}
 
-	host, hostOK := GatherHostVulns(ctx)
+	host, hostErr := GatherHostVulns(ctx)
 
 	// Always run image scans even if the host scan failed — trivy and podman
 	// may be perfectly functional for container images, and skipping them
 	// silently would leave CVEs in running services unreported.
 	images := GatherImageVulns(ctx, targets)
 
-	return VulnStatus{
+	status := VulnStatus{
 		// Available reflects only the host scan: false means host data is
 		// incomplete, but Images may still carry valid per-service results.
-		Available:      hostOK,
+		Available:      hostErr == nil,
 		TrivyInstalled: true,
 		ScannedAt:      now,
 		Host:           host,
 		Images:         images,
 	}
+	if hostErr != nil {
+		status.HostScanError = hostErr.Error()
+	}
+	return status
 }
 
 // GatherHostVulns scans the host OS packages for known CVEs using trivy fs.
-// Returns (summary, true) on success; (VulnSummary{}, false) when the scan
-// command fails. The caller must treat false as "data unavailable" — not as a
-// clean host — so a failed scan is never silently presented as zero CVEs.
-func GatherHostVulns(ctx context.Context) (VulnSummary, bool) {
+// Returns (summary, nil) on success; (VulnSummary{}, err) when the scan
+// command fails. The caller must treat a non-nil error as "data unavailable" —
+// not as a clean host — so a failed scan is never silently presented as zero CVEs.
+func GatherHostVulns(ctx context.Context) (VulnSummary, error) {
 	out, err := runTrivy(ctx, "fs",
 		"--quiet",
 		"--format", "json",
@@ -82,9 +86,9 @@ func GatherHostVulns(ctx context.Context) (VulnSummary, bool) {
 		"/",
 	)
 	if err != nil {
-		return VulnSummary{}, false
+		return VulnSummary{}, err
 	}
-	return ParseTrivyOutput(out), true
+	return ParseTrivyOutput(out), nil
 }
 
 // GatherImageVulns scans each container in targets using trivy image.
@@ -103,6 +107,7 @@ func GatherImageVulns(ctx context.Context, targets []ContainerTarget) []ImageVul
 			"--quiet",
 			"--format", "json",
 			"--scanners", "vuln",
+			"--image-src", "podman",
 			t.Image,
 		)
 		if err != nil {
@@ -110,6 +115,7 @@ func GatherImageVulns(ctx context.Context, targets []ContainerTarget) []ImageVul
 				Service:    t.Service,
 				Image:      t.Image,
 				ScanFailed: true,
+				ScanError:  err.Error(),
 			})
 			continue
 		}
@@ -255,6 +261,10 @@ func severityRank(sev string) int {
 // warnings or policy messages alongside valid JSON), the stdout is returned
 // without an error so callers can still parse the findings. Only a genuine
 // failure with no usable output returns an error.
+//
+// On failure the error message includes trivy's stderr so callers can surface
+// the root cause (e.g. "image not found", "DB download failed") without
+// requiring the operator to dig through daemon logs.
 func runTrivy(ctx context.Context, subcommand string, args ...string) (string, error) {
 	scanCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
@@ -263,13 +273,18 @@ func runTrivy(ctx context.Context, subcommand string, args ...string) (string, e
 	out, err := exec.CommandContext(scanCtx, "trivy", allArgs...).Output()
 	if err != nil {
 		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && len(out) > 0 && json.Valid(out) {
-			// Non-zero exit with valid JSON stdout — trivy emitted scan results
-			// alongside a warning or policy signal. Return the JSON so callers
-			// can still parse the findings. Only suppress the error when stdout
-			// is well-formed JSON; a plain-text error message must not be
-			// silently treated as a clean (zero-CVE) scan.
-			return string(out), nil
+		if errors.As(err, &exitErr) {
+			if len(out) > 0 && json.Valid(out) {
+				// Non-zero exit with valid JSON stdout — trivy emitted scan results
+				// alongside a warning or policy signal. Return the JSON so callers
+				// can still parse the findings. Only suppress the error when stdout
+				// is well-formed JSON; a plain-text error message must not be
+				// silently treated as a clean (zero-CVE) scan.
+				return string(out), nil
+			}
+			if stderr := strings.TrimSpace(string(exitErr.Stderr)); stderr != "" {
+				return "", fmt.Errorf("trivy %s: %w: %s", subcommand, err, stderr)
+			}
 		}
 		return "", fmt.Errorf("trivy %s: %w", subcommand, err)
 	}

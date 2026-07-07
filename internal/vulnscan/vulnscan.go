@@ -78,6 +78,11 @@ type ImageVulns struct {
 	// could not scan it. Distinct from "image not built" (which is omitted
 	// from results entirely). A failed scan must not be treated as clean.
 	ScanFailed bool `json:"scan_failed,omitempty"`
+
+	// ScanError holds the error message from the failed trivy invocation so
+	// the CLI can display it inline rather than pointing at logs that don't
+	// contain the detail. Only set when ScanFailed is true.
+	ScanError string `json:"scan_error,omitempty"`
 }
 
 // VulnStatus is the combined vulnerability scan result for a Base.
@@ -96,6 +101,11 @@ type VulnStatus struct {
 	// ScannedAt is when GatherVulns was called. Set even when Available=false
 	// so that concurrent scan goroutines can discard results from an older run.
 	ScannedAt time.Time `json:"scanned_at,omitempty"`
+
+	// HostScanError holds the error message when Available is false and
+	// TrivyInstalled is true, i.e. trivy ran but the host scan failed. Empty
+	// when the scan succeeded or when trivy is not installed.
+	HostScanError string `json:"host_scan_error,omitempty"`
 
 	// Host holds the OS package scan result.
 	Host VulnSummary `json:"host"`
