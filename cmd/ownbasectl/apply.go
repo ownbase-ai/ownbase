@@ -51,6 +51,10 @@ func runApply(repoDir string, dryRun bool, fakeCurrent, auditLogPath string) err
 
 	desired := compiler.Compile(compiler.Input{Config: cfg})
 
+	// Read whatever Caddyfile snapshot already exists in repoDir's runtime/
+	// — see readCaddyfileSnapshot.
+	currentCaddyfile, caddyfileSnapshotAvailable := readCaddyfileSnapshot(repoDir)
+
 	var current runtime.CurrentState
 	if fakeCurrent != "" {
 		parts := strings.Split(fakeCurrent, ",")
@@ -59,7 +63,10 @@ func runApply(repoDir string, dryRun bool, fakeCurrent, auditLogPath string) err
 		current = runtime.EmptyCurrentState()
 	}
 
-	plan, err := reconcile.Diff(desired, current, reconcile.DiffOptions{})
+	plan, err := reconcile.Diff(desired, current, reconcile.DiffOptions{
+		CurrentCaddyfile:           currentCaddyfile,
+		CaddyfileSnapshotAvailable: caddyfileSnapshotAvailable,
+	})
 	if err != nil {
 		return fmt.Errorf("diff: %w", err)
 	}

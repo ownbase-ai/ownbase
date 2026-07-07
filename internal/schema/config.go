@@ -160,7 +160,20 @@ type ServiceDecl struct {
 
 	// Domain is the public hostname for this service's primary endpoint.
 	// If empty, the service has no Caddy route (internal-only).
+	//
+	// This is the older single-hostname form, kept working indefinitely (it
+	// is folded into EffectiveDomains() as an extra entry) — new configs
+	// should prefer domains: even for a single hostname, but there is no
+	// need to migrate existing configs away from domain:.
 	Domain string `yaml:"domain,omitempty"`
+
+	// Domains lists every public hostname this service should be reachable
+	// at. The compiler emits one Caddy route per effective domain (see
+	// EffectiveDomains), all pointing at the same container/port — useful
+	// for serving the same service under multiple names (e.g. a .com and a
+	// .org). If empty and Domain is also empty, the service has no Caddy
+	// route (internal-only).
+	Domains []string `yaml:"domains,omitempty"`
 
 	// Requires lists capabilities (service keys) this service depends on.
 	// Each name must match a key in the services map — the compiler joins
@@ -234,6 +247,48 @@ type HealthProbeDecl struct {
 	// HTTP is the path to GET on localhost:Port. The probe succeeds when the
 	// server returns a 2xx status within the timeout. Example: "/-/health"
 	HTTP string `yaml:"http,omitempty"`
+}
+
+// EffectiveDomains returns the deduplicated, order-preserving union of the
+// older singular Domain field and Domains — every public hostname this
+// service should be reachable at. Domain (if set) comes first, followed by
+// each entry in Domains not already seen. An empty result means the service
+// has no Caddy route (internal-only) and, per the dev bridge design, is
+// never bridged by `ownbasectl dev` either.
+func (s ServiceDecl) EffectiveDomains() []string {
+	seen := make(map[string]bool, len(s.Domains)+1)
+	var out []string
+	add := func(d string) {
+		d = strings.TrimSpace(d)
+		if d == "" || seen[d] {
+			return
+		}
+		seen[d] = true
+		out = append(out, d)
+	}
+	add(s.Domain)
+	for _, d := range s.Domains {
+		add(d)
+	}
+	return out
+}
+
+// HasPublicDomain reports whether at least one service has one or more
+// domains configured (via domain: and/or domains:) AND a port to route
+// them to. A domain with no port is not routable — the compiler only
+// emits a Caddy route when both are present (see
+// internal/compiler.buildContainer) — so it must not count here either,
+// or the firewall/Caddy would open 80/443 to the world for a service that
+// has no listener to actually reach. A Base with no such service exposes
+// nothing publicly but SSH — Caddy publishes no ports and the firewall
+// opens no web ports; reach such services with `ownbasectl dev` instead.
+func (c *OwnbaseConfig) HasPublicDomain() bool {
+	for _, svc := range c.Services {
+		if svc.Port != 0 && len(svc.EffectiveDomains()) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // Validate returns the first structural error in the config, or nil.

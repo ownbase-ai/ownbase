@@ -46,8 +46,10 @@ type ContainerModel struct {
 	// Empty means the repo root.
 	BuildContext string
 
-	// PublicDomain is the public hostname for Caddy routing. Empty = internal only.
-	PublicDomain string
+	// PublicDomains lists the public hostnames for Caddy routing — one Caddy
+	// site block per domain, all pointing at this container's PublicPort.
+	// Empty = internal only.
+	PublicDomains []string
 	// PublicPort is the host-local port published for Caddy.
 	// Zero means no public port (internal-only container).
 	PublicPort int

@@ -389,7 +389,11 @@ func registerProfile(name, host, sshUser, sshKey string, sshPort, apiPort int, t
 }
 
 // printBaseCreatedBanner prints the "what's next" guidance every create run
-// ends with, pointing at the next step in the lifecycle: backup setup.
+// ends with, pointing at the next steps in the lifecycle: backup setup and,
+// since a freshly created Base has no domain configured yet (Caddy publishes
+// no ports and the firewall opens only SSH — see internal/core, internal/install),
+// the local HTTPS dev bridge as the way to actually reach a service once it
+// has one.
 func printBaseCreatedBanner(name, host string) {
 	fmt.Println()
 	fmt.Println("════════════════════════════════════════════════════════════════")
@@ -400,6 +404,10 @@ func printBaseCreatedBanner(name, host string) {
 	fmt.Printf("    ownbasectl status %s          check it's healthy\n", name)
 	fmt.Printf("    ownbasectl backup setup %s    configure remote backups\n", name)
 	fmt.Printf("    ownbasectl checkup %s         full security + update + backup report\n", name)
+	fmt.Println()
+	fmt.Println("  No service has a domain configured yet, so nothing but SSH is exposed.")
+	fmt.Printf("  Once a service has a domain:, reach it locally over trusted HTTPS with:\n")
+	fmt.Printf("    ownbasectl dev %s             local HTTPS dev bridge (one-time sudo prompt for mkcert)\n", name)
 	fmt.Println()
 }
 

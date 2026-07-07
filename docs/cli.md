@@ -52,7 +52,7 @@ ownbasectl create mybase --remote root@mybase.example.com \
 | `--caddy-email` | — | ACME contact email for automatic TLS on public domains |
 | `--yes`, `-y` | `false` | Skip confirmation prompts (e.g. overwriting an existing local VM) |
 
-If a local VM with the same name already exists, `create` asks before deleting it (`--yes` skips the prompt; non-interactive runs proceed as before).
+If a local VM with the same name already exists, `create` asks before deleting it (`--yes` skips the prompt; non-interactive runs proceed as before). Every other step of `create` (and of `vm start|stop|restart`) is guaranteed to never prompt for anything, ever — this is what makes it safe for an AI agent to run unattended. A freshly created Base has no domain configured anywhere, so it exposes nothing but SSH externally (Caddy publishes no ports, the firewall opens no web ports); once a service has a `domain:` (or `domains:`), reach it locally over trusted HTTPS with `ownbasectl dev` (below), or reach it in production once its domain's DNS points at the Base.
 
 ### `adopt <name> --host <host> --token <token>`
 
@@ -198,10 +198,45 @@ Structured, non-interactive edits to the `services:` map — a thin, scriptable 
 ownbasectl service add mybase crm --mirror https://github.com/org/crm --ref main --port 3000 --domain crm.example.com
 ownbasectl service update mybase crm --ref v2.3.0        # bump the pinned ref
 ownbasectl service update mybase crm --port 4000 --domain crm.example.com
+ownbasectl service update mybase crm --domains crm.example.com,crm.example.org  # serve two hostnames
 ownbasectl service remove mybase crm
 ```
 
-`add` requires exactly one of `--source`/`--mirror`. `update` only touches the fields whose flags were explicitly passed — every other field of the service keeps its current value. `--env` merges into the existing list (new values win on a duplicate key); `--requires` replaces the list entirely when passed. All three subcommands accept `--json` for structured output.
+`add` requires exactly one of `--source`/`--mirror`. `update` only touches the fields whose flags were explicitly passed — every other field of the service keeps its current value. `--env` merges into the existing list (new values win on a duplicate key); `--requires` and `--domains` replace their respective lists entirely when passed. `--domain` (singular) still works and is combined with `--domains`, deduplicated. All three subcommands accept `--json` for structured output.
+
+---
+
+## Local development: `dev <name>`
+
+The one command in `ownbasectl` that is allowed to prompt interactively — starting it is itself a human's explicit "I am sitting here, ready to develop" signal (see [decisions.md](decisions.md)). `create`/`vm` never prompt for anything; this command is the only exception, and only for a one-time `mkcert -install` (trusting a local certificate authority in this machine's OS/browser trust store).
+
+```bash
+ownbasectl dev mybase
+ownbasectl dev mybase --port 9443   # override the local bind port (default 8443)
+```
+
+It reads the Base's live `ownbase.yaml` over SSH, opens one SSH tunnel per service that has both a `port:` and a domain configured (`domain:` or `domains:`) directly to that service's container port — bypassing Caddy entirely, so no port needs to be published or firewalled on the Base — and serves each at its real domain with `.localhost` appended, e.g. a service with `domain: myapp.example.com` is served at `https://myapp.example.com.localhost:8443`. Per RFC 6761 any hostname ending in `.localhost` always resolves to loopback, with no `/etc/hosts` entry and no DNS lookup, so the URL never changes across a `vm restart` or IP change. A service with **no** domain configured is never bridged — not tunneled, not exposed, not printed.
+
+```
+ownbasectl: reading ownbase.yaml from "mybase" ...
+ownbasectl: opening 1 SSH tunnel(s) to "mybase" ...
+ownbasectl: generating local HTTPS certificate for 1 hostname(s) ...
+
+Bridging:
+  https://myapp.example.com.localhost:8443
+
+No code-sync — push to the service's bare repo and update ref: to deploy changes.
+Press Ctrl+C to stop.
+```
+
+**There is no code-sync mechanism.** `ownbasectl dev` only tunnels and proxies traffic to whatever is currently deployed — no bind mount, file watcher, or hot-reload. To iterate on a service's code, use the same git-push-to-deploy flow as production:
+
+```bash
+git push ssh://<ssh-user>@<host>/opt/ownbase/repos/<service> my-branch:my-branch
+ownbasectl service update mybase <service> --ref my-branch
+```
+
+The daemon fetches/builds/restarts the service exactly as it would for any other `ref:` change; the dev bridge, if still running, picks up the new container transparently since it tunnels to the service's port, not to a specific container instance.
 
 ---
 

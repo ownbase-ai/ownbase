@@ -372,6 +372,81 @@ func TestBackupCoreConfig_EffectiveVerifyInterval_Custom(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Multi-domain support
+// ---------------------------------------------------------------------------
+
+func TestServiceDecl_EffectiveDomains_Empty(t *testing.T) {
+	s := schema.ServiceDecl{}
+	if got := s.EffectiveDomains(); len(got) != 0 {
+		t.Errorf("expected no domains, got %v", got)
+	}
+}
+
+func TestServiceDecl_EffectiveDomains_DomainOnly(t *testing.T) {
+	s := schema.ServiceDecl{Domain: "app.example.com"}
+	got := s.EffectiveDomains()
+	want := []string{"app.example.com"}
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestServiceDecl_EffectiveDomains_UnionAndDedup(t *testing.T) {
+	s := schema.ServiceDecl{
+		Domain:  "app.example.com",
+		Domains: []string{"app.example.org", "app.example.com", "  app.example.net  "},
+	}
+	got := s.EffectiveDomains()
+	want := []string{"app.example.com", "app.example.org", "app.example.net"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("index %d: got %q, want %q (full: %v)", i, got[i], want[i], got)
+		}
+	}
+}
+
+func TestOwnbaseConfig_HasPublicDomain(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  schema.OwnbaseConfig
+		want bool
+	}{
+		{"no services", schema.OwnbaseConfig{}, false},
+		{"service with no domain", schema.OwnbaseConfig{
+			Services: map[string]schema.ServiceDecl{"a": {Source: "x", Port: 8080}},
+		}, false},
+		{"service with domain: and port:", schema.OwnbaseConfig{
+			Services: map[string]schema.ServiceDecl{"a": {Source: "x", Domain: "a.example.com", Port: 8080}},
+		}, true},
+		{"service with domains: and port:", schema.OwnbaseConfig{
+			Services: map[string]schema.ServiceDecl{"a": {Source: "x", Domains: []string{"a.example.com"}, Port: 8080}},
+		}, true},
+		{"service with domain: but no port", schema.OwnbaseConfig{
+			Services: map[string]schema.ServiceDecl{"a": {Source: "x", Domain: "a.example.com"}},
+		}, false},
+		{"service with port but no domain", schema.OwnbaseConfig{
+			Services: map[string]schema.ServiceDecl{"a": {Source: "x", Port: 8080}},
+		}, false},
+		{"one service domain-only, another port-only: still no routable public service", schema.OwnbaseConfig{
+			Services: map[string]schema.ServiceDecl{
+				"a": {Source: "x", Domain: "a.example.com"},
+				"b": {Source: "y", Port: 8080},
+			},
+		}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cfg.HasPublicDomain(); got != tc.want {
+				t.Errorf("HasPublicDomain() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestBackupCoreConfig_Validate_InvalidInterval(t *testing.T) {
 	cfg := &schema.OwnbaseConfig{
 		SchemaVersion: "v1",

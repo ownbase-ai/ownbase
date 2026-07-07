@@ -56,9 +56,12 @@ type ServiceStatus struct {
 	// local bare repo under /opt/ownbase/repos/).
 	Mirror string `json:"mirror,omitempty"`
 
-	// Public exposure.
-	Domain string `json:"domain,omitempty"`
-	Port   int    `json:"port,omitempty"`
+	// Public exposure. Domain is the first entry of Domains, kept for
+	// backward-compatible API consumers that only read a single hostname;
+	// Domains is the full effective list (see schema.ServiceDecl.EffectiveDomains).
+	Domain  string   `json:"domain,omitempty"`
+	Domains []string `json:"domains,omitempty"`
+	Port    int      `json:"port,omitempty"`
 
 	// Requires lists capability names this service depends on.
 	Requires []string `json:"requires,omitempty"`

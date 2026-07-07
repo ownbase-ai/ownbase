@@ -12,8 +12,11 @@ package secwatch_test
 //
 // What we assert on a clean, hardened Base:
 //   - GatherExposure returns Available=true, FirewallActive=true, UnexpectedCount=0.
-//   - Ports 80 and 443 are expected and internet-reachable (Caddy).
-//   - Port 22 (or configured SSH port) is expected.
+//   - Port 22 (or configured SSH port) is expected and allowed.
+//   - Ports 80 and 443 are NOT allowed — the install package's own
+//     integration test hardens the VM with no domain configured (the
+//     default PassZeroConfig), and a domain-less Base exposes only SSH
+//     (see install.ensureFirewall / docs/decisions.md, "Local development").
 //   - No database ports (5432, 3306, 27017, 6379) are internet-reachable.
 //   - GatherAccess returns Available=true, Fail2banActive=true.
 
@@ -130,6 +133,13 @@ func TestScanListeners_HasBoundPorts(t *testing.T) {
 }
 
 // TestReadFirewall_Active verifies that UFW is active on a hardened Base.
+//
+// The install package's own integration test (TestPassZero_FullInstall,
+// which runs first in this Tier-2 job — see .github/workflows/ci.yml)
+// hardens the VM with the default PassZeroConfig, i.e. ExposeWebPorts:
+// false: a domain-less Base only allows SSH, since there is no Caddy route
+// to serve on 80/443 yet (see install.ensureFirewall). So 80/443 are
+// expected to be closed here, not open.
 func TestReadFirewall_Active(t *testing.T) {
 	requireRoot(t)
 	ctx := context.Background()
@@ -145,10 +155,12 @@ func TestReadFirewall_Active(t *testing.T) {
 
 	t.Logf("UFW allowed ports: %v", fw.AllowedPorts)
 
-	// Standard ports should be allowed.
-	for _, port := range []int{22, 80, 443} {
-		if !fw.AllowedPorts[port] {
-			t.Errorf("expected port %d to be allowed in UFW", port)
+	if !fw.AllowedPorts[22] {
+		t.Error("expected port 22 (SSH) to be allowed in UFW")
+	}
+	for _, port := range []int{80, 443} {
+		if fw.AllowedPorts[port] {
+			t.Errorf("expected port %d to NOT be allowed in UFW — no service has a domain configured on this Base", port)
 		}
 	}
 }

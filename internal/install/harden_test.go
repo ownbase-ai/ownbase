@@ -106,3 +106,116 @@ func TestIsPortExposedOnLine(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// ufwRuleAllowed tests
+// ---------------------------------------------------------------------------
+
+// TestUfwRuleAllowed_RequiresExactPortProtoMatch covers the realistic `ufw
+// status` shapes checkFirewallState parses, including the false-positive
+// trap of a wider port (8080/tcp) textually containing a narrower one
+// (80/tcp) as a substring.
+func TestUfwRuleAllowed_RequiresExactPortProtoMatch(t *testing.T) {
+	const status = `Status: active
+
+To                         Action      From
+--                         ------      ----
+22/tcp                     ALLOW       Anywhere
+80/tcp                     ALLOW       Anywhere
+8080/tcp                   ALLOW       Anywhere
+22/tcp (v6)                ALLOW       Anywhere (v6)
+80/tcp (v6)                ALLOW       Anywhere (v6)`
+
+	cases := []struct {
+		portProto string
+		want      bool
+	}{
+		{"22/tcp", true},
+		{"80/tcp", true},
+		{"8080/tcp", true},
+		{"443/tcp", false}, // not present — this is the bug the fix covers.
+	}
+	for _, tc := range cases {
+		if got := ufwRuleAllowed(status, tc.portProto); got != tc.want {
+			t.Errorf("ufwRuleAllowed(status, %q) = %v, want %v", tc.portProto, got, tc.want)
+		}
+	}
+}
+
+// TestUfwRuleAllowed_IgnoresNonAllowActions locks in the fix for "UFW
+// matcher ignores ALLOW action": a DENY/REJECT rule for the same port/proto
+// must not be mistaken for the port being open, and the IPv6 port token
+// ("80/tcp (v6)") — which shifts the action column one field to the right —
+// must still be parsed correctly.
+func TestUfwRuleAllowed_IgnoresNonAllowActions(t *testing.T) {
+	const status = `Status: active
+
+To                         Action      From
+--                         ------      ----
+22/tcp                     ALLOW       Anywhere
+80/tcp                     DENY        Anywhere
+443/tcp                    REJECT      Anywhere
+8080/tcp                   LIMIT       Anywhere
+22/tcp (v6)                ALLOW       Anywhere (v6)
+443/tcp (v6)               ALLOW       Anywhere (v6)`
+
+	cases := []struct {
+		portProto string
+		want      bool
+	}{
+		{"22/tcp", true},    // ALLOW
+		{"80/tcp", false},   // DENY, not ALLOW
+		{"443/tcp", true},   // IPv4 REJECT, but IPv6 line ALLOWs it
+		{"8080/tcp", false}, // LIMIT, not ALLOW
+	}
+	for _, tc := range cases {
+		if got := ufwRuleAllowed(status, tc.portProto); got != tc.want {
+			t.Errorf("ufwRuleAllowed(status, %q) = %v, want %v", tc.portProto, got, tc.want)
+		}
+	}
+}
+
+// TestWebPortsMatchDesired locks in two fixes:
+//   - "UFW check ignores HTTPS rule": when ExposeWebPorts is true, both
+//     80/tcp AND 443/tcp must be allowed, not just 80/tcp — a partially
+//     applied firewall (80 open, 443 still blocked) must not read as
+//     already satisfying the desired state.
+//   - "UFW check ignores partial web ports": when ExposeWebPorts is false,
+//     both ports must be NOT allowed — a partially-closed firewall (e.g.
+//     80 still allowed, 443 closed) must not read as already satisfying
+//     the desired "closed" state either, or a public port stays exposed
+//     on a domain-less Base.
+func TestWebPortsMatchDesired(t *testing.T) {
+	const neither = `Status: active
+
+To                         Action      From
+--                         ------      ----
+22/tcp                     ALLOW       Anywhere`
+
+	const only80 = neither + "\n80/tcp                     ALLOW       Anywhere"
+	const only443 = neither + "\n443/tcp                    ALLOW       Anywhere"
+	const both = only80 + "\n443/tcp                     ALLOW       Anywhere"
+
+	cases := []struct {
+		name           string
+		status         string
+		exposeWebPorts bool
+		want           bool
+	}{
+		{"want open, neither open", neither, true, false},
+		{"want open, only 80 open", only80, true, false},
+		{"want open, only 443 open", only443, true, false},
+		{"want open, both open", both, true, true},
+		{"want closed, neither open", neither, false, true},
+		{"want closed, only 80 open", only80, false, false},
+		{"want closed, only 443 open", only443, false, false},
+		{"want closed, both open", both, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := webPortsMatchDesired(tc.status, tc.exposeWebPorts); got != tc.want {
+				t.Errorf("webPortsMatchDesired(status, %v) = %v, want %v", tc.exposeWebPorts, got, tc.want)
+			}
+		})
+	}
+}

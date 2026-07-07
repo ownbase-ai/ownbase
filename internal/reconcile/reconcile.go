@@ -66,9 +66,22 @@ func unitKind(filename string) string {
 // reloads).
 type DiffOptions struct {
 	// CurrentCaddyfile is the Caddyfile content that is currently deployed
-	// (read from runtime/Caddyfile). When it differs from desired.Caddyfile,
-	// a reload action is emitted even if no containers changed.
+	// (read from runtime/Caddyfile, before it gets overwritten by the
+	// desired content). When it differs from desired.Caddyfile, a reload
+	// action is emitted even if no containers changed. Only meaningful when
+	// CaddyfileSnapshotAvailable is true — see that field.
 	CurrentCaddyfile string
+	// CaddyfileSnapshotAvailable reports whether CurrentCaddyfile reflects a
+	// real prior snapshot (the read of runtime/Caddyfile succeeded) as
+	// opposed to no snapshot existing yet (e.g. a Base's very first boot,
+	// where Caddy is still running its stock default config). These two
+	// cases must be distinguished: an empty CurrentCaddyfile alone is
+	// ambiguous between "no prior snapshot" (must still force a reload —
+	// we don't know what's actually deployed) and "a snapshot exists and
+	// happens to be empty" (compare normally). False (the zero value) is
+	// treated as "no snapshot" and always forces a reload when
+	// desired.Caddyfile is non-empty.
+	CaddyfileSnapshotAvailable bool
 	// CurrentUnits maps unit filename → content for every unit that is
 	// currently installed on disk (read from runtime/). When a container is
 	// already running but its unit content has changed, a restart action is
@@ -234,13 +247,13 @@ func Diff(desired compiler.RuntimeOutput, current runtime.CurrentState, opts Dif
 	// is reloaded both when routes change without container churn and when
 	// container changes imply route updates.
 	//
-	// Caddyfile-only reloads (no other actions) are only emitted when the
-	// caller provides a CurrentCaddyfile snapshot (non-empty). An empty
-	// CurrentCaddyfile means "no prior snapshot available" — we fall back to
-	// the old behavior and only reload when other actions are present.
+	// When no prior snapshot is available (CaddyfileSnapshotAvailable is
+	// false — e.g. a Base's very first boot, before runtime/Caddyfile has
+	// ever been written), we don't know what Caddy is actually running, so a
+	// reload is always forced. Once a snapshot exists, reload only when its
+	// content actually differs from desired.
 	caddyfileChanged := desired.Caddyfile != "" &&
-		opts.CurrentCaddyfile != "" &&
-		desired.Caddyfile != opts.CurrentCaddyfile
+		(!opts.CaddyfileSnapshotAvailable || desired.Caddyfile != opts.CurrentCaddyfile)
 	if (len(actions) > 0 || caddyfileChanged) && desired.Caddyfile != "" {
 		a, err := schema.NewAction(schema.ActionServiceReload, "caddy")
 		if err != nil {

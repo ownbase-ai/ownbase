@@ -2,6 +2,6 @@
 # Changes here will be overwritten and flagged as a tamper signal.
 
 hello.example.com {
-	reverse_proxy localhost:3000
+	reverse_proxy ownbase-hello:3000
 }
 

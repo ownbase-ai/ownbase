@@ -10,6 +10,6 @@ import (
 
 // bootstrapCore is a no-op without the integration build tag.
 // The core package (Caddy) is managed manually in dev/CI.
-func bootstrapCore(_ context.Context, _ agentConfig, _ schema.CoreConfig) error {
+func bootstrapCore(_ context.Context, _ agentConfig, _ schema.CoreConfig, _ bool) error {
 	return nil
 }

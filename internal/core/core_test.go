@@ -9,7 +9,7 @@ import (
 )
 
 func TestBuildCoreOutput_ContainsAllUnits(t *testing.T) {
-	out := core.BuildCoreOutput(schema.CoreConfig{}, core.Current)
+	out := core.BuildCoreOutput(schema.CoreConfig{}, core.Current, true)
 	required := []string{
 		core.CaddyContainerName + ".container",
 		core.CaddyDataVolume + ".volume",
@@ -27,7 +27,7 @@ func TestBuildCoreOutput_ContainsAllUnits(t *testing.T) {
 // service (ownbase-internal-network.service). Without this unit Caddy fails to
 // start with "Unit ownbase-internal-network.service not found".
 func TestBuildCoreOutput_NetworkUnitEnablesCaddy(t *testing.T) {
-	out := core.BuildCoreOutput(schema.CoreConfig{}, core.Current)
+	out := core.BuildCoreOutput(schema.CoreConfig{}, core.Current, true)
 
 	netKey := core.OwnbaseInternalNetwork + ".network"
 	unit, ok := out.QuadletUnits[netKey]
@@ -49,7 +49,7 @@ func TestBuildCoreOutput_NetworkUnitEnablesCaddy(t *testing.T) {
 // container unit content.
 func caddyUnit(t *testing.T) string {
 	t.Helper()
-	out := core.BuildCoreOutput(schema.CoreConfig{}, core.Current)
+	out := core.BuildCoreOutput(schema.CoreConfig{}, core.Current, true)
 	unit, ok := out.QuadletUnits[core.CaddyContainerName+".container"]
 	if !ok {
 		t.Fatalf("core output missing Caddy container unit")
@@ -102,7 +102,7 @@ func TestBuildCaddyModel_StaysHardened(t *testing.T) {
 }
 
 func TestBuildCoreOutput_LongerTimeout(t *testing.T) {
-	out := core.BuildCoreOutput(schema.CoreConfig{}, core.Current)
+	out := core.BuildCoreOutput(schema.CoreConfig{}, core.Current, true)
 	unit := out.QuadletUnits[core.CaddyContainerName+".container"]
 	if !strings.Contains(unit, "TimeoutStartSec=120") {
 		t.Errorf("core unit should have TimeoutStartSec=120\nunit:\n%s", unit)
@@ -111,11 +111,29 @@ func TestBuildCoreOutput_LongerTimeout(t *testing.T) {
 
 func TestBuildCoreOutput_Deterministic(t *testing.T) {
 	cfg := schema.CoreConfig{Caddy: schema.CaddyCoreConfig{Email: "admin@example.com"}}
-	out1 := core.BuildCoreOutput(cfg, core.Current)
-	out2 := core.BuildCoreOutput(cfg, core.Current)
+	out1 := core.BuildCoreOutput(cfg, core.Current, true)
+	out2 := core.BuildCoreOutput(cfg, core.Current, true)
 	for name := range out1.QuadletUnits {
 		if out1.QuadletUnits[name] != out2.QuadletUnits[name] {
 			t.Errorf("core unit %q not deterministic", name)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Domain-gated port publishing (sudo-free create / dev bridge)
+// ---------------------------------------------------------------------------
+
+// TestBuildCaddyModel_NoDomainPublishesNoPorts asserts that a Base with no
+// domain'd service (the default state of a fresh Base) does not publish 80
+// or 443 at all — there is nothing for Caddy to route yet, and
+// `ownbasectl dev` reaches services directly over SSH instead.
+func TestBuildCaddyModel_NoDomainPublishesNoPorts(t *testing.T) {
+	out := core.BuildCoreOutput(schema.CoreConfig{}, core.Current, false)
+	unit := out.QuadletUnits[core.CaddyContainerName+".container"]
+	for _, unwanted := range []string{"PublishPort=80:80", "PublishPort=443:443"} {
+		if strings.Contains(unit, unwanted) {
+			t.Errorf("Caddy unit must not contain %q when no service has a domain:\n%s", unwanted, unit)
 		}
 	}
 }

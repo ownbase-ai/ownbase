@@ -28,7 +28,10 @@ services:
 
     # Runtime
     port: <int> # container port; required for public domain
-    domain: <hostname> # public domain → Caddy route
+    domain: <hostname> # public domain → Caddy route (single-hostname form)
+    domains: # OR: multiple public hostnames → one Caddy route each, same backend
+      - <hostname>
+      - <other-hostname>
 
     # Single-volume shorthand (backward compat)
     data_path: /data # mount path for the one named volume (default /data)
@@ -64,6 +67,36 @@ services:
 ## The no-registry rule
 
 `image:` is intentionally absent from user services. Every user service is **built locally on the Base** from a local bare repo at the pinned `ref:` — no pre-built application images, ever. The core package (Caddy) is the only exception and is managed by `ownbasectl upgrade`, not by `ownbase.yaml`.
+
+## Public domains: `domain:` and `domains:`
+
+A service becomes publicly reachable once it has **both** a `port:` and at least one domain — the compiler emits one Caddy route per domain, all pointing at the same container:port:
+
+```yaml
+services:
+  app:
+    source: apps/app
+    port: 3000
+    domains: # serve the same service under two hostnames
+      - app.example.com
+      - app.example.org
+```
+
+`domain:` (singular) still works exactly as before — it is simply folded into the same effective domain list (`EffectiveDomains()`), so existing configs need no migration. Use `domains:` when a service needs more than one public hostname; there is no need to switch existing single-domain services to `domains:`.
+
+A service with **no** domain configured (`domain:` and `domains:` both empty — the default for a newly added service) is internal-only: Caddy has no route for it, and — since a Base with no domain'd service anywhere exposes only SSH externally (see `docs/decisions.md`, "Local development") — it is not reachable from outside the Base at all. Reach it locally with `ownbasectl dev` instead (below).
+
+## Local HTTPS during development (`ownbasectl dev`)
+
+A fresh Base has no domain configured anywhere, so it never opens 80/443 and Caddy never gets a real Let's Encrypt certificate — there's no way to see it over trusted HTTPS the way a real deployed Base would be seen. `ownbasectl dev <name>` solves this without touching `create`/`vm` (which must stay perfectly agent-safe: zero prompts, ever):
+
+```bash
+ownbasectl dev mybase
+```
+
+This is the one command in `ownbasectl` allowed to prompt interactively (a one-time `sudo mkcert -install`, ever, on this machine). It reads the Base's live `ownbase.yaml` over SSH, opens one SSH tunnel per service that has both a `port:` and a domain configured — a service with no domain is never bridged — and serves each at its real domain with `.localhost` appended, e.g. `domain: myapp.example.com` → `https://myapp.example.com.localhost:8443`, a locally-trusted HTTPS URL that works fully offline and never changes across a VM restart. See `docs/cli.md` for the full command reference and `docs/decisions.md` for the design rationale.
+
+**There is no code-sync mechanism** — `ownbasectl dev` only tunnels and proxies traffic to whatever is currently deployed. To iterate on a service's code, use the same git-push-to-deploy flow as production: push a branch to the service's bare repo and run `ownbasectl service update <base> <name> --ref <branch>` (see "Updates: the `ref:` model" below); the dev bridge, if still running, picks up the new container transparently.
 
 ## `source:` paths — how they work
 

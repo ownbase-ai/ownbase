@@ -206,8 +206,9 @@ func run(cfg agentConfig) error {
 	if !cfg.skipPassZero {
 		fmt.Fprintln(os.Stderr, "ownbased: running pass zero (host hardening) ...")
 		report, err := install.PassZero(context.Background(), install.PassZeroConfig{
-			DryRun:  cfg.dryRun,
-			SSHPort: cfg.sshPort,
+			DryRun:         cfg.dryRun,
+			SSHPort:        cfg.sshPort,
+			ExposeWebPorts: hasPublicDomainOnDisk(cfg.checkoutPath),
 		})
 		if err != nil {
 			return fmt.Errorf("pass zero: %w", err)
@@ -287,14 +288,22 @@ func run(cfg agentConfig) error {
 	// Idempotent: safe to call on every startup.
 	{
 		coreCfg := schema.CoreConfig{} // defaults apply
+		hasPublicDomain := false
 		if cfgOnDisk, err := schema.ParseConfigFile(
 			filepath.Join(cfg.checkoutPath, "ownbase.yaml"),
 		); err == nil {
 			coreCfg = cfgOnDisk.Core
+			hasPublicDomain = cfgOnDisk.HasPublicDomain()
 		}
-		if err := bootstrapCore(context.Background(), cfg, coreCfg); err != nil {
+		if err := bootstrapCore(context.Background(), cfg, coreCfg, hasPublicDomain); err != nil {
 			return fmt.Errorf("bootstrap core: %w", err)
 		}
+		// Delete the one-time first-run file exactly once, here, rather than
+		// inside bootstrapCore itself (which now also runs on every
+		// reconcile tick via syncCoreForConfig — see readFirstRunEnv for
+		// why deleting it there would silently drop the ACME email on the
+		// second call).
+		install.DeleteFirstRunEnv(install.FirstRunEnvPath)
 	}
 
 	// Write PID file so the post-receive hook can signal us via SIGUSR1.
@@ -614,7 +623,7 @@ func run(cfg agentConfig) error {
 
 	reconcileOnce := func(reason string) {
 		fmt.Fprintf(os.Stderr, "ownbased: reconcile triggered (%s)\n", reason)
-		state, err := reconcileLoop(cfg.checkoutPath, cfg.repoPath, checkpoint, applier, auditLog, cfg.dryRun)
+		state, err := reconcileLoop(cfg, checkpoint, applier, auditLog, cfg.dryRun)
 		if err != nil {
 			if isConfigError(err) {
 				fmt.Fprintf(os.Stderr, "ownbased: config error (fix ownbase.yaml and push): %v\n", err)
@@ -625,14 +634,10 @@ func run(cfg agentConfig) error {
 			// bootstrap may not have fully seeded it. Retry once so the next
 			// tick finds the file without waiting for the 5-minute backstop.
 			if isCheckoutMissingError(err) {
-				coreCfg := schema.CoreConfig{}
 				if cfgOnDisk, parseErr := schema.ParseConfigFile(
 					filepath.Join(cfg.checkoutPath, "ownbase.yaml"),
 				); parseErr == nil {
-					coreCfg = cfgOnDisk.Core
-				}
-				if bErr := bootstrapCore(context.Background(), cfg, coreCfg); bErr != nil {
-					fmt.Fprintf(os.Stderr, "ownbased: bootstrap retry (non-fatal): %v\n", bErr)
+					syncCoreForConfig(context.Background(), cfg, cfgOnDisk, cfg.dryRun)
 				}
 			}
 		}
@@ -821,6 +826,21 @@ func readCoreConfigFromDisk(checkoutPath string) schema.CoreConfig {
 	return cfg.Core
 }
 
+// hasPublicDomainOnDisk reports whether ownbase.yaml on disk currently has
+// any service with a domain configured (schema.OwnbaseConfig.HasPublicDomain).
+// Returns false — the safe default — when the file is missing or cannot be
+// parsed, e.g. on a Base's very first boot before any config has been pushed.
+// Used to gate both the firewall's web ports (pass zero) and Caddy's
+// published ports (bootstrapCore) on the same signal.
+func hasPublicDomainOnDisk(checkoutPath string) bool {
+	cfgPath := filepath.Join(checkoutPath, "ownbase.yaml")
+	cfg, err := schema.ParseConfigFile(cfgPath)
+	if err != nil {
+		return false
+	}
+	return cfg.HasPublicDomain()
+}
+
 // loadBackupConfig builds a backup.Config for one run. It parses ownbase.yaml
 // fresh on every call (so volume declarations are always current), decrypts
 // credentials from the conventional age-encrypted secret, and resolves all
@@ -859,6 +879,37 @@ func loadBackupConfig(cfg agentConfig, repo string, auditLog authz.AuditLogger) 
 	}
 }
 
+// syncCoreForConfig re-applies the core package (Caddy) and firewall
+// web-port exposure to match cfg's current domain configuration. Called on
+// every reconcile tick (see reconcileLoop) — not just at daemon startup —
+// so that adding or removing a service's domain takes effect immediately
+// without requiring a daemon restart (see internal/install.ensureFirewall
+// and bootstrapCore for why both used to only ever run once). Both
+// underlying calls are cheap no-ops when nothing actually changed; errors
+// are logged and non-fatal, since the next tick retries.
+//
+// dryRun skips both calls entirely (only logging what would happen) —
+// bootstrapCore has no dry-run awareness of its own (it always writes
+// Quadlet files and reloads/restarts systemd units), so without this guard
+// `ownbased --dry-run` would still mutate UFW and restart Caddy on every
+// reconcile tick even though the rest of that tick only previews its plan.
+func syncCoreForConfig(ctx context.Context, agentCfg agentConfig, cfg *schema.OwnbaseConfig, dryRun bool) {
+	hasPublicDomain := cfg.HasPublicDomain()
+	if dryRun {
+		fmt.Fprintf(os.Stderr, "ownbased: (dry-run) would sync core + firewall exposure (hasPublicDomain=%v)\n", hasPublicDomain)
+		return
+	}
+	if err := bootstrapCore(ctx, agentCfg, cfg.Core, hasPublicDomain); err != nil {
+		fmt.Fprintf(os.Stderr, "ownbased: sync core (non-fatal): %v\n", err)
+	}
+	if s := install.SyncFirewallExposure(ctx, install.PassZeroConfig{
+		SSHPort:        agentCfg.sshPort,
+		ExposeWebPorts: hasPublicDomain,
+	}); s.Err != nil {
+		fmt.Fprintf(os.Stderr, "ownbased: sync firewall (non-fatal): %v\n", s.Err)
+	}
+}
+
 // reconcileLoop runs one full: update checkout → compile → drift check →
 // diff → apply cycle. It is identical whether triggered by the hook or the
 // timer, satisfying the Reconstruction Model's "same code path" requirement.
@@ -866,12 +917,13 @@ func loadBackupConfig(cfg agentConfig, repo string, auditLog authz.AuditLogger) 
 // It returns a reconcileState populated with whatever it successfully computed,
 // so the caller can gather status even when an error occurred mid-cycle.
 func reconcileLoop(
-	checkoutPath, repoPath string,
+	agentCfg agentConfig,
 	checkpoint authz.Checkpoint,
 	applier reconcile.Applier,
 	auditLog authz.AuditLogger,
 	dryRun bool,
 ) (reconcileState, error) {
+	checkoutPath, repoPath := agentCfg.checkoutPath, agentCfg.repoPath
 	var state reconcileState
 
 	// 1. Pull latest from the bare repo into the checkout.
@@ -891,6 +943,14 @@ func reconcileLoop(
 		fmt.Fprintf(os.Stderr, "ownbased: warning: %s\n", w)
 	}
 
+	// 2a. Re-sync the core package (Caddy) and firewall exposure against the
+	// config just parsed. Must happen before compiling/diffing user services
+	// below, matching the startup order ("core package is always healthy
+	// before user services are reconciled") — and on every tick, not just
+	// startup, so a newly-added domain opens 80/443 and gets Caddy's ports
+	// without waiting for a daemon restart.
+	syncCoreForConfig(context.Background(), agentCfg, cfg, dryRun)
+
 	// 3. Ensure a local bare repo exists for every service: cloning mirror:
 	// services from their external URL on first sight, and fetching any
 	// pinned ref: not yet available locally. Idempotent and non-fatal — a
@@ -909,14 +969,28 @@ func reconcileLoop(
 	// 4. Compile desired state.
 	desired := compiler.Compile(compiler.Input{Config: cfg})
 
-	// 4a. Write the informational snapshot files (Caddyfile, docker-compose.yml)
+	// 4a. Read the Caddyfile snapshot that is currently on disk — i.e. what
+	// was actually deployed as of the end of the previous cycle — BEFORE
+	// compiler.WriteOutput overwrites it with the newly-compiled desired
+	// content below. Reading it after WriteOutput (as this used to do) means
+	// the "did the Caddyfile change" comparison always sees identical
+	// content and a reload never fires, even on a Base's very first boot
+	// (where Caddy starts with its stock default config). caddyfileSnapshotAvailable
+	// distinguishes "no snapshot exists yet" (err != nil — force a reload,
+	// since we don't know what's actually deployed) from "a snapshot exists
+	// and is byte-identical" (skip the reload) — both cases previously
+	// looked identical (an empty string), silently hiding the bug.
+	runtimeDir := filepath.Join(checkoutPath, "runtime")
+	currentCaddyfileBeforeWrite, caddyfileReadErr := os.ReadFile(filepath.Join(runtimeDir, "Caddyfile"))
+	caddyfileSnapshotAvailable := caddyfileReadErr == nil
+
+	// 4b. Write the informational snapshot files (Caddyfile, docker-compose.yml)
 	// before drift detection so they are always present when the detector runs.
 	// These files are unconditionally regenerated from the compiler on every
 	// cycle, so writing them here does not hide meaningful drift — it only
 	// prevents a false-positive "missing_file" on first boot (when
 	// bootstrapCore already started containers but the agent has never written
 	// the snapshot yet).
-	runtimeDir := filepath.Join(checkoutPath, "runtime")
 	if _, err := compiler.WriteOutput(desired, checkoutPath); err != nil {
 		fmt.Fprintf(os.Stderr, "ownbased: write runtime snapshot (pre-drift): %v (non-fatal)\n", err)
 	}
@@ -930,11 +1004,6 @@ func reconcileLoop(
 		fmt.Fprint(os.Stderr, reconcile.RenderDriftReport(driftEvents))
 	}
 	state.DriftEvents = driftEvents
-
-	// 6. Read current runtime snapshots for precise diffing.
-	// These are non-fatal: if the files don't exist yet (first boot), the diff
-	// falls back to simpler logic (no restart/Caddyfile-only-reload actions).
-	currentCaddyfile, _ := os.ReadFile(filepath.Join(runtimeDir, "Caddyfile"))
 
 	// 6b. Read currently-installed Quadlet unit files from the actual quadlet
 	// directory (e.g. /etc/containers/systemd/). This is the authoritative
@@ -969,9 +1038,10 @@ func reconcileLoop(
 
 	// 8. Diff desired vs current.
 	plan, err := reconcile.Diff(desired, current, reconcile.DiffOptions{
-		CurrentCaddyfile: string(currentCaddyfile),
-		CurrentUnits:     currentUnits,
-		InstalledUnits:   installedUnits,
+		CurrentCaddyfile:           string(currentCaddyfileBeforeWrite),
+		CaddyfileSnapshotAvailable: caddyfileSnapshotAvailable,
+		CurrentUnits:               currentUnits,
+		InstalledUnits:             installedUnits,
 	})
 	if err != nil {
 		return state, fmt.Errorf("diff: %w", err)

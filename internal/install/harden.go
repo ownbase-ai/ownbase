@@ -31,12 +31,19 @@ import (
 
 // ensureFirewall configures UFW to:
 //   - Deny all inbound by default.
-//   - Allow SSH (configurable port), HTTP (80), HTTPS (443).
+//   - Allow SSH (configurable port), and HTTP (80) + HTTPS (443) only when
+//     cfg.ExposeWebPorts is true (i.e. at least one service has a domain
+//     configured — see schema.OwnbaseConfig.HasPublicDomain).
 //   - Enable UFW if not already enabled.
+//
+// A domain-less Base (the default state of a fresh Base) therefore exposes
+// nothing but SSH externally: there is no Caddy route to serve on 80/443
+// yet, and the dev bridge (`ownbasectl dev`) reaches services directly over
+// SSH, bypassing Caddy entirely.
 //
 // Outbound is unrestricted (containers need to pull images, DNS, etc.).
 func ensureFirewall(ctx context.Context, cfg PassZeroConfig) StepStatus {
-	s := checkFirewallState(ctx)
+	s := checkFirewallState(ctx, cfg)
 	if s.Done {
 		return s
 	}
@@ -56,34 +63,54 @@ func ensureFirewall(ctx context.Context, cfg PassZeroConfig) StepStatus {
 		{"ufw", "default", "deny", "incoming"},
 		{"ufw", "default", "allow", "outgoing"},
 		{"ufw", "allow", fmt.Sprintf("%d/tcp", cfg.SSHPort), "comment", "SSH"},
-		{"ufw", "allow", "80/tcp", "comment", "HTTP"},
-		{"ufw", "allow", "443/tcp", "comment", "HTTPS"},
-		// Allow forwarding of packets that netavark has DNAT'd to container IPs.
-		// UFW's default deny-routed policy otherwise drops them after DNAT.
-		// Scoped to specific ports rather than the whole subnet so a container
-		// that accidentally publishes on 0.0.0.0 doesn't become externally
-		// reachable without an explicit UFW INPUT rule.
-		{"ufw", "route", "allow", "proto", "tcp", "from", "any", "to", "10.88.0.0/12", "port", "80", "comment", "Caddy HTTP forwarding"},
-		{"ufw", "route", "allow", "proto", "tcp", "from", "any", "to", "10.88.0.0/12", "port", "443", "comment", "Caddy HTTPS forwarding"},
+	}
+	if cfg.ExposeWebPorts {
+		cmds = append(cmds,
+			[]string{"ufw", "allow", "80/tcp", "comment", "HTTP"},
+			[]string{"ufw", "allow", "443/tcp", "comment", "HTTPS"},
+			// Allow forwarding of packets that netavark has DNAT'd to container
+			// IPs. UFW's default deny-routed policy otherwise drops them after
+			// DNAT. Scoped to specific ports rather than the whole subnet so a
+			// container that accidentally publishes on 0.0.0.0 doesn't become
+			// externally reachable without an explicit UFW INPUT rule.
+			[]string{"ufw", "route", "allow", "proto", "tcp", "from", "any", "to", "10.88.0.0/12", "port", "80", "comment", "Caddy HTTP forwarding"},
+			[]string{"ufw", "route", "allow", "proto", "tcp", "from", "any", "to", "10.88.0.0/12", "port", "443", "comment", "Caddy HTTPS forwarding"},
+		)
+	}
+	cmds = append(cmds,
 		// Allow containers to reach the aardvark-dns server (bound to Podman
 		// bridge gateway IPs). Podman uses 10.88.0.0/12 and 10.89.0.0/16 for
 		// container subnets; their DNS queries target the gateway IPs on UDP/53.
 		// Without these rules UFW's INPUT DROP policy silently discards the
 		// queries, breaking inter-container hostname resolution.
-		{"ufw", "allow", "proto", "udp", "from", "10.88.0.0/12", "to", "10.88.0.0/12", "port", "53", "comment", "Podman DNS (10.88.0.0/12)"},
-		{"ufw", "allow", "proto", "udp", "from", "10.89.0.0/16", "to", "10.89.0.0/16", "port", "53", "comment", "Podman DNS (10.89.0.0/16)"},
-	}
+		[]string{"ufw", "allow", "proto", "udp", "from", "10.88.0.0/12", "to", "10.88.0.0/12", "port", "53", "comment", "Podman DNS (10.88.0.0/12)"},
+		[]string{"ufw", "allow", "proto", "udp", "from", "10.89.0.0/16", "to", "10.89.0.0/16", "port", "53", "comment", "Podman DNS (10.89.0.0/16)"},
+	)
 	cmds = append(cmds, []string{"ufw", "--force", "enable"})
 	for _, args := range cmds {
 		if _, err := run(ctx, args[0], args[1:]...); err != nil {
 			return StepStatus{Err: fmt.Errorf("ufw %s: %w", args[1], err)}
 		}
 	}
-	return StepStatus{Done: true, Detail: fmt.Sprintf("UFW enabled: SSH(%d), 80, 443", cfg.SSHPort)}
+	if cfg.ExposeWebPorts {
+		return StepStatus{Done: true, Detail: fmt.Sprintf("UFW enabled: SSH(%d), 80, 443", cfg.SSHPort)}
+	}
+	return StepStatus{Done: true, Detail: fmt.Sprintf("UFW enabled: SSH(%d) only (no domain configured yet)", cfg.SSHPort)}
 }
 
-// checkFirewallState returns whether UFW is active without making changes.
-func checkFirewallState(ctx context.Context) StepStatus {
+// checkFirewallState returns whether UFW is active AND its web-port rules
+// (80/443) already match cfg.ExposeWebPorts, without making changes.
+//
+// Checking only "is UFW active" (as this used to do) means ensureFirewall
+// short-circuits forever once UFW is first enabled — a Base hardened with
+// ExposeWebPorts: false (the common case: a fresh Base with no domain yet)
+// would never gain 80/443 later when a service gets a domain, since nothing
+// re-evaluates the firewall rules against the new desired state. Comparing
+// the actual rules against cfg.ExposeWebPorts makes ensureFirewall correctly
+// idempotent in both directions, so callers can re-invoke it on every
+// reconcile tick (see install.SyncFirewallExposure) and it will only
+// reconfigure UFW when the exposure state has actually changed.
+func checkFirewallState(ctx context.Context, cfg PassZeroConfig) StepStatus {
 	if !cmdExists("ufw") {
 		return StepStatus{Done: false, Detail: "ufw not installed"}
 	}
@@ -91,10 +118,69 @@ func checkFirewallState(ctx context.Context) StepStatus {
 	if err != nil {
 		return StepStatus{Done: false, Detail: "ufw status failed: " + err.Error()}
 	}
-	if strings.Contains(out, "Status: active") {
-		return StepStatus{Done: true, AlreadyOK: true, Detail: "UFW active"}
+	if !strings.Contains(out, "Status: active") {
+		return StepStatus{Done: false, Detail: "UFW installed but not active"}
 	}
-	return StepStatus{Done: false, Detail: "UFW installed but not active"}
+	if !webPortsMatchDesired(out, cfg.ExposeWebPorts) {
+		return StepStatus{Done: false, Detail: "UFW active but web-port rules don't match the desired domain configuration"}
+	}
+	return StepStatus{Done: true, AlreadyOK: true, Detail: "UFW active"}
+}
+
+// ufwRuleAllowed reports whether `ufw status` output contains an ALLOW rule
+// for the exact port/proto token (e.g. "80/tcp") as the first field of a
+// line. Matching the first field only (rather than strings.Contains on the
+// whole output) avoids a false positive against an unrelated rule whose
+// port happens to contain the same digits as a substring (e.g. "8080/tcp"
+// textually contains "80/tcp").
+//
+// It also requires the line's action to actually be ALLOW: a DENY, REJECT,
+// or LIMIT rule for that same port/proto (e.g. left over from a previous
+// manual `ufw` invocation) must not be mistaken for the port being open.
+// The action column isn't always at a fixed index — an IPv6 port token like
+// "80/tcp (v6)" shifts it right by one field — so this scans every
+// remaining field on the line rather than checking a hardcoded position.
+func ufwRuleAllowed(status, portProto string) bool {
+	for _, line := range strings.Split(status, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] != portProto {
+			continue
+		}
+		for _, f := range fields[1:] {
+			if f == "ALLOW" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// webPortsMatchDesired reports whether `ufw status` output's 80/tcp and
+// 443/tcp rules both match exposeWebPorts — i.e. both allowed when true,
+// both NOT allowed when false.
+//
+// Each port is compared independently rather than folding them into a
+// single "are both open" bool with &&: that works for the true case (both
+// must be open to match) but silently breaks the false case, where a
+// partially-open state (e.g. 80 still allowed, 443 not) would AND down to
+// false — matching a desired "false" and leaving 80 exposed to the world
+// on a domain-less Base.
+func webPortsMatchDesired(status string, exposeWebPorts bool) bool {
+	port80Allowed := ufwRuleAllowed(status, "80/tcp")
+	port443Allowed := ufwRuleAllowed(status, "443/tcp")
+	return exposeWebPorts == port80Allowed && exposeWebPorts == port443Allowed
+}
+
+// SyncFirewallExposure re-evaluates UFW's web-port rules (80/443) against
+// cfg.ExposeWebPorts and reconfigures the firewall only if they don't
+// already match — a no-op fast path (a single `ufw status` call) otherwise.
+//
+// Unlike PassZero, which runs the full hardening pass once at daemon
+// startup, this is meant to be called on every reconcile tick so that
+// adding or removing a service's domain takes effect immediately, without
+// requiring a daemon restart.
+func SyncFirewallExposure(ctx context.Context, cfg PassZeroConfig) StepStatus {
+	return ensureFirewall(ctx, cfg.withDefaults())
 }
 
 // ---------------------------------------------------------------------------

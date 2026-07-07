@@ -237,6 +237,64 @@ func TestCompile_CaddyRouteOnlyForDomainAndPort(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Multi-domain support
+// ---------------------------------------------------------------------------
+
+// TestCompile_MultiDomain_OneRoutePerDomain verifies that a service declaring
+// both domain: (deprecated single-value form) and domains: gets one Caddy
+// route per effective (deduplicated) domain, all pointing at the same
+// container:port upstream.
+func TestCompile_MultiDomain_OneRoutePerDomain(t *testing.T) {
+	in := compiler.Input{
+		Config: &schema.OwnbaseConfig{
+			SchemaVersion: "v1",
+			Services: map[string]schema.ServiceDecl{
+				"app": {
+					Source:  "apps/app",
+					Port:    3000,
+					Domain:  "app.example.com",
+					Domains: []string{"app.example.org", "app.example.com"}, // duplicate must be deduped
+				},
+			},
+		},
+	}
+	model := compiler.CompileToModel(in)
+
+	wantHosts := map[string]bool{"app.example.com": false, "app.example.org": false}
+	if len(model.Routes) != len(wantHosts) {
+		t.Fatalf("expected %d routes, got %d: %+v", len(wantHosts), len(model.Routes), model.Routes)
+	}
+	for _, r := range model.Routes {
+		if _, ok := wantHosts[r.Host]; !ok {
+			t.Errorf("unexpected route host %q", r.Host)
+			continue
+		}
+		wantHosts[r.Host] = true
+		if r.Upstream != "ownbase-app:3000" {
+			t.Errorf("route %q: upstream = %q, want ownbase-app:3000", r.Host, r.Upstream)
+		}
+	}
+	for host, seen := range wantHosts {
+		if !seen {
+			t.Errorf("expected a route for domain %q", host)
+		}
+	}
+}
+
+// TestCompile_RouteUpstreamUsesContainerName verifies that Caddy routes
+// address the backend by Podman container name rather than "localhost" —
+// Caddy runs isolated on the ownbase-internal network and cannot reach
+// host-loopback ports.
+func TestCompile_RouteUpstreamUsesContainerName(t *testing.T) {
+	model := compiler.CompileToModel(testInputMinimal(t))
+	for _, r := range model.Routes {
+		if strings.HasPrefix(r.Upstream, "localhost:") {
+			t.Errorf("route %q: upstream %q must not use localhost — Caddy cannot reach host loopback", r.Host, r.Upstream)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Compose export
 // ---------------------------------------------------------------------------
 
