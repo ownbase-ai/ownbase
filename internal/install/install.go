@@ -193,7 +193,7 @@ func CheckHardeningState(ctx context.Context, cfg PassZeroConfig) HardeningRepor
 	r.OS = checkOS(ctx, c)
 	r.Podman = checkPodmanState(ctx)
 	r.Linger = checkLingerState(ctx, c.AgentUser)
-	r.Firewall = checkFirewallState(ctx)
+	r.Firewall = checkFirewallState(ctx, c)
 	r.AutoUpdates = checkAutoUpdatesState(ctx)
 	r.Fail2ban = checkFail2banState(ctx)
 	r.NoExposedDB = verifyNoExposedDB(ctx, c)

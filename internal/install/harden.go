@@ -43,7 +43,7 @@ import (
 //
 // Outbound is unrestricted (containers need to pull images, DNS, etc.).
 func ensureFirewall(ctx context.Context, cfg PassZeroConfig) StepStatus {
-	s := checkFirewallState(ctx)
+	s := checkFirewallState(ctx, cfg)
 	if s.Done {
 		return s
 	}
@@ -98,8 +98,19 @@ func ensureFirewall(ctx context.Context, cfg PassZeroConfig) StepStatus {
 	return StepStatus{Done: true, Detail: fmt.Sprintf("UFW enabled: SSH(%d) only (no domain configured yet)", cfg.SSHPort)}
 }
 
-// checkFirewallState returns whether UFW is active without making changes.
-func checkFirewallState(ctx context.Context) StepStatus {
+// checkFirewallState returns whether UFW is active AND its web-port rules
+// (80/443) already match cfg.ExposeWebPorts, without making changes.
+//
+// Checking only "is UFW active" (as this used to do) means ensureFirewall
+// short-circuits forever once UFW is first enabled — a Base hardened with
+// ExposeWebPorts: false (the common case: a fresh Base with no domain yet)
+// would never gain 80/443 later when a service gets a domain, since nothing
+// re-evaluates the firewall rules against the new desired state. Comparing
+// the actual rules against cfg.ExposeWebPorts makes ensureFirewall correctly
+// idempotent in both directions, so callers can re-invoke it on every
+// reconcile tick (see install.SyncFirewallExposure) and it will only
+// reconfigure UFW when the exposure state has actually changed.
+func checkFirewallState(ctx context.Context, cfg PassZeroConfig) StepStatus {
 	if !cmdExists("ufw") {
 		return StepStatus{Done: false, Detail: "ufw not installed"}
 	}
@@ -107,10 +118,42 @@ func checkFirewallState(ctx context.Context) StepStatus {
 	if err != nil {
 		return StepStatus{Done: false, Detail: "ufw status failed: " + err.Error()}
 	}
-	if strings.Contains(out, "Status: active") {
-		return StepStatus{Done: true, AlreadyOK: true, Detail: "UFW active"}
+	if !strings.Contains(out, "Status: active") {
+		return StepStatus{Done: false, Detail: "UFW installed but not active"}
 	}
-	return StepStatus{Done: false, Detail: "UFW installed but not active"}
+	webPortsAllowed := ufwRuleAllowed(out, "80/tcp")
+	if cfg.ExposeWebPorts != webPortsAllowed {
+		return StepStatus{Done: false, Detail: "UFW active but web-port rules don't match the desired domain configuration"}
+	}
+	return StepStatus{Done: true, AlreadyOK: true, Detail: "UFW active"}
+}
+
+// ufwRuleAllowed reports whether `ufw status` output contains an ALLOW rule
+// for the exact port/proto token (e.g. "80/tcp") as the first field of a
+// line. Matching the first field only (rather than strings.Contains on the
+// whole output) avoids a false positive against an unrelated rule whose
+// port happens to contain the same digits as a substring (e.g. "8080/tcp"
+// textually contains "80/tcp").
+func ufwRuleAllowed(status, portProto string) bool {
+	for _, line := range strings.Split(status, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 0 && fields[0] == portProto {
+			return true
+		}
+	}
+	return false
+}
+
+// SyncFirewallExposure re-evaluates UFW's web-port rules (80/443) against
+// cfg.ExposeWebPorts and reconfigures the firewall only if they don't
+// already match — a no-op fast path (a single `ufw status` call) otherwise.
+//
+// Unlike PassZero, which runs the full hardening pass once at daemon
+// startup, this is meant to be called on every reconcile tick so that
+// adding or removing a service's domain takes effect immediately, without
+// requiring a daemon restart.
+func SyncFirewallExposure(ctx context.Context, cfg PassZeroConfig) StepStatus {
+	return ensureFirewall(ctx, cfg.withDefaults())
 }
 
 // ---------------------------------------------------------------------------
