@@ -11,6 +11,7 @@ ContainerName=ownbase-auth
 Network=ownbase-auth-net.network
 Network=ownbase-internal.network
 Volume=ownbase-auth-data:/data
+PublishPort=127.0.0.1:41000:8080
 # BuildSource=services/auth
 # BuildRef=v2.1.0
 NoNewPrivileges=true

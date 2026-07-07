@@ -331,10 +331,14 @@ func TestCompile_DevBridgePort_DistinctFromContainerPort(t *testing.T) {
 	}
 }
 
-// TestCompile_DevBridgePort_NoDomainNoPublish verifies that a service with a
-// port: but no domain gets no PublishPort= line at all — nothing would ever
-// reach it there, since `ownbasectl dev` already skips domain-less services.
-func TestCompile_DevBridgePort_NoDomainNoPublish(t *testing.T) {
+// TestCompile_DevBridgePort_NoDomainStillPublishes verifies that a service
+// with a port: but no domain STILL gets a PublishPort= line, at a
+// decoupled host port. `ownbasectl dev` itself never bridges a domain-less
+// service (see internal/devbridge.Discover), but the daemon's own HTTP
+// health_probe (internal/podman's waitForContainer) needs this loopback
+// publish to dial for ANY port'd service, domain or not — omitting it here
+// would silently skip the HTTP health-check phase for internal services.
+func TestCompile_DevBridgePort_NoDomainStillPublishes(t *testing.T) {
 	in := compiler.Input{
 		Config: &schema.OwnbaseConfig{
 			SchemaVersion: "v1",
@@ -351,8 +355,33 @@ func TestCompile_DevBridgePort_NoDomainNoPublish(t *testing.T) {
 	if !ok {
 		t.Fatal("ownbase-worker.container not found in output")
 	}
+	want := fmt.Sprintf("PublishPort=127.0.0.1:%d:8080", schema.DevBridgeBasePort)
+	if !strings.Contains(unit, want) {
+		t.Errorf("domain-less port'd service should still get %q\nunit:\n%s", want, unit)
+	}
+}
+
+// TestCompile_DevBridgePort_NoPortNoDomainNoPublish verifies that a service
+// with neither port: nor domain: gets no PublishPort= line — there is
+// nothing to publish.
+func TestCompile_DevBridgePort_NoPortNoDomainNoPublish(t *testing.T) {
+	in := compiler.Input{
+		Config: &schema.OwnbaseConfig{
+			SchemaVersion: "v1",
+			Services: map[string]schema.ServiceDecl{
+				"worker": {
+					Source: "apps/worker",
+				},
+			},
+		},
+	}
+	out := compiler.Compile(in)
+	unit, ok := out.QuadletUnits["ownbase-worker.container"]
+	if !ok {
+		t.Fatal("ownbase-worker.container not found in output")
+	}
 	if strings.Contains(unit, "PublishPort=") {
-		t.Errorf("domain-less service must not get a PublishPort= line\nunit:\n%s", unit)
+		t.Errorf("port-less service must not get a PublishPort= line\nunit:\n%s", unit)
 	}
 }
 

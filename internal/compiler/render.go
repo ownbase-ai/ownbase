@@ -67,12 +67,15 @@ func renderContainer(c ContainerModel) string {
 		fmt.Fprintf(&b, "Volume=%s:%s\n", vm.VolumeName, vm.MountPath)
 	}
 
-	// Dev-bridge loopback publish — used only by `ownbasectl dev`'s SSH
-	// tunnel; Caddy itself addresses containers by name over the internal
-	// Podman network and never touches this. Host and container ports are
-	// deliberately different numbers (see ContainerModel.DevBridgePort) so
-	// this can never collide with Caddy's own machine-wide bind or with
-	// another service's loopback publish.
+	// Direct-to-container loopback publish. Two independent things dial
+	// this: `ownbasectl dev`'s SSH tunnel (domain'd services only) and the
+	// daemon's own HTTP health_probe during reconcile (any port'd service —
+	// see internal/podman's waitForContainer), so it's emitted for every
+	// port'd service regardless of domain. Caddy itself never touches this;
+	// it addresses containers by name over the internal Podman network.
+	// Host and container ports are deliberately different numbers (see
+	// ContainerModel.DevBridgePort) so this can never collide with Caddy's
+	// own machine-wide bind or with another service's loopback publish.
 	if c.DevBridgePort > 0 {
 		fmt.Fprintf(&b, "PublishPort=127.0.0.1:%d:%d\n", c.DevBridgePort, c.PublicPort)
 	}

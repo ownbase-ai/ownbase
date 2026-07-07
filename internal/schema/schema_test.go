@@ -454,7 +454,7 @@ func TestOwnbaseConfig_DevBridgePorts_Empty(t *testing.T) {
 	}
 }
 
-func TestOwnbaseConfig_DevBridgePorts_OnlyEligibleServices(t *testing.T) {
+func TestOwnbaseConfig_DevBridgePorts_AnyPortedServiceEligibleDomainOrNot(t *testing.T) {
 	cfg := schema.OwnbaseConfig{
 		Services: map[string]schema.ServiceDecl{
 			"domain-and-port": {Source: "x", Domain: "a.example.com", Port: 8080},
@@ -463,14 +463,22 @@ func TestOwnbaseConfig_DevBridgePorts_OnlyEligibleServices(t *testing.T) {
 		},
 	}
 	got := cfg.DevBridgePorts()
-	if len(got) != 1 {
-		t.Fatalf("expected exactly 1 eligible service, got %v", got)
+	// Eligibility is Port != 0 alone — domain-less services need an entry
+	// too, since the daemon's own HTTP health_probe dials this loopback
+	// publish for ANY port'd service, not just ones ownbasectl dev bridges
+	// (that narrower, domain'd-only filter lives in
+	// internal/devbridge.Discover instead).
+	if len(got) != 2 {
+		t.Fatalf("expected exactly 2 eligible (port'd) services, got %v", got)
 	}
 	if _, ok := got["domain-and-port"]; !ok {
 		t.Errorf("expected \"domain-and-port\" to be assigned a port, got %v", got)
 	}
-	if got["domain-and-port"] != schema.DevBridgeBasePort {
-		t.Errorf("single eligible service should get DevBridgeBasePort, got %d", got["domain-and-port"])
+	if _, ok := got["port-only"]; !ok {
+		t.Errorf("expected \"port-only\" (domain-less) to also be assigned a port, got %v", got)
+	}
+	if _, ok := got["domain-only"]; ok {
+		t.Errorf("expected \"domain-only\" (no port) to be excluded, got %v", got)
 	}
 }
 
