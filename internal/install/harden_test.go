@@ -142,6 +142,39 @@ To                         Action      From
 	}
 }
 
+// TestUfwRuleAllowed_IgnoresNonAllowActions locks in the fix for "UFW
+// matcher ignores ALLOW action": a DENY/REJECT rule for the same port/proto
+// must not be mistaken for the port being open, and the IPv6 port token
+// ("80/tcp (v6)") — which shifts the action column one field to the right —
+// must still be parsed correctly.
+func TestUfwRuleAllowed_IgnoresNonAllowActions(t *testing.T) {
+	const status = `Status: active
+
+To                         Action      From
+--                         ------      ----
+22/tcp                     ALLOW       Anywhere
+80/tcp                     DENY        Anywhere
+443/tcp                    REJECT      Anywhere
+8080/tcp                   LIMIT       Anywhere
+22/tcp (v6)                ALLOW       Anywhere (v6)
+443/tcp (v6)               ALLOW       Anywhere (v6)`
+
+	cases := []struct {
+		portProto string
+		want      bool
+	}{
+		{"22/tcp", true},    // ALLOW
+		{"80/tcp", false},   // DENY, not ALLOW
+		{"443/tcp", true},   // IPv4 REJECT, but IPv6 line ALLOWs it
+		{"8080/tcp", false}, // LIMIT, not ALLOW
+	}
+	for _, tc := range cases {
+		if got := ufwRuleAllowed(status, tc.portProto); got != tc.want {
+			t.Errorf("ufwRuleAllowed(status, %q) = %v, want %v", tc.portProto, got, tc.want)
+		}
+	}
+}
+
 // TestCheckFirewallState_RequiresBothWebPorts locks in the fix for "UFW
 // check ignores HTTPS rule": ExposeWebPorts must require both 80/tcp AND
 // 443/tcp to be allowed, not just 80/tcp, otherwise a partially-applied

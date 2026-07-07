@@ -134,11 +134,23 @@ func checkFirewallState(ctx context.Context, cfg PassZeroConfig) StepStatus {
 // whole output) avoids a false positive against an unrelated rule whose
 // port happens to contain the same digits as a substring (e.g. "8080/tcp"
 // textually contains "80/tcp").
+//
+// It also requires the line's action to actually be ALLOW: a DENY, REJECT,
+// or LIMIT rule for that same port/proto (e.g. left over from a previous
+// manual `ufw` invocation) must not be mistaken for the port being open.
+// The action column isn't always at a fixed index — an IPv6 port token like
+// "80/tcp (v6)" shifts it right by one field — so this scans every
+// remaining field on the line rather than checking a hardcoded position.
 func ufwRuleAllowed(status, portProto string) bool {
 	for _, line := range strings.Split(status, "\n") {
 		fields := strings.Fields(line)
-		if len(fields) > 0 && fields[0] == portProto {
-			return true
+		if len(fields) < 2 || fields[0] != portProto {
+			continue
+		}
+		for _, f := range fields[1:] {
+			if f == "ALLOW" {
+				return true
+			}
 		}
 	}
 	return false
