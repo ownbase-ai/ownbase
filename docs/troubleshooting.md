@@ -110,7 +110,7 @@ ARCH=$(dpkg --print-architecture)   # amd64 or arm64
 curl -fsSL -o /tmp/ownbased      https://releases.ownbase.ai/daemon/latest/ownbased-linux-$ARCH
 curl -fsSL -o /tmp/ownbased.minisig https://releases.ownbase.ai/daemon/latest/ownbased-linux-$ARCH.minisig
 minisign -Vm /tmp/ownbased -x /tmp/ownbased.minisig \
-  -P 'RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3'
+  -P 'RWTaLp3BlckCjjicEDrN7oVrRhGDWhSjgOpR2Ue/yHzP0cFsmmxALr/V'
 install -o ownbase -g ownbase -m 0755 /tmp/ownbased /opt/ownbase/bin/ownbased
 systemctl restart ownbased
 ```

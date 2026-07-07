@@ -108,6 +108,11 @@ func GatherImageVulns(ctx context.Context, targets []ContainerTarget) []ImageVul
 			"--format", "json",
 			"--scanners", "vuln",
 			"--image-src", "podman",
+			// The daemon runs as root; the rootful Podman socket lives at
+			// /run/podman/podman.sock. Trivy's default lookup uses
+			// $XDG_RUNTIME_DIR which is unset in the systemd unit, so we
+			// pin the path explicitly instead of relying on env inference.
+			"--podman-host", "/run/podman/podman.sock",
 			t.Image,
 		)
 		if err != nil {
