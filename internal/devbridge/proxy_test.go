@@ -91,6 +91,37 @@ func TestNewProxyHandler_UnknownHostReturns404(t *testing.T) {
 	}
 }
 
+func TestNewProxyHandler_ForwardsRealDomainAsHostHeader(t *testing.T) {
+	var gotHost string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost = r.Host
+	}))
+	t.Cleanup(srv.Close)
+	addr := strings.TrimPrefix(srv.URL, "http://")
+
+	handler, err := devbridge.NewProxyHandler(map[string]string{
+		"app.example.com.localhost": addr,
+	})
+	if err != nil {
+		t.Fatalf("NewProxyHandler: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "app.example.com.localhost:8443"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	// The backend should see the real production domain (as Caddy would
+	// send it), not the local ".localhost:8443" hostname the browser used
+	// to reach the dev bridge, and not the tunnel's loopback address.
+	if want := "app.example.com"; gotHost != want {
+		t.Errorf("backend received Host = %q, want %q", gotHost, want)
+	}
+}
+
 func TestNewProxyHandler_MultipleHostnamesSameBackend(t *testing.T) {
 	addr := backend(t, "shared")
 	handler, err := devbridge.NewProxyHandler(map[string]string{

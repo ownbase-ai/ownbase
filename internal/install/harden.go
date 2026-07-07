@@ -121,7 +121,7 @@ func checkFirewallState(ctx context.Context, cfg PassZeroConfig) StepStatus {
 	if !strings.Contains(out, "Status: active") {
 		return StepStatus{Done: false, Detail: "UFW installed but not active"}
 	}
-	webPortsAllowed := ufwRuleAllowed(out, "80/tcp")
+	webPortsAllowed := ufwRuleAllowed(out, "80/tcp") && ufwRuleAllowed(out, "443/tcp")
 	if cfg.ExposeWebPorts != webPortsAllowed {
 		return StepStatus{Done: false, Detail: "UFW active but web-port rules don't match the desired domain configuration"}
 	}

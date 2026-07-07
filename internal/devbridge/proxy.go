@@ -31,7 +31,23 @@ func NewProxyHandler(routes map[string]string) (http.Handler, error) {
 		if err != nil {
 			return nil, fmt.Errorf("parse tunnel address %q for host %q: %w", tunnelAddr, host, err)
 		}
-		proxies[host] = httputil.NewSingleHostReverseProxy(target)
+		proxy := httputil.NewSingleHostReverseProxy(target)
+
+		// Forward the real production domain as the Host header, not the
+		// local "<domain>.localhost:<port>" one the browser actually sent.
+		// host is always "<domain>.localhost" (see Target.LocalHostnames),
+		// so stripping the suffix recovers the exact domain Caddy would
+		// send in production. Without this, a service that validates the
+		// Host header or builds absolute URLs from it (common for strict
+		// virtual-hosting or CSRF origin checks) sees a hostname it never
+		// sees in production and can mis-route or reject the request.
+		realDomain := strings.TrimSuffix(host, ".localhost")
+		baseDirector := proxy.Director
+		proxy.Director = func(r *http.Request) {
+			baseDirector(r)
+			r.Host = realDomain
+		}
+		proxies[host] = proxy
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

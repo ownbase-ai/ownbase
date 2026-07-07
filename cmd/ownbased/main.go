@@ -631,7 +631,7 @@ func run(cfg agentConfig) error {
 				if cfgOnDisk, parseErr := schema.ParseConfigFile(
 					filepath.Join(cfg.checkoutPath, "ownbase.yaml"),
 				); parseErr == nil {
-					syncCoreForConfig(context.Background(), cfg, cfgOnDisk)
+					syncCoreForConfig(context.Background(), cfg, cfgOnDisk, cfg.dryRun)
 				}
 			}
 		}
@@ -881,8 +881,18 @@ func loadBackupConfig(cfg agentConfig, repo string, auditLog authz.AuditLogger) 
 // and bootstrapCore for why both used to only ever run once). Both
 // underlying calls are cheap no-ops when nothing actually changed; errors
 // are logged and non-fatal, since the next tick retries.
-func syncCoreForConfig(ctx context.Context, agentCfg agentConfig, cfg *schema.OwnbaseConfig) {
+//
+// dryRun skips both calls entirely (only logging what would happen) —
+// bootstrapCore has no dry-run awareness of its own (it always writes
+// Quadlet files and reloads/restarts systemd units), so without this guard
+// `ownbased --dry-run` would still mutate UFW and restart Caddy on every
+// reconcile tick even though the rest of that tick only previews its plan.
+func syncCoreForConfig(ctx context.Context, agentCfg agentConfig, cfg *schema.OwnbaseConfig, dryRun bool) {
 	hasPublicDomain := cfg.HasPublicDomain()
+	if dryRun {
+		fmt.Fprintf(os.Stderr, "ownbased: (dry-run) would sync core + firewall exposure (hasPublicDomain=%v)\n", hasPublicDomain)
+		return
+	}
 	if err := bootstrapCore(ctx, agentCfg, cfg.Core, hasPublicDomain); err != nil {
 		fmt.Fprintf(os.Stderr, "ownbased: sync core (non-fatal): %v\n", err)
 	}
@@ -933,7 +943,7 @@ func reconcileLoop(
 	// before user services are reconciled") — and on every tick, not just
 	// startup, so a newly-added domain opens 80/443 and gets Caddy's ports
 	// without waiting for a daemon restart.
-	syncCoreForConfig(context.Background(), agentCfg, cfg)
+	syncCoreForConfig(context.Background(), agentCfg, cfg, dryRun)
 
 	// 3. Ensure a local bare repo exists for every service: cloning mirror:
 	// services from their external URL on first sight, and fetching any

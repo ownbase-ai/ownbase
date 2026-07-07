@@ -106,3 +106,61 @@ func TestIsPortExposedOnLine(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// ufwRuleAllowed tests
+// ---------------------------------------------------------------------------
+
+// TestUfwRuleAllowed_RequiresExactPortProtoMatch covers the realistic `ufw
+// status` shapes checkFirewallState parses, including the false-positive
+// trap of a wider port (8080/tcp) textually containing a narrower one
+// (80/tcp) as a substring.
+func TestUfwRuleAllowed_RequiresExactPortProtoMatch(t *testing.T) {
+	const status = `Status: active
+
+To                         Action      From
+--                         ------      ----
+22/tcp                     ALLOW       Anywhere
+80/tcp                     ALLOW       Anywhere
+8080/tcp                   ALLOW       Anywhere
+22/tcp (v6)                ALLOW       Anywhere (v6)
+80/tcp (v6)                ALLOW       Anywhere (v6)`
+
+	cases := []struct {
+		portProto string
+		want      bool
+	}{
+		{"22/tcp", true},
+		{"80/tcp", true},
+		{"8080/tcp", true},
+		{"443/tcp", false}, // not present — this is the bug the fix covers.
+	}
+	for _, tc := range cases {
+		if got := ufwRuleAllowed(status, tc.portProto); got != tc.want {
+			t.Errorf("ufwRuleAllowed(status, %q) = %v, want %v", tc.portProto, got, tc.want)
+		}
+	}
+}
+
+// TestCheckFirewallState_RequiresBothWebPorts locks in the fix for "UFW
+// check ignores HTTPS rule": ExposeWebPorts must require both 80/tcp AND
+// 443/tcp to be allowed, not just 80/tcp, otherwise a partially-applied
+// firewall (e.g. 80 open, 443 still blocked) is reported as already
+// satisfying the desired state and sync silently skips reconfiguration.
+func TestCheckFirewallState_RequiresBothWebPorts(t *testing.T) {
+	const only80 = `Status: active
+
+To                         Action      From
+--                         ------      ----
+22/tcp                     ALLOW       Anywhere
+80/tcp                     ALLOW       Anywhere`
+
+	const both = only80 + "\n443/tcp                     ALLOW       Anywhere"
+
+	if got := ufwRuleAllowed(only80, "80/tcp") && ufwRuleAllowed(only80, "443/tcp"); got {
+		t.Error("only80: want web ports considered NOT fully allowed (443 missing)")
+	}
+	if got := ufwRuleAllowed(both, "80/tcp") && ufwRuleAllowed(both, "443/tcp"); !got {
+		t.Error("both: want web ports considered fully allowed")
+	}
+}
