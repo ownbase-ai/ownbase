@@ -190,3 +190,17 @@ func TestParsePublishPort_Absent(t *testing.T) {
 		t.Errorf("parsePublishPort(absent) = %d, want 0", got)
 	}
 }
+
+// TestParsePublishPort_DifferingHostAndContainerPorts is a regression test
+// for the normal case since the dev-bridge port decoupling: the host
+// (loopback) port and the container port are no longer required to match.
+// parsePublishPort must always return the host port — the second-to-last
+// colon-separated segment — regardless of whether it equals the container
+// port.
+func TestParsePublishPort_DifferingHostAndContainerPorts(t *testing.T) {
+	unit := "[Container]\nPublishPort=127.0.0.1:41000:8080\nImage=docker.io/foo:latest\n"
+	got := parsePublishPort(unit)
+	if got != 41000 {
+		t.Errorf("parsePublishPort(differing host/container) = %d, want 41000", got)
+	}
+}

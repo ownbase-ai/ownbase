@@ -54,6 +54,19 @@ type ContainerModel struct {
 	// Zero means no public port (internal-only container).
 	PublicPort int
 
+	// DevBridgePort is the loopback host port for this container's
+	// direct-to-container publish, assigned deterministically by
+	// schema.OwnbaseConfig.DevBridgePorts() (see build()). Deliberately
+	// decoupled from PublicPort — the container still listens on
+	// PublicPort; only the host-side number differs — so that a service can
+	// declare port: 80/443, or share a port number with another service,
+	// without colliding with Caddy's own machine-wide bind or with another
+	// service's loopback publish. Despite the name, two independent
+	// consumers dial this: `ownbasectl dev`'s SSH tunnel (domain'd services
+	// only) and the daemon's own HTTP health_probe (any port'd service,
+	// domain or not). Zero means no port: at all (nothing to publish).
+	DevBridgePort int
+
 	// HostPublishPorts lists ports published on ALL host interfaces
 	// (PublishPort=<p>:<p>, i.e. 0.0.0.0). This is the public web entrypoint
 	// and is distinct from PublicPort, which binds loopback-only for services

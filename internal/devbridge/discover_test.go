@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/ownbase/ownbase/internal/devbridge"
+	"github.com/ownbase/ownbase/internal/schema"
 )
 
 const sampleYAML = `schema_version: v1
@@ -68,6 +69,25 @@ func TestDiscover_SkipsServicesWithNoDomainOrNoPort(t *testing.T) {
 	}
 	if !reflect.DeepEqual(multi.Domains, []string{"multi.example.com", "multi.example.org"}) {
 		t.Errorf("multi.Domains = %v, want [multi.example.com multi.example.org]", multi.Domains)
+	}
+
+	// HostPort is the deterministic loopback port — assigned by sorted
+	// service name (across ALL port'd services, including domain-less ones
+	// like "auth", since the health_probe consumer needs an entry for
+	// those too — see schema.OwnbaseConfig.DevBridgePorts) starting at
+	// schema.DevBridgeBasePort — and must differ from Port (the
+	// container's own listening port). Sorted order here is
+	// auth < hello < multi, so "auth" (filtered out of targets above, but
+	// still present in the underlying allocation) claims the base port
+	// first, pushing hello/multi up by one each.
+	if hello.HostPort != schema.DevBridgeBasePort+1 {
+		t.Errorf("hello.HostPort = %d, want %d", hello.HostPort, schema.DevBridgeBasePort+1)
+	}
+	if multi.HostPort != schema.DevBridgeBasePort+2 {
+		t.Errorf("multi.HostPort = %d, want %d", multi.HostPort, schema.DevBridgeBasePort+2)
+	}
+	if hello.HostPort == hello.Port {
+		t.Errorf("hello.HostPort (%d) must differ from hello.Port (%d)", hello.HostPort, hello.Port)
 	}
 }
 

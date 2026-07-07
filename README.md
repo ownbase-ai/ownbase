@@ -54,10 +54,13 @@ Declare a service with one command — the daemon creates it and builds it from 
 ```bash
 ownbasectl service add mybase hello \
   --mirror https://github.com/traefik/whoami \
-  --ref master --port 80 --domain hello.example.com
+  --ref master --port 80 --domain hello.example.com \
+  --add-capabilities NET_BIND_SERVICE
 ```
 
 `--mirror` points at an external Git repo the daemon clones and maintains a local mirror of; use `--source <path>` instead to push your own code directly into a bare repo the daemon creates for you. Either way there's no image registry involved — every user service is built locally on the Base from source at the pinned `ref:`. You can also skip the CLI and edit `ownbase.yaml` by hand (`ownbasectl config get`/`set`, or `git push` straight to the Base) — see [docs/ownbase-yaml.md](docs/ownbase-yaml.md) for the full schema.
+
+`--add-capabilities` is only needed here because every container starts with every Linux capability dropped, and `whoami` listens directly on port 80 — a privileged port. Most images listen on an unprivileged port (3000, 8080, ...) by default and never need this flag at all.
 
 ```bash
 ownbasectl status mybase   # confirm "hello" is running and healthy

@@ -7,6 +7,7 @@ package schema
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -289,6 +290,59 @@ func (c *OwnbaseConfig) HasPublicDomain() bool {
 		}
 	}
 	return false
+}
+
+// DevBridgeBasePort is the first loopback port the compiler allocates to
+// any port'd service's direct-to-container publish. Each eligible service
+// gets one port, assigned by sorted name starting here — deliberately
+// decoupled from any service's own container Port so that a service can
+// declare port: 80/443 (or share a port number with another service)
+// without colliding with Caddy's machine-wide bind or with each other on
+// the loopback publish. Despite the name, this isn't exclusively for
+// `ownbasectl dev`: the daemon's own HTTP health_probe (internal/podman's
+// waitForContainer) also dials a service's container directly over this
+// same loopback publish, including for domain-less internal services dev
+// never bridges — see DevBridgePorts.
+const DevBridgeBasePort = 41000
+
+// DevBridgePorts returns the deterministic loopback port assigned to each
+// port'd service, keyed by service name. Eligibility here is intentionally
+// broader than HasPublicDomain/what `ownbasectl dev` bridges: ANY service
+// with a Port set gets an entry, domain or not, because two independent
+// things depend on this loopback publish existing —
+//  1. `ownbasectl dev`'s SSH tunnel (domain'd services only — see
+//     internal/devbridge.Discover, which filters this map down).
+//  2. The daemon's own startup HTTP health_probe (internal/podman's
+//     waitForContainer), which needs a loopback port to dial for ANY
+//     port'd service, including purely-internal ones with no domain.
+//
+// Narrowing this to domain'd-only (as a prior version of this function did)
+// silently broke health_probe for domain-less services, since the compiler
+// then emitted no PublishPort line for them to dial at all.
+//
+// Ports are recomputed fresh from the current config on every call — never
+// persisted — which is safe because the compiler (building the Quadlet
+// unit) and `ownbasectl dev` (parsing ownbase.yaml independently, with no
+// daemon call) both compute this from the same ownbase.yaml at the moment
+// they need it, so they'd always agree without coordinating — except for a
+// narrow race if the config changed between the two reads, which is why
+// `ownbasectl dev` additionally cross-checks against the Base's actually-
+// applied Quadlet units rather than trusting this value alone (see
+// internal/devbridge.ParseActualHostPorts).
+func (c *OwnbaseConfig) DevBridgePorts() map[string]int {
+	var names []string
+	for name, svc := range c.Services {
+		if svc.Port != 0 {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+
+	ports := make(map[string]int, len(names))
+	for i, name := range names {
+		ports[name] = DevBridgeBasePort + i
+	}
+	return ports
 }
 
 // Validate returns the first structural error in the config, or nil.

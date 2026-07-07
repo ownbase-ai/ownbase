@@ -14,9 +14,15 @@ package main
 //     bridged, mirroring exactly what is already intentionally publicly
 //     reachable in production.
 //  2. Ensures mkcert's local CA is trusted (one-time sudo prompt, ever).
-//  3. Opens one SSH tunnel per bridged service (internal/tunnel, reused
-//     completely unmodified) directly to its container port, bypassing
-//     Caddy entirely.
+//  3. Reads each bridged service's actually-published loopback port
+//     straight off the Base's Quadlet units (internal/devbridge's
+//     GrepPublishPortCommand/ParseActualHostPorts) rather than trusting
+//     Discover's freshly-recomputed guess, then opens one SSH tunnel per
+//     bridged service (internal/tunnel, reused completely unmodified)
+//     directly to that port, bypassing Caddy entirely. A service with no
+//     actually-published port yet (never reconciled) is skipped with a
+//     warning rather than guessed at — guessing risks silently landing on
+//     a host port a different, unrelated service's container occupies.
 //  4. Generates one mkcert certificate covering every bridged hostname:
 //     each service's real domain with ".localhost" appended verbatim,
 //     e.g. "myapp.example.com" -> "myapp.example.com.localhost" (RFC 6761 —
@@ -137,6 +143,22 @@ func runDev(name string, port int) error {
 		return nil
 	}
 
+	// Read each bridged service's ACTUALLY-published loopback port straight
+	// off the Base, rather than trusting the value Discover just computed
+	// from the ownbase.yaml we happened to read: DevBridgePorts() assigns a
+	// sorted index over all eligible services, so if another one was just
+	// added/removed/renamed and the daemon hasn't reconciled yet, a freshly
+	// computed number can point at a host port a different service's
+	// container still occupies. This closes that race without a daemon call.
+	actualRaw, err := tunnel.RunCommand(
+		profile.Host, profile.EffectiveSSHUser(), profile.EffectiveSSHKey(),
+		devbridge.GrepPublishPortCommand, profile.EffectiveSSHPort(),
+	)
+	if err != nil {
+		return fmt.Errorf("read actually-published ports from %q over SSH: %w", name, err)
+	}
+	actualPorts := devbridge.ParseActualHostPorts(actualRaw)
+
 	fmt.Fprintf(os.Stderr, "ownbasectl: opening %d SSH tunnel(s) to %q ...\n", len(targets), name)
 	var tunnels []*tunnel.Tunnel
 	defer func() {
@@ -147,15 +169,31 @@ func runDev(name string, port int) error {
 
 	routes := make(map[string]string)     // local hostname -> tunnel local addr
 	routeOwner := make(map[string]string) // local hostname -> owning service, to catch conflicts below
+	var bridged []devbridge.Target        // targets we actually opened a tunnel for
 	for _, target := range targets {
+		// Only tunnel using the actually-applied port. Falling back to the
+		// freshly-computed guess when a service is missing from
+		// actualPorts would reintroduce the exact race this cross-check
+		// exists to close: that guess could numerically land on a host
+		// port a *different* (e.g. just-removed, not-yet-torn-down)
+		// service's container still occupies, silently bridging to the
+		// wrong backend instead of failing loudly. Skip it instead — most
+		// commonly this means the service was just added and hasn't been
+		// reconciled/started yet.
+		hostPort, ok := actualPorts[target.Service]
+		if !ok {
+			fmt.Fprintf(os.Stderr, "ownbasectl: skipping %q — not yet published on %q (has it been reconciled/started?)\n", target.Service, name)
+			continue
+		}
 		tun, err := tunnel.Open(
 			profile.Host, profile.EffectiveSSHUser(), profile.EffectiveSSHKey(),
-			target.Port, profile.EffectiveSSHPort(),
+			hostPort, profile.EffectiveSSHPort(),
 		)
 		if err != nil {
-			return fmt.Errorf("open SSH tunnel for service %q (port %d): %w", target.Service, target.Port, err)
+			return fmt.Errorf("open SSH tunnel for service %q (host port %d): %w", target.Service, hostPort, err)
 		}
 		tunnels = append(tunnels, tun)
+		bridged = append(bridged, target)
 		for _, h := range target.LocalHostnames() {
 			// Two services claiming the same domain is a misconfiguration
 			// the compiler would also reject at the Caddy-route level; catch
@@ -168,10 +206,13 @@ func runDev(name string, port int) error {
 			routes[h] = tun.LocalAddr()
 		}
 	}
+	if len(bridged) == 0 {
+		return fmt.Errorf("no bridgeable service on %q is published yet — has anything been reconciled/started?", name)
+	}
 	// AllLocalHostnames dedupes and sorts — used for both the cert's SAN
 	// list and the printed summary below, so a service with overlapping
 	// domains (or the same one) never produces duplicate SANs.
-	hostnames := devbridge.AllLocalHostnames(targets)
+	hostnames := devbridge.AllLocalHostnames(bridged)
 
 	certDir := filepath.Join(filepath.Dir(cfgPath), "dev-bridge", name)
 	fmt.Fprintf(os.Stderr, "ownbasectl: generating local HTTPS certificate for %d hostname(s) ...\n", len(hostnames))
