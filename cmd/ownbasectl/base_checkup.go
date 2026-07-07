@@ -171,6 +171,23 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 					}
 				}
 			}
+
+			// Flag any image whose trivy scan failed so operators know a
+			// service is unscanned rather than clean.
+			imagesRaw, _ := vulns["images"].([]any)
+			for _, raw := range imagesRaw {
+				img, ok := raw.(map[string]any)
+				if !ok {
+					continue
+				}
+				if failed, _ := img["scan_failed"].(bool); failed {
+					svc, _ := img["service"].(string)
+					findings = append(findings, checkupFinding{
+						summary: fmt.Sprintf("CVE scan failed for service %q", svc),
+						fix:     "ownbasectl security " + base + "  (see error in Vulnerability Scan section)",
+					})
+				}
+			}
 		}
 
 		if driftCount, _ := sec["drift_count"].(float64); driftCount > 0 {

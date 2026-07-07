@@ -97,11 +97,11 @@ func TestGatherHostVulns_RunsAndReturns(t *testing.T) {
 	defer cancel()
 
 	before := time.Now()
-	summary, ok := vulnscan.GatherHostVulns(ctx)
+	summary, err := vulnscan.GatherHostVulns(ctx)
 	elapsed := time.Since(before)
 
-	if !ok {
-		t.Fatal("GatherHostVulns returned ok=false — trivy host scan failed")
+	if err != nil {
+		t.Fatalf("GatherHostVulns returned error — trivy host scan failed: %v", err)
 	}
 
 	// Total is allowed to be 0 (fully patched VM) but must not be negative.
@@ -123,9 +123,9 @@ func TestGatherHostVulns_TopFindings(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
 
-	summary, ok := vulnscan.GatherHostVulns(ctx)
-	if !ok {
-		t.Fatal("GatherHostVulns returned ok=false")
+	summary, err := vulnscan.GatherHostVulns(ctx)
+	if err != nil {
+		t.Fatalf("GatherHostVulns returned error: %v", err)
 	}
 
 	// If there are critical/high CVEs, Top must be non-empty.

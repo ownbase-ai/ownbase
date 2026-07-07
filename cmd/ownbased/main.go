@@ -748,6 +748,14 @@ func run(cfg agentConfig) error {
 				"ownbased: vuln scan complete (available=%v, host: %dC/%dH/%dM, %d image(s))\n",
 				result.Available, result.Host.Critical, result.Host.High, result.Host.Medium,
 				len(result.Images))
+			if !result.Available && result.TrivyInstalled && result.HostScanError != "" {
+				fmt.Fprintf(os.Stderr, "ownbased: vuln scan: host scan failed: %s\n", result.HostScanError)
+			}
+			for _, img := range result.Images {
+				if img.ScanFailed {
+					fmt.Fprintf(os.Stderr, "ownbased: vuln scan: image scan failed for %q: %s\n", img.Service, img.ScanError)
+				}
+			}
 			// Push updated status immediately — don't wait for the next reconcile.
 			afterReconcile(lastReconcileState)
 		case <-ctx.Done():

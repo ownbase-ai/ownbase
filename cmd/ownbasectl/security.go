@@ -293,7 +293,12 @@ func printSecurityReport(base string, body []byte) error {
 					}
 				}
 			} else {
-				fmt.Println("    Host OS packages:  ⚠ scan failed — check agent logs")
+				hostScanError, _ := vulns["host_scan_error"].(string)
+				if hostScanError != "" {
+					fmt.Printf("    Host OS packages:  ⚠ scan failed: %s\n", hostScanError)
+				} else {
+					fmt.Println("    Host OS packages:  ⚠ scan failed")
+				}
 			}
 
 			// Per-image summaries — shown regardless of host scan outcome so
@@ -324,7 +329,12 @@ func printSecurityReport(base string, body []byte) error {
 					}
 
 					if failed, _ := img["scan_failed"].(bool); failed {
-						fmt.Printf("    %-36s  scan failed (trivy error — check agent logs)\n", label)
+						scanError, _ := img["scan_error"].(string)
+						if scanError != "" {
+							fmt.Printf("    %-36s  scan failed: %s\n", label, scanError)
+						} else {
+							fmt.Printf("    %-36s  scan failed\n", label)
+						}
 						continue
 					}
 					summary, _ := img["summary"].(map[string]any)
