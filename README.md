@@ -4,7 +4,7 @@
 
 Grab a server or VM (cloud, home lab, anywhere) and OwnBase turns it into a **Base**: a hardened, self-updating home for your entire application layer. Everything above the OS is yours: services, databases, data, all running on hardware you control, with no third-party platform standing in between.
 
-**Your server. Your software. No subscriptions.**
+🫵 Your server &nbsp; 🫵 Your software &nbsp; 🚫 No subscriptions
 
 ## Why you'd want this
 
@@ -15,42 +15,132 @@ Grab a server or VM (cloud, home lab, anywhere) and OwnBase turns it into a **Ba
 - **One machine replaces a pile of subscriptions.** Auth, databases, job queues, and every app you build run together on one modest box — one predictable bill instead of a per-seat, per-usage sprawl.
 - **No lock-in, structurally.** Every service is removable, forkable, and replaceable; config is plain files in a Git repo you own; uninstalling OwnBase leaves a working, still-hardened Ubuntu machine behind.
 
-It all comes down to one idea:
+---
+
+## Walkthrough: zero to a running, backed-up service
+
+Everything below is driven by `ownbasectl`, the CLI you run on your own machine. Each step builds on the last; a fresh Base with no services is safe (it exposes nothing but SSH), so nothing here is riskier than reading it. For the full reference and edge cases, see [INSTALL.md](INSTALL.md) and [docs/cli.md](docs/cli.md).
+
+### 1. Install `ownbasectl`
+
+```bash
+brew install --cask ownbase-ai/tap/ownbasectl
+```
+
+No Homebrew? A manual install script (verifies the release checksum, no Go toolchain needed) is in [INSTALL.md](INSTALL.md#install-ownbasectl). Verify either way with `ownbasectl version`.
+
+### 2. Create a Base
+
+```bash
+# Local VM, for trying things out (needs Multipass: brew install --cask multipass)
+ownbasectl create mybase
+
+# ...or a fresh Ubuntu 22.04/24.04 server you already provisioned
+ownbasectl create mybase --remote root@mybase.example.com \
+  --caddy-email you@example.com
+```
+
+One command: provisions the target, hardens it (Podman, UFW, fail2ban, unattended-upgrades, CVE scanning), installs and verifies the signed `ownbased` daemon, bootstraps a local config repo with a starter `ownbase.yaml`, and registers the Base in `~/.ownbase/config` — nothing to copy-paste. A freshly created Base has no domain configured anywhere, so it exposes nothing but SSH externally.
+
+```bash
+ownbasectl status mybase       # confirm it's up
+ownbasectl config get mybase   # see the starter ownbase.yaml
+```
+
+### 3. Add a service
+
+Declare a service with one command — the daemon creates it and builds it from source, health-gated. [`traefik/whoami`](https://github.com/traefik/whoami) is a good first service to try: a tiny, dependency-free Go web server (commonly used to smoke-test reverse proxies) that just echoes back request info, with a `Dockerfile` already at the repo root:
+
+```bash
+ownbasectl service add mybase hello \
+  --mirror https://github.com/traefik/whoami \
+  --ref master --port 80 --domain hello.example.com
+```
+
+`--mirror` points at an external Git repo the daemon clones and maintains a local mirror of; use `--source <path>` instead to push your own code directly into a bare repo the daemon creates for you. Either way there's no image registry involved — every user service is built locally on the Base from source at the pinned `ref:`. You can also skip the CLI and edit `ownbase.yaml` by hand (`ownbasectl config get`/`set`, or `git push` straight to the Base) — see [docs/ownbase-yaml.md](docs/ownbase-yaml.md) for the full schema.
+
+```bash
+ownbasectl status mybase   # confirm "hello" is running and healthy
+```
+
+### 4. Start the dev server and access the service
+
+A fresh Base never opens ports 80/443, so there's no real TLS certificate to browse to yet — even before any domain's DNS is live, you can still see the service running, over trusted HTTPS, with:
+
+```bash
+ownbasectl dev mybase
+```
 
 ```
-reconstructable = (repo, secrets, backups)
+ownbasectl: reading ownbase.yaml from "mybase" ...
+ownbasectl: opening 1 SSH tunnel(s) to "mybase" ...
+ownbasectl: generating local HTTPS certificate for 1 hostname(s) ...
+
+Bridging:
+  https://hello.example.com.localhost:8443
+
+No code-sync — push to the service's bare repo and update ref: to deploy changes.
+Press Ctrl+C to stop.
 ```
 
-Hold onto those three things and you can rebuild your entire Base from scratch on any new machine. Install, update, recover, and rebuild are the **same reconcile call** from different starting states; no state lives anywhere else.
+Open that URL — it works fully offline, needs no `/etc/hosts` entry, and stays the same across VM restarts. This is the one `ownbasectl` command allowed to prompt (a one-time `mkcert -install` to trust a local certificate authority). There's no code-sync: to iterate, push new code to the service's repo and bump `ref:` with `ownbasectl service update mybase hello --ref <branch>` — the daemon rebuilds and restarts it, and the dev bridge picks up the change automatically. Once a service's domain actually points DNS at the Base, it's reachable the same way in production, through Caddy.
+
+### 5. Set up backups
+
+Not optional — do this right after `create`, before you have data you'd miss:
+
+```bash
+ownbasectl backup setup mybase \
+  --repo s3:s3.amazonaws.com/my-bucket/ownbase \
+  --password <a-strong-restic-password> \
+  --aws-access-key-id AKIA... --aws-secret-access-key ...
+```
+
+This runs the first snapshot immediately and schedules hourly snapshots plus a daily verified-restore drill by default (`--interval`/`--verify-interval` to change either). B2 and SFTP repos work too — see [docs/cli.md](docs/cli.md#backup-setuprunstatus-name). **Save the password somewhere durable — it is never recoverable from OwnBase.**
+
+```bash
+ownbasectl backup run mybase       # trigger an extra snapshot on demand
+ownbasectl backup status mybase    # last snapshot, restorable?, last verify drill
+```
+
+### 6. Restore from backups
+
+Whether the machine was lost or you tore it down yourself, rebuild onto a fresh VM or server with the same repo and password:
+
+```bash
+ownbasectl backup status mybase   # confirm "restorable: true" first — restore refuses an unverified snapshot without --force
+ownbasectl restore mybase \
+  --repo s3:s3.amazonaws.com/my-bucket/ownbase \
+  --password <the-restic-password>
+```
+
+This provisions a fresh target (add `--remote <host>` for a fresh server), installs the daemon, restores the latest verified snapshot — the Base's own Git repo included, not just service data — and lets the daemon's normal reconcile bring every service back up.
+
+### 7. Run a checkup
+
+A single, plain-language health report — run it regularly (weekly is reasonable):
+
+```bash
+ownbasectl checkup mybase
+```
+
+It combines intrusion/access monitoring, network exposure, CVE scan results, per-service update drift, and backup health into one report, with the exact fix command next to each finding.
 
 ---
 
-## Quick start
+## Other things you can do
 
-```bash
-# 1. Install the CLI (no Homebrew? see the manual install script in INSTALL.md)
-brew install --cask ownbase-ai/tap/ownbasectl
-
-# 2. Create a Base: give it a name; local VM by default, or a fresh Ubuntu server over SSH
-ownbasectl create mybase
-#    ...or: ownbasectl create mybase --remote root@mybase.example.com \
-#             --caddy-email you@example.com
-
-# 3. Turn on remote backups (runs the first snapshot immediately)
-ownbasectl backup setup mybase --repo s3:s3.amazonaws.com/my-bucket/ownbase \
-  --password <a-strong-restic-password> \
-  --aws-access-key-id AKIA... --aws-secret-access-key ...
-
-# 4. Health check: intrusions, exposure, CVEs, update drift, backup health
-ownbasectl checkup mybase
-
-# 5. If the machine is ever lost, rebuild it from backups
-ownbasectl restore mybase --repo s3:... --password <the-restic-password>
-```
-
-`ownbasectl create` provisions the machine, hardens it (Podman, UFW, fail2ban, auto-updates), bootstraps **Caddy** and a local config repo, verifies the signed daemon binary, and registers the Base: one command, nothing to copy-paste.
-
-Then declare your services: `ownbasectl service add mybase <name> --mirror <url> --ref main --port 3000`, or pull the config repo (`ownbasectl config get mybase`), add services to `ownbase.yaml` by hand, and push. The daemon builds them from source and brings them up health-gated. See [INSTALL.md](INSTALL.md) for the full walkthrough.
+| Feature                  | Command                                                          | What it's for                                                                                                            |
+| ------------------------ | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| See what's deployed      | `ownbasectl status mybase`                                       | Services, security posture, recent daemon actions (`--json` for the full API payload)                                    |
+| Track available updates  | `ownbasectl updates mybase`                                      | Per-service commits-behind and newest semver tag; you update by editing `ref:`                                           |
+| Security posture & CVEs  | `ownbasectl security mybase`, `security scan`, `security fix`    | Exposure + SSH access report, on-demand CVE rescan, `apt-get upgrade` on the host                                        |
+| Upgrade the core package | `ownbasectl upgrade mybase [--apply]`                            | Updates Caddy — the one package OwnBase manages outside `ownbase.yaml`                                                   |
+| Manage secrets           | `ownbasectl secrets list\|get\|set\|delete mybase <service> ...` | Per-service secrets, age-encrypted on the Base, injected as env vars at container start                                  |
+| Edit config as data      | `ownbasectl config get\|set mybase`                              | Read/replace the whole `ownbase.yaml` non-interactively — handy for scripts and agents                                   |
+| Manage multiple Bases    | `ownbasectl list`, `ownbasectl adopt`, `ownbasectl delete`       | See all profiles/VMs, register a Base installed another way, tear one down                                               |
+| Export everything        | see [docs/uninstall.md](docs/uninstall.md)                       | Clone every repo, export every volume, read out every secret — in standard formats                                       |
+| Retire a Base            | see [docs/uninstall.md](docs/uninstall.md)                       | Remove OwnBase from the machine; the pass-zero hardening (UFW, fail2ban, updates) stays, so it's still a safe Ubuntu box |
 
 ---
 
