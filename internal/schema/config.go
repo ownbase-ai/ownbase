@@ -274,13 +274,17 @@ func (s ServiceDecl) EffectiveDomains() []string {
 }
 
 // HasPublicDomain reports whether at least one service has one or more
-// domains configured (via domain: and/or domains:). A Base with no domain'd
-// service exposes nothing publicly but SSH — Caddy publishes no ports and
-// the firewall opens no web ports — because there is nothing for it to
-// route; reach such services with `ownbasectl dev` instead.
+// domains configured (via domain: and/or domains:) AND a port to route
+// them to. A domain with no port is not routable — the compiler only
+// emits a Caddy route when both are present (see
+// internal/compiler.buildContainer) — so it must not count here either,
+// or the firewall/Caddy would open 80/443 to the world for a service that
+// has no listener to actually reach. A Base with no such service exposes
+// nothing publicly but SSH — Caddy publishes no ports and the firewall
+// opens no web ports; reach such services with `ownbasectl dev` instead.
 func (c *OwnbaseConfig) HasPublicDomain() bool {
 	for _, svc := range c.Services {
-		if len(svc.EffectiveDomains()) > 0 {
+		if svc.Port != 0 && len(svc.EffectiveDomains()) > 0 {
 			return true
 		}
 	}

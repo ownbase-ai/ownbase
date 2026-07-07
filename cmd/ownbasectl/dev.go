@@ -40,7 +40,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"sort"
 	"syscall"
 	"time"
 
@@ -146,8 +145,8 @@ func runDev(name string, port int) error {
 		}
 	}()
 
-	routes := make(map[string]string) // local hostname -> tunnel local addr
-	var hostnames []string
+	routes := make(map[string]string)     // local hostname -> tunnel local addr
+	routeOwner := make(map[string]string) // local hostname -> owning service, to catch conflicts below
 	for _, target := range targets {
 		tun, err := tunnel.Open(
 			profile.Host, profile.EffectiveSSHUser(), profile.EffectiveSSHKey(),
@@ -158,11 +157,21 @@ func runDev(name string, port int) error {
 		}
 		tunnels = append(tunnels, tun)
 		for _, h := range target.LocalHostnames() {
+			// Two services claiming the same domain is a misconfiguration
+			// the compiler would also reject at the Caddy-route level; catch
+			// it here too rather than letting the second service silently
+			// overwrite the first's route entry and steal its traffic.
+			if owner, exists := routeOwner[h]; exists && owner != target.Service {
+				return fmt.Errorf("hostname %q is configured for both service %q and service %q — each domain must resolve to exactly one service", h, owner, target.Service)
+			}
+			routeOwner[h] = target.Service
 			routes[h] = tun.LocalAddr()
-			hostnames = append(hostnames, h)
 		}
 	}
-	sort.Strings(hostnames)
+	// AllLocalHostnames dedupes and sorts — used for both the cert's SAN
+	// list and the printed summary below, so a service with overlapping
+	// domains (or the same one) never produces duplicate SANs.
+	hostnames := devbridge.AllLocalHostnames(targets)
 
 	certDir := filepath.Join(filepath.Dir(cfgPath), "dev-bridge", name)
 	fmt.Fprintf(os.Stderr, "ownbasectl: generating local HTTPS certificate for %d hostname(s) ...\n", len(hostnames))

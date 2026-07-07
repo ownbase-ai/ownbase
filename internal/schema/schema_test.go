@@ -417,14 +417,26 @@ func TestOwnbaseConfig_HasPublicDomain(t *testing.T) {
 	}{
 		{"no services", schema.OwnbaseConfig{}, false},
 		{"service with no domain", schema.OwnbaseConfig{
-			Services: map[string]schema.ServiceDecl{"a": {Source: "x"}},
+			Services: map[string]schema.ServiceDecl{"a": {Source: "x", Port: 8080}},
 		}, false},
-		{"service with domain:", schema.OwnbaseConfig{
+		{"service with domain: and port:", schema.OwnbaseConfig{
+			Services: map[string]schema.ServiceDecl{"a": {Source: "x", Domain: "a.example.com", Port: 8080}},
+		}, true},
+		{"service with domains: and port:", schema.OwnbaseConfig{
+			Services: map[string]schema.ServiceDecl{"a": {Source: "x", Domains: []string{"a.example.com"}, Port: 8080}},
+		}, true},
+		{"service with domain: but no port", schema.OwnbaseConfig{
 			Services: map[string]schema.ServiceDecl{"a": {Source: "x", Domain: "a.example.com"}},
-		}, true},
-		{"service with domains:", schema.OwnbaseConfig{
-			Services: map[string]schema.ServiceDecl{"a": {Source: "x", Domains: []string{"a.example.com"}}},
-		}, true},
+		}, false},
+		{"service with port but no domain", schema.OwnbaseConfig{
+			Services: map[string]schema.ServiceDecl{"a": {Source: "x", Port: 8080}},
+		}, false},
+		{"one service domain-only, another port-only: still no routable public service", schema.OwnbaseConfig{
+			Services: map[string]schema.ServiceDecl{
+				"a": {Source: "x", Domain: "a.example.com"},
+				"b": {Source: "y", Port: 8080},
+			},
+		}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
