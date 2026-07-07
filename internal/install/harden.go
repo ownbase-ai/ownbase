@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/ownbase/ownbase/internal/secwatch"
@@ -316,6 +317,50 @@ dns_servers = ["1.1.1.1", "8.8.8.8"]
 		return StepStatus{Err: fmt.Errorf("write %s: %w", confPath, err)}
 	}
 	return StepStatus{Done: true, Detail: "container DNS configured (1.1.1.1, 8.8.8.8)"}
+}
+
+// ---------------------------------------------------------------------------
+// Unqualified-search registries
+// ---------------------------------------------------------------------------
+
+// ensureUnqualifiedSearchRegistries writes a registries.conf.d drop-in so
+// that Podman resolves short image names (e.g. "golang:1-alpine", as used
+// by nearly every public Dockerfile) when building user services. Ubuntu's
+// stock /etc/containers/registries.conf ships with every
+// unqualified-search-registries example commented out — unlike Docker,
+// Podman treats an unqualified image name as unresolvable, not "assume
+// Docker Hub", so without this every `podman build`/`podman pull` of a
+// Dockerfile with a short FROM line fails with "short-name ... did not
+// resolve to an alias". See docs/troubleshooting.md.
+//
+// A drop-in file (rather than editing registries.conf directly) is used so
+// this survives untouched across podman package upgrades and never fights a
+// user's own edits to the main file — per containers-registries.conf.d(5),
+// unqualified-search-registries is a simple knob that the drop-in overrides
+// outright, so setting it here is safe even if the main file also sets it.
+func ensureUnqualifiedSearchRegistries(ctx context.Context, cfg PassZeroConfig) StepStatus {
+	_ = ctx
+	const confPath = "/etc/containers/registries.conf.d/999-ownbase-unqualified-search.conf"
+	if cfg.DryRun {
+		return StepStatus{Done: false, Detail: "would write " + confPath}
+	}
+	if _, err := os.Stat(confPath); err == nil {
+		return StepStatus{Done: true, AlreadyOK: true, Detail: "unqualified-search-registries already configured"}
+	}
+
+	if err := os.MkdirAll(filepath.Dir(confPath), 0o755); err != nil {
+		return StepStatus{Err: fmt.Errorf("mkdir %s: %w", filepath.Dir(confPath), err)}
+	}
+	const conf = `# Written by OwnBase pass zero. Without this, Podman refuses to resolve
+# short image names (e.g. "golang:1-alpine") in Dockerfile FROM lines —
+# nearly every public Dockerfile uses them — with a
+# "short-name ... did not resolve to an alias" build failure.
+unqualified-search-registries = ["docker.io"]
+`
+	if err := os.WriteFile(confPath, []byte(conf), 0o644); err != nil {
+		return StepStatus{Err: fmt.Errorf("write %s: %w", confPath, err)}
+	}
+	return StepStatus{Done: true, Detail: "unqualified-search-registries configured (docker.io)"}
 }
 
 // dbPorts are the well-known database ports that must not be publicly

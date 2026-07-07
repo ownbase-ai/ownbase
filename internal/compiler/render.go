@@ -67,9 +67,14 @@ func renderContainer(c ContainerModel) string {
 		fmt.Fprintf(&b, "Volume=%s:%s\n", vm.VolumeName, vm.MountPath)
 	}
 
-	// Public port — bound to loopback only, routed via Caddy.
-	if c.PublicPort > 0 {
-		fmt.Fprintf(&b, "PublishPort=127.0.0.1:%d:%d\n", c.PublicPort, c.PublicPort)
+	// Dev-bridge loopback publish — used only by `ownbasectl dev`'s SSH
+	// tunnel; Caddy itself addresses containers by name over the internal
+	// Podman network and never touches this. Host and container ports are
+	// deliberately different numbers (see ContainerModel.DevBridgePort) so
+	// this can never collide with Caddy's own machine-wide bind or with
+	// another service's loopback publish.
+	if c.DevBridgePort > 0 {
+		fmt.Fprintf(&b, "PublishPort=127.0.0.1:%d:%d\n", c.DevBridgePort, c.PublicPort)
 	}
 
 	// Static environment variables (plaintext; use ownbasectl secrets for sensitive values).

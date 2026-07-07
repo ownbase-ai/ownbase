@@ -447,6 +447,68 @@ func TestOwnbaseConfig_HasPublicDomain(t *testing.T) {
 	}
 }
 
+func TestOwnbaseConfig_DevBridgePorts_Empty(t *testing.T) {
+	cfg := schema.OwnbaseConfig{}
+	if got := cfg.DevBridgePorts(); len(got) != 0 {
+		t.Errorf("expected no ports for empty config, got %v", got)
+	}
+}
+
+func TestOwnbaseConfig_DevBridgePorts_OnlyEligibleServices(t *testing.T) {
+	cfg := schema.OwnbaseConfig{
+		Services: map[string]schema.ServiceDecl{
+			"domain-and-port": {Source: "x", Domain: "a.example.com", Port: 8080},
+			"port-only":       {Source: "y", Port: 8080},
+			"domain-only":     {Source: "z", Domain: "b.example.com"},
+		},
+	}
+	got := cfg.DevBridgePorts()
+	if len(got) != 1 {
+		t.Fatalf("expected exactly 1 eligible service, got %v", got)
+	}
+	if _, ok := got["domain-and-port"]; !ok {
+		t.Errorf("expected \"domain-and-port\" to be assigned a port, got %v", got)
+	}
+	if got["domain-and-port"] != schema.DevBridgeBasePort {
+		t.Errorf("single eligible service should get DevBridgeBasePort, got %d", got["domain-and-port"])
+	}
+}
+
+func TestOwnbaseConfig_DevBridgePorts_SingleService(t *testing.T) {
+	cfg := schema.OwnbaseConfig{
+		Services: map[string]schema.ServiceDecl{
+			"hello": {Source: "x", Domain: "hello.example.com", Port: 8080},
+		},
+	}
+	got := cfg.DevBridgePorts()
+	if got["hello"] != schema.DevBridgeBasePort {
+		t.Errorf("hello port = %d, want %d", got["hello"], schema.DevBridgeBasePort)
+	}
+}
+
+func TestOwnbaseConfig_DevBridgePorts_DeterministicSortedAssignment(t *testing.T) {
+	cfg := schema.OwnbaseConfig{
+		Services: map[string]schema.ServiceDecl{
+			"zeta":  {Source: "z", Domain: "zeta.example.com", Port: 3000},
+			"alpha": {Source: "a", Domain: "alpha.example.com", Port: 3000},
+			"multi": {Source: "m", Domain: "multi.example.com", Port: 9090},
+		},
+	}
+	// Run several times to make sure map iteration order never affects the result.
+	for i := 0; i < 5; i++ {
+		got := cfg.DevBridgePorts()
+		if got["alpha"] != schema.DevBridgeBasePort {
+			t.Errorf("alpha port = %d, want %d", got["alpha"], schema.DevBridgeBasePort)
+		}
+		if got["multi"] != schema.DevBridgeBasePort+1 {
+			t.Errorf("multi port = %d, want %d", got["multi"], schema.DevBridgeBasePort+1)
+		}
+		if got["zeta"] != schema.DevBridgeBasePort+2 {
+			t.Errorf("zeta port = %d, want %d", got["zeta"], schema.DevBridgeBasePort+2)
+		}
+	}
+}
+
 func TestBackupCoreConfig_Validate_InvalidInterval(t *testing.T) {
 	cfg := &schema.OwnbaseConfig{
 		SchemaVersion: "v1",

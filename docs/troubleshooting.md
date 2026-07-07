@@ -60,6 +60,20 @@ ownbasectl adopt <name> --host <host> --token <token>
 
 ---
 
+## Service build / start failures
+
+### "short-name ... did not resolve to an alias and no unqualified-search registries are defined"
+
+`podman build` failed to resolve a short base image name (e.g. `FROM golang:1-alpine`) in the service's Dockerfile — nearly every public Dockerfile uses these. `ownbased` pass zero writes a `registries.conf.d` drop-in so Podman defaults unqualified names to Docker Hub; if you see this, either the Base predates that fix or the drop-in was removed by hand:
+
+```bash
+ssh root@<base-host> 'test -f /etc/containers/registries.conf.d/999-ownbase-unqualified-search.conf && echo present || echo missing'
+```
+
+If it's missing, restart `ownbased` (`systemctl restart ownbased` on the Base) — pass zero re-writes it on every start — then re-push the config (or wait for the timer backstop) to retry the build.
+
+---
+
 ## Lost credentials
 
 ### Lost API token

@@ -37,8 +37,18 @@ type Target struct {
 	// Service is the ownbase.yaml service key (the map key in services:).
 	Service string
 	// Port is the container's listening port — the same port the compiler
-	// would route Caddy to (see internal/compiler.RouteModel).
+	// would route Caddy to (see internal/compiler.RouteModel). Kept for
+	// display/informational use; the tunnel itself connects to HostPort.
 	Port int
+	// HostPort is the loopback port the compiler publishes this service's
+	// container to on the Base, assigned deterministically by
+	// schema.OwnbaseConfig.DevBridgePorts() — the same computation the
+	// compiler runs when rendering the Quadlet unit, so both sides always
+	// agree without coordinating. This is what the SSH tunnel actually
+	// connects to; it is deliberately a different number than Port so that
+	// a service can declare port: 80/443 (or share a port with another
+	// service) without a loopback-publish collision.
+	HostPort int
 	// Domains is the service's EffectiveDomains(), in declared order.
 	// Always non-empty for a discovered Target — see Discover.
 	Domains []string
@@ -76,6 +86,8 @@ func Discover(raw string) ([]Target, error) {
 	}
 	sort.Strings(names)
 
+	hostPorts := cfg.DevBridgePorts()
+
 	var targets []Target
 	for _, name := range names {
 		svc := cfg.Services[name]
@@ -83,7 +95,12 @@ func Discover(raw string) ([]Target, error) {
 		if svc.Port == 0 || len(domains) == 0 {
 			continue
 		}
-		targets = append(targets, Target{Service: name, Port: svc.Port, Domains: domains})
+		targets = append(targets, Target{
+			Service:  name,
+			Port:     svc.Port,
+			HostPort: hostPorts[name],
+			Domains:  domains,
+		})
 	}
 	return targets, nil
 }

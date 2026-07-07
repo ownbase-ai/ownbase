@@ -118,7 +118,9 @@ func (r HardeningReport) OK() bool {
 //  4. Configure UFW firewall.
 //  5. Enable automatic security updates.
 //  6. Install and configure fail2ban.
-//  7. Verify no database ports are publicly reachable.
+//  7. Configure container DNS and unqualified-search-registries (needed for
+//     Dockerfile builds).
+//  8. Verify no database ports are publicly reachable.
 //
 // Any step failure returns immediately. The caller (agent main) logs the
 // error and exits, so systemd will restart the service and PassZero will
@@ -160,6 +162,13 @@ func PassZero(ctx context.Context, cfg PassZeroConfig) (HardeningReport, error) 
 	// Ensure rootful Podman containers can resolve DNS (needed for builds).
 	if s := ensureContainerDNS(ctx, c); s.Err != nil {
 		return r, fmt.Errorf("container-dns: %w", s.Err)
+	}
+
+	// Let Podman resolve short image names (e.g. "golang:1-alpine") in user
+	// Dockerfiles — Ubuntu's stock registries.conf leaves this unset, which
+	// breaks the build of nearly every public Dockerfile.
+	if s := ensureUnqualifiedSearchRegistries(ctx, c); s.Err != nil {
+		return r, fmt.Errorf("unqualified-search-registries: %w", s.Err)
 	}
 
 	r.NoExposedDB = verifyNoExposedDB(ctx, c)

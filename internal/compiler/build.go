@@ -14,10 +14,14 @@ import (
 func build(in Input) RuntimeModel {
 	model := RuntimeModel{}
 
+	devPorts := in.Config.DevBridgePorts()
+
 	serviceNames := sortedKeys(in.Config.Services)
 	for _, name := range serviceNames {
 		svc := in.Config.Services[name]
-		model.Containers = append(model.Containers, buildContainer(name, svc))
+		c := buildContainer(name, svc)
+		c.DevBridgePort = devPorts[name]
+		model.Containers = append(model.Containers, c)
 
 		// Every service gets its own capability network keyed by service name.
 		// Consumers join this network via their requires: list.

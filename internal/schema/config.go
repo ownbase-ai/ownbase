@@ -7,6 +7,7 @@ package schema
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -289,6 +290,41 @@ func (c *OwnbaseConfig) HasPublicDomain() bool {
 		}
 	}
 	return false
+}
+
+// DevBridgeBasePort is the first loopback port the compiler allocates for
+// `ownbasectl dev` SSH tunnels. Each eligible service gets one port,
+// assigned by sorted name starting here — deliberately decoupled from any
+// service's own container Port so that a service can declare port: 80/443
+// (or share a port number with another service) without colliding with
+// Caddy's machine-wide bind or with each other on the loopback publish.
+const DevBridgeBasePort = 41000
+
+// DevBridgePorts returns the deterministic loopback port assigned to each
+// dev-bridge-eligible service, keyed by service name. A service is eligible
+// under the exact same predicate as HasPublicDomain: it has a Port set and
+// at least one effective domain (a domain-less service is never reachable
+// via `ownbasectl dev`, so it gets no loopback publish at all).
+//
+// Ports are recomputed fresh from the current config on every call — never
+// persisted — which is safe because the compiler (building the Quadlet
+// unit) and `ownbasectl dev` (parsing ownbase.yaml independently, with no
+// daemon call) both compute this from the same ownbase.yaml at the moment
+// they need it, so they always agree without coordinating.
+func (c *OwnbaseConfig) DevBridgePorts() map[string]int {
+	var names []string
+	for name, svc := range c.Services {
+		if svc.Port != 0 && len(svc.EffectiveDomains()) > 0 {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+
+	ports := make(map[string]int, len(names))
+	for i, name := range names {
+		ports[name] = DevBridgeBasePort + i
+	}
+	return ports
 }
 
 // Validate returns the first structural error in the config, or nil.

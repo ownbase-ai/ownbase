@@ -150,10 +150,10 @@ func runDev(name string, port int) error {
 	for _, target := range targets {
 		tun, err := tunnel.Open(
 			profile.Host, profile.EffectiveSSHUser(), profile.EffectiveSSHKey(),
-			target.Port, profile.EffectiveSSHPort(),
+			target.HostPort, profile.EffectiveSSHPort(),
 		)
 		if err != nil {
-			return fmt.Errorf("open SSH tunnel for service %q (port %d): %w", target.Service, target.Port, err)
+			return fmt.Errorf("open SSH tunnel for service %q (host port %d): %w", target.Service, target.HostPort, err)
 		}
 		tunnels = append(tunnels, tun)
 		for _, h := range target.LocalHostnames() {
