@@ -42,6 +42,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -100,6 +101,17 @@ running, picks up the new container transparently.`,
 }
 
 func runDev(name string, port int) error {
+	// Bind the local port immediately — before any SSH work, cert generation,
+	// or tunnel setup — so that a port conflict fails fast with a clear message
+	// rather than surfacing as a cryptic error after all the expensive setup is
+	// already done.
+	listenAddr := fmt.Sprintf("127.0.0.1:%d", port)
+	ln, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		return fmt.Errorf("bind local port %d: %w\n\nIs another 'ownbasectl dev' still running? Kill it or choose a different port with --port.", port, err)
+	}
+	defer ln.Close()
+
 	cfgPath, err := serverconfig.DefaultConfigPath()
 	if err != nil {
 		return fmt.Errorf("locate config: %w", err)
@@ -230,7 +242,6 @@ func runDev(name string, port int) error {
 		return err
 	}
 	srv := &http.Server{
-		Addr:      fmt.Sprintf("127.0.0.1:%d", port),
 		Handler:   handler,
 		TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}},
 	}
@@ -247,9 +258,10 @@ func runDev(name string, port int) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	tlsLn := tls.NewListener(ln, srv.TLSConfig)
 	serveErr := make(chan error, 1)
 	go func() {
-		serveErr <- srv.ListenAndServeTLS("", "")
+		serveErr <- srv.Serve(tlsLn)
 	}()
 
 	select {
