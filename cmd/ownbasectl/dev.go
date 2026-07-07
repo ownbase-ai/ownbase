@@ -14,9 +14,12 @@ package main
 //     bridged, mirroring exactly what is already intentionally publicly
 //     reachable in production.
 //  2. Ensures mkcert's local CA is trusted (one-time sudo prompt, ever).
-//  3. Opens one SSH tunnel per bridged service (internal/tunnel, reused
-//     completely unmodified) directly to its container port, bypassing
-//     Caddy entirely.
+//  3. Reads each bridged service's actually-published loopback port
+//     straight off the Base's Quadlet units (internal/devbridge's
+//     GrepPublishPortCommand/ParseActualHostPorts) rather than trusting
+//     Discover's freshly-recomputed guess, then opens one SSH tunnel per
+//     bridged service (internal/tunnel, reused completely unmodified)
+//     directly to that port, bypassing Caddy entirely.
 //  4. Generates one mkcert certificate covering every bridged hostname:
 //     each service's real domain with ".localhost" appended verbatim,
 //     e.g. "myapp.example.com" -> "myapp.example.com.localhost" (RFC 6761 —
@@ -137,6 +140,22 @@ func runDev(name string, port int) error {
 		return nil
 	}
 
+	// Read each bridged service's ACTUALLY-published loopback port straight
+	// off the Base, rather than trusting the value Discover just computed
+	// from the ownbase.yaml we happened to read: DevBridgePorts() assigns a
+	// sorted index over all eligible services, so if another one was just
+	// added/removed/renamed and the daemon hasn't reconciled yet, a freshly
+	// computed number can point at a host port a different service's
+	// container still occupies. This closes that race without a daemon call.
+	actualRaw, err := tunnel.RunCommand(
+		profile.Host, profile.EffectiveSSHUser(), profile.EffectiveSSHKey(),
+		devbridge.GrepPublishPortCommand, profile.EffectiveSSHPort(),
+	)
+	if err != nil {
+		return fmt.Errorf("read actually-published ports from %q over SSH: %w", name, err)
+	}
+	actualPorts := devbridge.ParseActualHostPorts(actualRaw)
+
 	fmt.Fprintf(os.Stderr, "ownbasectl: opening %d SSH tunnel(s) to %q ...\n", len(targets), name)
 	var tunnels []*tunnel.Tunnel
 	defer func() {
@@ -148,12 +167,19 @@ func runDev(name string, port int) error {
 	routes := make(map[string]string)     // local hostname -> tunnel local addr
 	routeOwner := make(map[string]string) // local hostname -> owning service, to catch conflicts below
 	for _, target := range targets {
+		// Prefer the actually-applied port; fall back to the freshly
+		// computed one only when the service has never been reconciled yet
+		// (e.g. it was just added and the daemon hasn't built/started it).
+		hostPort := target.HostPort
+		if actual, ok := actualPorts[target.Service]; ok {
+			hostPort = actual
+		}
 		tun, err := tunnel.Open(
 			profile.Host, profile.EffectiveSSHUser(), profile.EffectiveSSHKey(),
-			target.HostPort, profile.EffectiveSSHPort(),
+			hostPort, profile.EffectiveSSHPort(),
 		)
 		if err != nil {
-			return fmt.Errorf("open SSH tunnel for service %q (host port %d): %w", target.Service, target.HostPort, err)
+			return fmt.Errorf("open SSH tunnel for service %q (host port %d): %w", target.Service, hostPort, err)
 		}
 		tunnels = append(tunnels, tun)
 		for _, h := range target.LocalHostnames() {
