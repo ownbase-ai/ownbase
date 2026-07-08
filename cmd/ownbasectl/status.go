@@ -196,5 +196,14 @@ func shortTime(ts string) string {
 	if err != nil {
 		return ts
 	}
-	return t.Local().Format("Jan 02 15:04:05")
+	// Year 1 is the Go zero time — treat it as "not set" so a misconfigured
+	// or pre-pointer-migration daemon never renders "Jan 01 0001 00:00:00".
+	if t.IsZero() || t.Year() <= 1 {
+		return ""
+	}
+	local := t.Local()
+	if local.Year() != time.Now().Year() {
+		return local.Format("Jan 02 2006 15:04:05")
+	}
+	return local.Format("Jan 02 15:04:05")
 }

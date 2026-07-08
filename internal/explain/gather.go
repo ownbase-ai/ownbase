@@ -116,11 +116,17 @@ func gatherServices(cfg *schema.OwnbaseConfig, running map[string]bool) []Servic
 func gatherSecurity(bs backup.Status, driftEvents []reconcile.DriftEvent, exposure secwatch.ExposureResult, access secwatch.AccessResult, vulns vulnscan.VulnStatus) SecurityStatus {
 	sec := SecurityStatus{
 		BackupRestorable: bs.Restorable,
-		LastVerified:     bs.LastVerified,
-		LastBackup:       bs.LastBackup,
 		Exposure:         exposure,
 		Access:           access,
 		Vulns:            vulns,
+	}
+	if !bs.LastBackup.IsZero() {
+		t := bs.LastBackup
+		sec.LastBackup = &t
+	}
+	if !bs.LastVerified.IsZero() {
+		t := bs.LastVerified
+		sec.LastVerified = &t
 	}
 	if len(driftEvents) > 0 {
 		sec.DriftDetected = true

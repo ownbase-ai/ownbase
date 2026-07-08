@@ -75,9 +75,12 @@ type SecurityStatus struct {
 	// A backup that has never been verified is NOT restorable by definition.
 	BackupRestorable bool `json:"backup_restorable"`
 	// LastVerified is when the most recent verified restore drill passed.
-	LastVerified time.Time `json:"last_verified,omitempty"`
+	// Pointer so omitempty suppresses it on a Base that has never verified
+	// (encoding/json's omitempty does not suppress a zero time.Time value).
+	LastVerified *time.Time `json:"last_verified,omitempty"`
 	// LastBackup is when the most recent backup snapshot was taken.
-	LastBackup time.Time `json:"last_backup,omitempty"`
+	// Pointer so omitempty suppresses it on a Base that has never backed up.
+	LastBackup *time.Time `json:"last_backup,omitempty"`
 
 	// DriftDetected is true when runtime/ differs from what the compiler produced.
 	// Any drift is a tamper signal — runtime/ has exactly one writer (the agent).
