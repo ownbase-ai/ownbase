@@ -458,14 +458,14 @@ func TestOwnbaseConfig_HasPublicDomain(t *testing.T) {
 	}
 }
 
-func TestOwnbaseConfig_DevBridgePorts_Empty(t *testing.T) {
+func TestOwnbaseConfig_TunnelPorts_Empty(t *testing.T) {
 	cfg := schema.OwnbaseConfig{}
-	if got := cfg.DevBridgePorts(); len(got) != 0 {
+	if got := cfg.TunnelPorts(); len(got) != 0 {
 		t.Errorf("expected no ports for empty config, got %v", got)
 	}
 }
 
-func TestOwnbaseConfig_DevBridgePorts_AnyPortedServiceEligibleDomainOrNot(t *testing.T) {
+func TestOwnbaseConfig_TunnelPorts_AnyPortedServiceEligibleDomainOrNot(t *testing.T) {
 	cfg := schema.OwnbaseConfig{
 		Services: map[string]schema.ServiceDecl{
 			"domain-and-port": {Source: "x", Domain: "a.example.com", Port: 8080},
@@ -473,12 +473,12 @@ func TestOwnbaseConfig_DevBridgePorts_AnyPortedServiceEligibleDomainOrNot(t *tes
 			"domain-only":     {Source: "z", Domain: "b.example.com"},
 		},
 	}
-	got := cfg.DevBridgePorts()
+	got := cfg.TunnelPorts()
 	// Eligibility is Port != 0 alone — domain-less services need an entry
 	// too, since the daemon's own HTTP health_probe dials this loopback
 	// publish for ANY port'd service, not just ones ownbasectl dev bridges
 	// (that narrower, domain'd-only filter lives in
-	// internal/devbridge.Discover instead).
+	// internal/bridge.Discover instead).
 	if len(got) != 2 {
 		t.Fatalf("expected exactly 2 eligible (port'd) services, got %v", got)
 	}
@@ -493,19 +493,19 @@ func TestOwnbaseConfig_DevBridgePorts_AnyPortedServiceEligibleDomainOrNot(t *tes
 	}
 }
 
-func TestOwnbaseConfig_DevBridgePorts_SingleService(t *testing.T) {
+func TestOwnbaseConfig_TunnelPorts_SingleService(t *testing.T) {
 	cfg := schema.OwnbaseConfig{
 		Services: map[string]schema.ServiceDecl{
 			"hello": {Source: "x", Domain: "hello.example.com", Port: 8080},
 		},
 	}
-	got := cfg.DevBridgePorts()
-	if got["hello"] != schema.DevBridgeBasePort {
-		t.Errorf("hello port = %d, want %d", got["hello"], schema.DevBridgeBasePort)
+	got := cfg.TunnelPorts()
+	if got["hello"] != schema.TunnelBasePort {
+		t.Errorf("hello port = %d, want %d", got["hello"], schema.TunnelBasePort)
 	}
 }
 
-func TestOwnbaseConfig_DevBridgePorts_DeterministicSortedAssignment(t *testing.T) {
+func TestOwnbaseConfig_TunnelPorts_DeterministicSortedAssignment(t *testing.T) {
 	cfg := schema.OwnbaseConfig{
 		Services: map[string]schema.ServiceDecl{
 			"zeta":  {Source: "z", Domain: "zeta.example.com", Port: 3000},
@@ -515,15 +515,15 @@ func TestOwnbaseConfig_DevBridgePorts_DeterministicSortedAssignment(t *testing.T
 	}
 	// Run several times to make sure map iteration order never affects the result.
 	for i := 0; i < 5; i++ {
-		got := cfg.DevBridgePorts()
-		if got["alpha"] != schema.DevBridgeBasePort {
-			t.Errorf("alpha port = %d, want %d", got["alpha"], schema.DevBridgeBasePort)
+		got := cfg.TunnelPorts()
+		if got["alpha"] != schema.TunnelBasePort {
+			t.Errorf("alpha port = %d, want %d", got["alpha"], schema.TunnelBasePort)
 		}
-		if got["multi"] != schema.DevBridgeBasePort+1 {
-			t.Errorf("multi port = %d, want %d", got["multi"], schema.DevBridgeBasePort+1)
+		if got["multi"] != schema.TunnelBasePort+1 {
+			t.Errorf("multi port = %d, want %d", got["multi"], schema.TunnelBasePort+1)
 		}
-		if got["zeta"] != schema.DevBridgeBasePort+2 {
-			t.Errorf("zeta port = %d, want %d", got["zeta"], schema.DevBridgeBasePort+2)
+		if got["zeta"] != schema.TunnelBasePort+2 {
+			t.Errorf("zeta port = %d, want %d", got["zeta"], schema.TunnelBasePort+2)
 		}
 	}
 }

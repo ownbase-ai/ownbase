@@ -1,4 +1,4 @@
-// Package devbridge implements the core logic behind `ownbasectl tunnel`: a
+// Package bridge implements the core logic behind `ownbasectl tunnel`: a
 // human-run local HTTPS bridge that reaches each of a Base's domain'd
 // services directly over an SSH tunnel (bypassing Caddy entirely), serving
 // them locally under their real, already-configured domain with
@@ -21,7 +21,7 @@
 // way to change a service's code remains the standard git-push-to-deploy
 // flow (see docs/development.md) — pushing to the service's bare repo and
 // updating ref: — exactly as in production.
-package devbridge
+package bridge
 
 import (
 	"fmt"
@@ -42,7 +42,7 @@ type Target struct {
 	Port int
 	// HostPort is the loopback port the compiler publishes this service's
 	// container to on the Base, assigned deterministically by
-	// schema.OwnbaseConfig.DevBridgePorts() — the same computation the
+	// schema.OwnbaseConfig.TunnelPorts() — the same computation the
 	// compiler runs when rendering the Quadlet unit, so both sides always
 	// agree without coordinating. This is what the SSH tunnel actually
 	// connects to; it is deliberately a different number than Port so that
@@ -86,7 +86,7 @@ func Discover(raw string) ([]Target, error) {
 	}
 	sort.Strings(names)
 
-	hostPorts := cfg.DevBridgePorts()
+	hostPorts := cfg.TunnelPorts()
 
 	var targets []Target
 	for _, name := range names {

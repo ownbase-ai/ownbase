@@ -1,4 +1,4 @@
-package devbridge
+package bridge
 
 // proxy.go implements the local HTTPS reverse proxy: one
 // httputil.ReverseProxy per bridged local hostname, dispatched by the

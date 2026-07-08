@@ -222,7 +222,7 @@ It reads the Base's live `ownbase.yaml` over SSH, opens one SSH tunnel per servi
 
 Services marked `internal: true` are included even though they have no Caddy route — the tunnel is the only access path for those services, which is precisely the point. Use `internal: true` for private admin UIs, dashboards, or any service that should be reachable over an authenticated SSH tunnel but never exposed to the internet.
 
-Each bridged service's loopback port is deliberately a different number than its own `port:` — assigned deterministically starting at 41000 by sorted service name (`schema.OwnbaseConfig.DevBridgePorts()`) — so a service can declare `port: 80`/`443` without colliding with Caddy's own machine-wide bind, and two services can share the same `port:` without colliding with each other. `tunnel` computes this the same way the daemon's compiler does, straight from `ownbase.yaml`, with no daemon call needed to agree on the number.
+Each bridged service's loopback port is deliberately a different number than its own `port:` — assigned deterministically starting at 41000 by sorted service name (`schema.OwnbaseConfig.TunnelPorts()`) — so a service can declare `port: 80`/`443` without colliding with Caddy's own machine-wide bind, and two services can share the same `port:` without colliding with each other. `tunnel` computes this the same way the daemon's compiler does, straight from `ownbase.yaml`, with no daemon call needed to agree on the number.
 
 ```
 ownbasectl: reading ownbase.yaml from "mybase" ...

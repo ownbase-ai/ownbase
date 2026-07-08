@@ -1,6 +1,6 @@
-package devbridge
+package bridge
 
-// quadlet.go closes a race in the tunnel port allocation: DevBridgePorts()
+// quadlet.go closes a race in the tunnel port allocation: TunnelPorts()
 // (internal/schema) assigns each eligible service a sorted index over the
 // CURRENT ownbase.yaml, so adding, removing, or renaming any one eligible
 // service shifts every alphabetically-later service's number. If

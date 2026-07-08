@@ -1,4 +1,4 @@
-package devbridge
+package bridge
 
 // certs.go wraps mkcert (https://github.com/FiloSottile/mkcert), a tool
 // that creates a local-only certificate authority (CA), installs it into

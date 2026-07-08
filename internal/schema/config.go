@@ -307,7 +307,7 @@ func (c *OwnbaseConfig) HasPublicDomain() bool {
 	return false
 }
 
-// DevBridgeBasePort is the first loopback port the compiler allocates to
+// TunnelBasePort is the first loopback port the compiler allocates to
 // any port'd service's direct-to-container publish. Each eligible service
 // gets one port, assigned by sorted name starting here — deliberately
 // decoupled from any service's own container Port so that a service can
@@ -317,16 +317,16 @@ func (c *OwnbaseConfig) HasPublicDomain() bool {
 // `ownbasectl tunnel`: the daemon's own HTTP health_probe (internal/podman's
 // waitForContainer) also dials a service's container directly over this
 // same loopback publish, including for domain-less internal services the
-// tunnel never bridges — see DevBridgePorts.
-const DevBridgeBasePort = 41000
+// tunnel never bridges — see TunnelPorts.
+const TunnelBasePort = 41000
 
-// DevBridgePorts returns the deterministic loopback port assigned to each
+// TunnelPorts returns the deterministic loopback port assigned to each
 // port'd service, keyed by service name. Eligibility here is intentionally
 // broader than HasPublicDomain/what `ownbasectl tunnel` bridges: ANY service
 // with a Port set gets an entry, domain or not, because two independent
 // things depend on this loopback publish existing —
 //  1. `ownbasectl tunnel`'s SSH bridge (domain'd services only — see
-//     internal/devbridge.Discover, which filters this map down).
+//     internal/bridge.Discover, which filters this map down).
 //  2. The daemon's own startup HTTP health_probe (internal/podman's
 //     waitForContainer), which needs a loopback port to dial for ANY
 //     port'd service, including purely-internal ones with no domain.
@@ -343,8 +343,8 @@ const DevBridgeBasePort = 41000
 // narrow race if the config changed between the two reads, which is why
 // `ownbasectl tunnel` additionally cross-checks against the Base's actually-
 // applied Quadlet units rather than trusting this value alone (see
-// internal/devbridge.ParseActualHostPorts).
-func (c *OwnbaseConfig) DevBridgePorts() map[string]int {
+// internal/bridge.ParseActualHostPorts).
+func (c *OwnbaseConfig) TunnelPorts() map[string]int {
 	var names []string
 	for name, svc := range c.Services {
 		if svc.Port != 0 {
@@ -355,7 +355,7 @@ func (c *OwnbaseConfig) DevBridgePorts() map[string]int {
 
 	ports := make(map[string]int, len(names))
 	for i, name := range names {
-		ports[name] = DevBridgeBasePort + i
+		ports[name] = TunnelBasePort + i
 	}
 	return ports
 }

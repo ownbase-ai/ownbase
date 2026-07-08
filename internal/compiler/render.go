@@ -74,10 +74,10 @@ func renderContainer(c ContainerModel) string {
 	// port'd service regardless of domain. Caddy itself never touches this;
 	// it addresses containers by name over the internal Podman network.
 	// Host and container ports are deliberately different numbers (see
-	// ContainerModel.DevBridgePort) so this can never collide with Caddy's
+	// ContainerModel.TunnelPort) so this can never collide with Caddy's
 	// own machine-wide bind or with another service's loopback publish.
-	if c.DevBridgePort > 0 {
-		fmt.Fprintf(&b, "PublishPort=127.0.0.1:%d:%d\n", c.DevBridgePort, c.PublicPort)
+	if c.TunnelPort > 0 {
+		fmt.Fprintf(&b, "PublishPort=127.0.0.1:%d:%d\n", c.TunnelPort, c.PublicPort)
 	}
 
 	// Static environment variables (plaintext; use ownbasectl secrets for sensitive values).

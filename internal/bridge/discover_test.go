@@ -1,10 +1,10 @@
-package devbridge_test
+package bridge_test
 
 import (
 	"reflect"
 	"testing"
 
-	"github.com/ownbase/ownbase/internal/devbridge"
+	"github.com/ownbase/ownbase/internal/bridge"
 	"github.com/ownbase/ownbase/internal/schema"
 )
 
@@ -32,12 +32,12 @@ services:
 `
 
 func TestDiscover_SkipsServicesWithNoDomainOrNoPort(t *testing.T) {
-	targets, err := devbridge.Discover(sampleYAML)
+	targets, err := bridge.Discover(sampleYAML)
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
 
-	got := make(map[string]devbridge.Target, len(targets))
+	got := make(map[string]bridge.Target, len(targets))
 	for _, tg := range targets {
 		got[tg.Service] = tg
 	}
@@ -75,16 +75,16 @@ func TestDiscover_SkipsServicesWithNoDomainOrNoPort(t *testing.T) {
 	// service name (across ALL port'd services, including domain-less ones
 	// like "auth", since the health_probe consumer needs an entry for
 	// those too — see schema.OwnbaseConfig.DevBridgePorts) starting at
-	// schema.DevBridgeBasePort — and must differ from Port (the
+	// schema.TunnelBasePort — and must differ from Port (the
 	// container's own listening port). Sorted order here is
 	// auth < hello < multi, so "auth" (filtered out of targets above, but
 	// still present in the underlying allocation) claims the base port
 	// first, pushing hello/multi up by one each.
-	if hello.HostPort != schema.DevBridgeBasePort+1 {
-		t.Errorf("hello.HostPort = %d, want %d", hello.HostPort, schema.DevBridgeBasePort+1)
+	if hello.HostPort != schema.TunnelBasePort+1 {
+		t.Errorf("hello.HostPort = %d, want %d", hello.HostPort, schema.TunnelBasePort+1)
 	}
-	if multi.HostPort != schema.DevBridgeBasePort+2 {
-		t.Errorf("multi.HostPort = %d, want %d", multi.HostPort, schema.DevBridgeBasePort+2)
+	if multi.HostPort != schema.TunnelBasePort+2 {
+		t.Errorf("multi.HostPort = %d, want %d", multi.HostPort, schema.TunnelBasePort+2)
 	}
 	if hello.HostPort == hello.Port {
 		t.Errorf("hello.HostPort (%d) must differ from hello.Port (%d)", hello.HostPort, hello.Port)
@@ -92,7 +92,7 @@ func TestDiscover_SkipsServicesWithNoDomainOrNoPort(t *testing.T) {
 }
 
 func TestDiscover_SortedByServiceName(t *testing.T) {
-	targets, err := devbridge.Discover(sampleYAML)
+	targets, err := bridge.Discover(sampleYAML)
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
@@ -112,7 +112,7 @@ services:
     source: apps/a
     port: 8080
 `
-	targets, err := devbridge.Discover(noDomains)
+	targets, err := bridge.Discover(noDomains)
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
@@ -122,7 +122,7 @@ services:
 }
 
 func TestDiscover_InvalidYAMLReturnsError(t *testing.T) {
-	if _, err := devbridge.Discover("not: valid: yaml: at: all:"); err == nil {
+	if _, err := bridge.Discover("not: valid: yaml: at: all:"); err == nil {
 		t.Error("expected error for invalid ownbase.yaml, got nil")
 	}
 }
@@ -143,11 +143,11 @@ services:
     domain: web.example.com
     port: 8080
 `
-	targets, err := devbridge.Discover(yaml)
+	targets, err := bridge.Discover(yaml)
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
-	got := make(map[string]devbridge.Target, len(targets))
+	got := make(map[string]bridge.Target, len(targets))
 	for _, tg := range targets {
 		got[tg.Service] = tg
 	}
@@ -167,7 +167,7 @@ services:
 }
 
 func TestTarget_LocalHostnames(t *testing.T) {
-	tg := devbridge.Target{
+	tg := bridge.Target{
 		Service: "app",
 		Port:    3000,
 		Domains: []string{"app.example.com", "app.example.org"},
@@ -180,12 +180,12 @@ func TestTarget_LocalHostnames(t *testing.T) {
 }
 
 func TestAllLocalHostnames_DedupedAndSorted(t *testing.T) {
-	targets := []devbridge.Target{
+	targets := []bridge.Target{
 		{Service: "b", Domains: []string{"b.example.com"}},
 		{Service: "a", Domains: []string{"a.example.com", "shared.example.com"}},
 		{Service: "c", Domains: []string{"shared.example.com"}}, // duplicate across services
 	}
-	got := devbridge.AllLocalHostnames(targets)
+	got := bridge.AllLocalHostnames(targets)
 	want := []string{
 		"a.example.com.localhost",
 		"b.example.com.localhost",
@@ -197,7 +197,7 @@ func TestAllLocalHostnames_DedupedAndSorted(t *testing.T) {
 }
 
 func TestAllLocalHostnames_Empty(t *testing.T) {
-	if got := devbridge.AllLocalHostnames(nil); len(got) != 0 {
+	if got := bridge.AllLocalHostnames(nil); len(got) != 0 {
 		t.Errorf("expected empty result for no targets, got %v", got)
 	}
 }
