@@ -68,7 +68,7 @@ ownbasectl status mybase   # confirm "hello" is running and healthy
 
 ### 4. Access the service locally
 
-Before DNS points at the Base, reach the service over a direct SSH tunnel:
+On a local VM, services have no DNS records, so Caddy never gets a real certificate and there's no URL to browse to. `ownbasectl tunnel` solves this: it reaches the service directly over SSH and serves it at a locally-trusted HTTPS URL:
 
 ```bash
 ownbasectl tunnel mybase
@@ -86,7 +86,9 @@ No code-sync — push to the service's bare repo and update ref: to deploy chang
 Press Ctrl+C to stop.
 ```
 
-Open that URL — it works fully offline, needs no `/etc/hosts` entry, and stays the same across VM restarts. This is the one `ownbasectl` command allowed to prompt (a one-time `mkcert -install` to trust a local certificate authority). There's no code-sync: to iterate, push new code to the service's repo and bump `ref:` with `ownbasectl service update mybase hello --ref <branch>` — the daemon rebuilds and restarts it, and the tunnel picks up the change automatically. Once a service's domain actually points DNS at the Base, it's reachable the same way in production, through Caddy.
+Open that URL — it works fully offline, needs no `/etc/hosts` entry, and stays the same across VM restarts. `tunnel` also works for accessing internal services on a live server.
+
+To iterate, push new code to the service's repo and bump `ref:` with `ownbasectl service update mybase hello --ref <branch>` — the daemon rebuilds and restarts it, and the tunnel picks up the change automatically. Once DNS points at the Base, the service is reachable through Caddy with a real Let's Encrypt certificate.
 
 ### 5. Set up backups
 
