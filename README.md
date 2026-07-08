@@ -66,9 +66,9 @@ ownbasectl service add mybase hello \
 ownbasectl status mybase   # confirm "hello" is running and healthy
 ```
 
-### 4. Start the dev server and access the service
+### 4. Access the service locally
 
-A fresh Base never opens ports 80/443, so there's no real TLS certificate to browse to yet — even before any domain's DNS is live, you can still see the service running, over trusted HTTPS, with:
+`ownbasectl tunnel` opens an SSH tunnel directly to the service and serves it at `https://<domain>.localhost:8443` — a locally-trusted HTTPS URL that resolves to loopback on every OS and browser without a DNS entry, a `/etc/hosts` edit, or the Base's IP address. Use it any time you want secure access to a service without going through the internet: during initial setup before DNS is live, while iterating on a new service, or for services marked `internal: true` that have no public Caddy route at all.
 
 ```bash
 ownbasectl tunnel mybase
