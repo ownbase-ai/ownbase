@@ -1,10 +1,10 @@
-package devbridge
+package bridge
 
-// quadlet.go closes a race in the dev-bridge port allocation: DevBridgePorts()
+// quadlet.go closes a race in the tunnel port allocation: TunnelPorts()
 // (internal/schema) assigns each eligible service a sorted index over the
 // CURRENT ownbase.yaml, so adding, removing, or renaming any one eligible
 // service shifts every alphabetically-later service's number. If
-// `ownbasectl dev` reads ownbase.yaml immediately after such a push — before
+// `ownbasectl tunnel` reads ownbase.yaml immediately after such a push — before
 // the daemon's reconcile has actually re-published the affected containers —
 // a value it computes can diverge from what's really running, and can even
 // land on a host port a *different* service's container still occupies,
@@ -13,7 +13,7 @@ package devbridge
 // The fix: read the loopback host port each service's Quadlet unit is
 // ACTUALLY published on right now, straight off the Base, instead of trusting
 // an independently recomputed value. This stays true to the "no daemon call"
-// dev-bridge design (see docs/decisions.md) — it's just one more file read
+// tunnel bridge design (see docs/decisions.md) — it's just one more file read
 // over the same SSH connection already used to fetch ownbase.yaml — while
 // guaranteeing the tunnel always targets exactly what's currently applied.
 
@@ -30,7 +30,7 @@ import (
 // one path string).
 const SystemQuadletDir = "/etc/containers/systemd"
 
-// GrepPublishPortCommand is the remote shell command `ownbasectl dev` runs
+// GrepPublishPortCommand is the remote shell command `ownbasectl tunnel` runs
 // over SSH to read every bridged service's actually-applied PublishPort=
 // line in one round trip. Always exits 0 (via "; true") even when no units
 // exist yet (e.g. nothing has been reconciled since a fresh service add) —

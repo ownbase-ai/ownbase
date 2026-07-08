@@ -1,21 +1,21 @@
 package main
 
-// dev.go implements `ownbasectl dev <name>` — the one human-run, explicitly
-// interactive command in ownbasectl (see docs/decisions.md for why this
-// split exists). Starting this long-running command is itself the human's
-// "I am sitting here, ready to develop" signal, so it is the only place a
-// one-time `sudo mkcert -install` prompt is acceptable. `create`/`vm` never
-// prompt for anything — see cmd/ownbasectl/create.go.
+// tunnel.go implements `ownbasectl tunnel <name>` — the one human-run,
+// explicitly interactive command in ownbasectl (see docs/decisions.md for why
+// this split exists). Starting this long-running command is itself the human's
+// "I am sitting here, ready" signal, so it is the only place a one-time
+// `sudo mkcert -install` prompt is acceptable. `create`/`vm` never prompt for
+// anything — see cmd/ownbasectl/create.go.
 //
 // What it does, step by step:
 //  1. Reads the target's ownbase.yaml over SSH and finds every service with
 //     both a port and at least one domain configured
-//     (internal/devbridge.Discover). A service with no domain is never
-//     bridged, mirroring exactly what is already intentionally publicly
-//     reachable in production.
+//     (internal/bridge.Discover). A service with no domain is never
+//     bridged. Services marked internal: true are included even though they
+//     have no Caddy route — the tunnel is the only access path for those.
 //  2. Ensures mkcert's local CA is trusted (one-time sudo prompt, ever).
 //  3. Reads each bridged service's actually-published loopback port
-//     straight off the Base's Quadlet units (internal/devbridge's
+//     straight off the Base's Quadlet units (internal/bridge's
 //     GrepPublishPortCommand/ParseActualHostPorts) rather than trusting
 //     Discover's freshly-recomputed guess, then opens one SSH tunnel per
 //     bridged service (internal/tunnel, reused completely unmodified)
@@ -34,7 +34,7 @@ package main
 // tunnels and proxies traffic to whatever is currently deployed — no bind
 // mount, file watcher, or hot-reload path. To iterate on a service's code,
 // push to its bare repo and update ref: exactly as in production (see
-// docs/development.md) — the dev bridge, if still running, picks up the
+// docs/development.md) — the tunnel, if still running, picks up the
 // new container transparently since it tunnels to the service's port, not
 // to a specific container instance.
 
@@ -52,55 +52,58 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/ownbase/ownbase/internal/devbridge"
+	"github.com/ownbase/ownbase/internal/bridge"
 	"github.com/ownbase/ownbase/internal/serverconfig"
 	"github.com/ownbase/ownbase/internal/tunnel"
 )
 
-// DefaultDevBridgePort is the local HTTPS port `ownbasectl dev` binds to.
+// DefaultTunnelPort is the local HTTPS port `ownbasectl tunnel` binds to.
 // Deliberately not 443: binding a privileged port would add a second,
 // independent permission requirement on top of the one-time mkcert install.
-const DefaultDevBridgePort = 8443
+const DefaultTunnelPort = 8443
 
-// devBridgeShutdownTimeout bounds how long graceful HTTP server shutdown
+// tunnelShutdownTimeout bounds how long graceful HTTP server shutdown
 // waits for in-flight requests to finish after Ctrl+C.
-const devBridgeShutdownTimeout = 5 * time.Second
+const tunnelShutdownTimeout = 5 * time.Second
 
-func newDevCmd() *cobra.Command {
+func newTunnelCmd() *cobra.Command {
 	var port int
 	cmd := &cobra.Command{
-		Use:   "dev <name>",
-		Short: "Local HTTPS dev bridge: reach a Base's domain'd services over SSH tunnels",
-		Long: `ownbasectl dev is the one place in ownbasectl a human deliberately opts
+		Use:   "tunnel <name>",
+		Short: "Local HTTPS bridge: reach a Base's services over SSH tunnels",
+		Long: `ownbasectl tunnel is the one place in ownbasectl a human deliberately opts
 into an interactive session — starting it is itself the "I am sitting here,
-ready to develop" signal, so it is the only command allowed to prompt for
-sudo (mkcert's one-time local CA install). create/vm never prompt for
-anything.
+ready" signal, so it is the only command allowed to prompt for sudo (mkcert's
+one-time local CA install). create/vm never prompt for anything.
 
 It reads the Base's live ownbase.yaml over SSH, opens one SSH tunnel per
-service that has both a port and a domain: (or domains:) configured — a
-service with no domain is never bridged — and serves each at
-https://<domain>.localhost:8443: its real, already-configured production
+service that has both a port and a domain: (or domains:) configured, and
+serves each at https://<domain>.localhost:8443: its real, already-configured
 domain with ".localhost" appended, which every OS/browser resolves straight
 to loopback (RFC 6761) with no /etc/hosts entry, no DNS lookup, and no
 dependency on the Base's IP address (surviving VM stop/start unchanged).
 
+Services marked internal: true are included even though they have no Caddy
+route — the tunnel is the only access path for those services, which is
+the point: a private admin UI, dashboard, or internal API that you want to
+reach securely over SSH without ever exposing it to the internet.
+
 There is no code-sync mechanism: to iterate on a service's code, push a
 branch to its bare repo and run 'ownbasectl service update --ref', exactly
-as in production (see docs/development.md). The dev bridge, if still
-running, picks up the new container transparently.`,
-		Example: `  ownbasectl dev mybase
-  ownbasectl dev mybase --port 9443`,
+as in production (see docs/development.md). The tunnel, if still running,
+picks up the new container transparently.`,
+		Example: `  ownbasectl tunnel mybase
+  ownbasectl tunnel mybase --port 9443`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDev(args[0], port)
+			return runTunnel(args[0], port)
 		},
 	}
-	cmd.Flags().IntVar(&port, "port", DefaultDevBridgePort, "local port to serve HTTPS on")
+	cmd.Flags().IntVar(&port, "port", DefaultTunnelPort, "local port to serve HTTPS on")
 	return cmd
 }
 
-func runDev(name string, port int) error {
+func runTunnel(name string, port int) error {
 	// Bind the local port immediately — before any SSH work, cert generation,
 	// or tunnel setup — so that a port conflict fails fast with a clear message
 	// rather than surfacing as a cryptic error after all the expensive setup is
@@ -108,7 +111,7 @@ func runDev(name string, port int) error {
 	listenAddr := fmt.Sprintf("127.0.0.1:%d", port)
 	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
-		return fmt.Errorf("bind local port %d: %w\n\nIs another 'ownbasectl dev' still running? Kill it or choose a different port with --port.", port, err)
+		return fmt.Errorf("bind local port %d: %w\n\nIs another 'ownbasectl tunnel' still running? Kill it or choose a different port with --port.", port, err)
 	}
 	defer ln.Close()
 
@@ -128,11 +131,11 @@ func runDev(name string, port int) error {
 		return fmt.Errorf("Base %q has no host recorded", name)
 	}
 
-	if !devbridge.MkcertAvailable() {
-		return fmt.Errorf("%s", devbridge.MkcertInstallHint)
+	if !bridge.MkcertAvailable() {
+		return fmt.Errorf("%s", bridge.MkcertInstallHint)
 	}
 	fmt.Fprintln(os.Stderr, "ownbasectl: ensuring mkcert's local CA is trusted (sudo may prompt once, ever) ...")
-	if err := devbridge.MkcertEnsureInstalled(); err != nil {
+	if err := bridge.MkcertEnsureInstalled(); err != nil {
 		return err
 	}
 
@@ -145,7 +148,7 @@ func runDev(name string, port int) error {
 		return fmt.Errorf("read ownbase.yaml from %q over SSH: %w", name, err)
 	}
 
-	targets, err := devbridge.Discover(raw)
+	targets, err := bridge.Discover(raw)
 	if err != nil {
 		return fmt.Errorf("parse ownbase.yaml from %q: %w", name, err)
 	}
@@ -157,19 +160,19 @@ func runDev(name string, port int) error {
 
 	// Read each bridged service's ACTUALLY-published loopback port straight
 	// off the Base, rather than trusting the value Discover just computed
-	// from the ownbase.yaml we happened to read: DevBridgePorts() assigns a
+	// from the ownbase.yaml we happened to read: TunnelPorts() assigns a
 	// sorted index over all eligible services, so if another one was just
 	// added/removed/renamed and the daemon hasn't reconciled yet, a freshly
 	// computed number can point at a host port a different service's
 	// container still occupies. This closes that race without a daemon call.
 	actualRaw, err := tunnel.RunCommand(
 		profile.Host, profile.EffectiveSSHUser(), profile.EffectiveSSHKey(),
-		devbridge.GrepPublishPortCommand, profile.EffectiveSSHPort(),
+		bridge.GrepPublishPortCommand, profile.EffectiveSSHPort(),
 	)
 	if err != nil {
 		return fmt.Errorf("read actually-published ports from %q over SSH: %w", name, err)
 	}
-	actualPorts := devbridge.ParseActualHostPorts(actualRaw)
+	actualPorts := bridge.ParseActualHostPorts(actualRaw)
 
 	fmt.Fprintf(os.Stderr, "ownbasectl: opening %d SSH tunnel(s) to %q ...\n", len(targets), name)
 	var tunnels []*tunnel.Tunnel
@@ -181,7 +184,7 @@ func runDev(name string, port int) error {
 
 	routes := make(map[string]string)     // local hostname -> tunnel local addr
 	routeOwner := make(map[string]string) // local hostname -> owning service, to catch conflicts below
-	var bridged []devbridge.Target        // targets we actually opened a tunnel for
+	var bridged []bridge.Target           // targets we actually opened a tunnel for
 	for _, target := range targets {
 		// Only tunnel using the actually-applied port. Falling back to the
 		// freshly-computed guess when a service is missing from
@@ -224,11 +227,11 @@ func runDev(name string, port int) error {
 	// AllLocalHostnames dedupes and sorts — used for both the cert's SAN
 	// list and the printed summary below, so a service with overlapping
 	// domains (or the same one) never produces duplicate SANs.
-	hostnames := devbridge.AllLocalHostnames(bridged)
+	hostnames := bridge.AllLocalHostnames(bridged)
 
-	certDir := filepath.Join(filepath.Dir(cfgPath), "dev-bridge", name)
+	certDir := filepath.Join(filepath.Dir(cfgPath), "tunnel", name)
 	fmt.Fprintf(os.Stderr, "ownbasectl: generating local HTTPS certificate for %d hostname(s) ...\n", len(hostnames))
-	certPath, keyPath, err := devbridge.GenerateCert(hostnames, certDir)
+	certPath, keyPath, err := bridge.GenerateCert(hostnames, certDir)
 	if err != nil {
 		return err
 	}
@@ -237,7 +240,7 @@ func runDev(name string, port int) error {
 		return fmt.Errorf("load generated certificate: %w", err)
 	}
 
-	handler, err := devbridge.NewProxyHandler(routes)
+	handler, err := bridge.NewProxyHandler(routes)
 	if err != nil {
 		return err
 	}
@@ -247,7 +250,7 @@ func runDev(name string, port int) error {
 	}
 
 	fmt.Println()
-	fmt.Println("Bridging:")
+	fmt.Println("Tunneling:")
 	for _, h := range hostnames {
 		fmt.Printf("  https://%s:%d\n", h, port)
 	}
@@ -266,8 +269,8 @@ func runDev(name string, port int) error {
 
 	select {
 	case <-ctx.Done():
-		fmt.Fprintln(os.Stderr, "\nownbasectl: shutting down dev bridge ...")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), devBridgeShutdownTimeout)
+		fmt.Fprintln(os.Stderr, "\nownbasectl: shutting down tunnel ...")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), tunnelShutdownTimeout)
 		defer cancel()
 		_ = srv.Shutdown(shutdownCtx)
 		return nil

@@ -1,9 +1,9 @@
-package devbridge
+package bridge
 
 // proxy.go implements the local HTTPS reverse proxy: one
 // httputil.ReverseProxy per bridged local hostname, dispatched by the
 // incoming request's Host header. TLS termination happens in the caller
-// (cmd/ownbasectl/dev.go), which loads the mkcert-generated certificate.
+// (cmd/ownbasectl/tunnel.go), which loads the mkcert-generated certificate.
 
 import (
 	"fmt"
@@ -54,7 +54,7 @@ func NewProxyHandler(routes map[string]string) (http.Handler, error) {
 		host := stripPort(r.Host)
 		proxy, ok := proxies[host]
 		if !ok {
-			http.Error(w, fmt.Sprintf("ownbasectl dev: no bridged service for host %q", host), http.StatusNotFound)
+			http.Error(w, fmt.Sprintf("ownbasectl tunnel: no bridged service for host %q", host), http.StatusNotFound)
 			return
 		}
 		proxy.ServeHTTP(w, r)

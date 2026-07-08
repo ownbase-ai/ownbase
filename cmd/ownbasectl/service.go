@@ -45,6 +45,7 @@ type serviceFieldFlags struct {
 	port            int
 	domain          string
 	domains         []string
+	internal        bool
 	dataPath        string
 	database        string
 	requires        []string
@@ -60,8 +61,9 @@ func (f *serviceFieldFlags) register(cmd *cobra.Command) {
 	fl.StringVar(&f.dockerfile, "dockerfile", "", `Dockerfile path within the repo (default "Dockerfile")`)
 	fl.StringVar(&f.context, "context", "", "build context subdirectory within the repo")
 	fl.IntVar(&f.port, "port", 0, "primary port the container listens on")
-	fl.StringVar(&f.domain, "domain", "", "public hostname for the Caddy route (empty = internal-only); deprecated alias for a single --domains entry")
+	fl.StringVar(&f.domain, "domain", "", "public hostname for the Caddy route; deprecated alias for a single --domains entry")
 	fl.StringSliceVar(&f.domains, "domains", nil, "public hostnames for the Caddy route, one route per domain; repeatable, replaces the full list when passed; combined with --domain and deduplicated")
+	fl.BoolVar(&f.internal, "internal", false, "tunnel-only: has domain(s) and port for `ownbasectl tunnel` but no Caddy route — never internet-facing")
 	fl.StringVar(&f.dataPath, "data-path", "", `mount path for the persistent data volume inside the container (default "/data")`)
 	fl.StringVar(&f.database, "database", "", "name of the Postgres database to provision")
 	fl.StringSliceVar(&f.requires, "requires", nil, "capability (service key) this service depends on; repeatable; replaces the full list")
@@ -127,6 +129,7 @@ func runServiceAdd(base, name string, f serviceFieldFlags, jsonOut bool) error {
 		Port:            f.port,
 		Domain:          f.domain,
 		Domains:         f.domains,
+		Internal:        f.internal,
 		DataPath:        f.dataPath,
 		Database:        f.database,
 		Requires:        f.requires,
@@ -265,6 +268,9 @@ func runServiceUpdate(cmd *cobra.Command, base, name string, f serviceFieldFlags
 	}
 	if changed("domains") {
 		decl.Domains = f.domains
+	}
+	if changed("internal") {
+		decl.Internal = f.internal
 	}
 	if changed("data-path") {
 		decl.DataPath = f.dataPath

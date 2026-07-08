@@ -299,12 +299,12 @@ func TestCompile_RouteUpstreamUsesContainerName(t *testing.T) {
 // Dev-bridge loopback port allocation (decoupled from container port)
 // ---------------------------------------------------------------------------
 
-// TestCompile_DevBridgePort_DistinctFromContainerPort verifies that a
+// TestCompile_TunnelPort_DistinctFromContainerPort verifies that a
 // domain'd + port'd service gets a PublishPort= line with distinct host and
 // container ports — the host side is the deterministic dev-bridge
-// allocation (schema.DevBridgeBasePort-based), the container side remains
+// allocation (schema.TunnelBasePort-based), the container side remains
 // the service's own port:.
-func TestCompile_DevBridgePort_DistinctFromContainerPort(t *testing.T) {
+func TestCompile_TunnelPort_DistinctFromContainerPort(t *testing.T) {
 	in := compiler.Input{
 		Config: &schema.OwnbaseConfig{
 			SchemaVersion: "v1",
@@ -322,7 +322,7 @@ func TestCompile_DevBridgePort_DistinctFromContainerPort(t *testing.T) {
 	if !ok {
 		t.Fatal("ownbase-hello.container not found in output")
 	}
-	want := fmt.Sprintf("PublishPort=127.0.0.1:%d:80", schema.DevBridgeBasePort)
+	want := fmt.Sprintf("PublishPort=127.0.0.1:%d:80", schema.TunnelBasePort)
 	if !strings.Contains(unit, want) {
 		t.Errorf("unit missing %q\nunit:\n%s", want, unit)
 	}
@@ -331,14 +331,14 @@ func TestCompile_DevBridgePort_DistinctFromContainerPort(t *testing.T) {
 	}
 }
 
-// TestCompile_DevBridgePort_NoDomainStillPublishes verifies that a service
+// TestCompile_TunnelPort_NoDomainStillPublishes verifies that a service
 // with a port: but no domain STILL gets a PublishPort= line, at a
 // decoupled host port. `ownbasectl dev` itself never bridges a domain-less
-// service (see internal/devbridge.Discover), but the daemon's own HTTP
+// service (see internal/bridge.Discover), but the daemon's own HTTP
 // health_probe (internal/podman's waitForContainer) needs this loopback
 // publish to dial for ANY port'd service, domain or not — omitting it here
 // would silently skip the HTTP health-check phase for internal services.
-func TestCompile_DevBridgePort_NoDomainStillPublishes(t *testing.T) {
+func TestCompile_TunnelPort_NoDomainStillPublishes(t *testing.T) {
 	in := compiler.Input{
 		Config: &schema.OwnbaseConfig{
 			SchemaVersion: "v1",
@@ -355,16 +355,16 @@ func TestCompile_DevBridgePort_NoDomainStillPublishes(t *testing.T) {
 	if !ok {
 		t.Fatal("ownbase-worker.container not found in output")
 	}
-	want := fmt.Sprintf("PublishPort=127.0.0.1:%d:8080", schema.DevBridgeBasePort)
+	want := fmt.Sprintf("PublishPort=127.0.0.1:%d:8080", schema.TunnelBasePort)
 	if !strings.Contains(unit, want) {
 		t.Errorf("domain-less port'd service should still get %q\nunit:\n%s", want, unit)
 	}
 }
 
-// TestCompile_DevBridgePort_NoPortNoDomainNoPublish verifies that a service
+// TestCompile_TunnelPort_NoPortNoDomainNoPublish verifies that a service
 // with neither port: nor domain: gets no PublishPort= line — there is
 // nothing to publish.
-func TestCompile_DevBridgePort_NoPortNoDomainNoPublish(t *testing.T) {
+func TestCompile_TunnelPort_NoPortNoDomainNoPublish(t *testing.T) {
 	in := compiler.Input{
 		Config: &schema.OwnbaseConfig{
 			SchemaVersion: "v1",
@@ -385,11 +385,11 @@ func TestCompile_DevBridgePort_NoPortNoDomainNoPublish(t *testing.T) {
 	}
 }
 
-// TestCompile_DevBridgePort_MultipleServicesGetDistinctPorts verifies that
+// TestCompile_TunnelPort_MultipleServicesGetDistinctPorts verifies that
 // two eligible services with the SAME container port: get distinct,
 // collision-free host-side dev-bridge ports, assigned deterministically by
 // sorted service name.
-func TestCompile_DevBridgePort_MultipleServicesGetDistinctPorts(t *testing.T) {
+func TestCompile_TunnelPort_MultipleServicesGetDistinctPorts(t *testing.T) {
 	in := compiler.Input{
 		Config: &schema.OwnbaseConfig{
 			SchemaVersion: "v1",
@@ -404,8 +404,8 @@ func TestCompile_DevBridgePort_MultipleServicesGetDistinctPorts(t *testing.T) {
 	alphaUnit := out.QuadletUnits["ownbase-alpha.container"]
 	betaUnit := out.QuadletUnits["ownbase-beta.container"]
 
-	wantAlpha := fmt.Sprintf("PublishPort=127.0.0.1:%d:3000", schema.DevBridgeBasePort)
-	wantBeta := fmt.Sprintf("PublishPort=127.0.0.1:%d:3000", schema.DevBridgeBasePort+1)
+	wantAlpha := fmt.Sprintf("PublishPort=127.0.0.1:%d:3000", schema.TunnelBasePort)
+	wantBeta := fmt.Sprintf("PublishPort=127.0.0.1:%d:3000", schema.TunnelBasePort+1)
 	if !strings.Contains(alphaUnit, wantAlpha) {
 		t.Errorf("alpha unit missing %q\nunit:\n%s", wantAlpha, alphaUnit)
 	}
@@ -739,5 +739,76 @@ func TestWriteOutput_WritesRuntimeDir(t *testing.T) {
 		if !names[required] {
 			t.Errorf("expected %s in runtime dir", required)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// internal: true — tunnel-only services (no Caddy route)
+// ---------------------------------------------------------------------------
+
+// TestCompile_InternalService_NoCaddyRoute verifies that a service with
+// internal: true gets NO Caddy route even though it has a domain and port
+// configured. The loopback publish must still be emitted so that
+// `ownbasectl tunnel` and the daemon's health_probe can both reach it.
+func TestCompile_InternalService_NoCaddyRoute(t *testing.T) {
+	in := compiler.Input{
+		Config: &schema.OwnbaseConfig{
+			SchemaVersion: "v1",
+			Services: map[string]schema.ServiceDecl{
+				"admin": {
+					Source:   "services/admin",
+					Domain:   "admin.example.com",
+					Port:     3000,
+					Internal: true,
+				},
+			},
+		},
+	}
+	model := compiler.CompileToModel(in)
+
+	if len(model.Routes) != 0 {
+		t.Errorf("internal: true service must have no Caddy routes, got %v", model.Routes)
+	}
+
+	out := compiler.Compile(in)
+	unit, ok := out.QuadletUnits["ownbase-admin.container"]
+	if !ok {
+		t.Fatal("ownbase-admin.container not found in output")
+	}
+	want := fmt.Sprintf("PublishPort=127.0.0.1:%d:3000", schema.TunnelBasePort)
+	if !strings.Contains(unit, want) {
+		t.Errorf("internal service should still get loopback publish %q\nunit:\n%s", want, unit)
+	}
+}
+
+// TestCompile_InternalService_MixedWithPublic verifies that when an
+// internal: true service and a public service coexist, only the public
+// service gets a Caddy route.
+func TestCompile_InternalService_MixedWithPublic(t *testing.T) {
+	in := compiler.Input{
+		Config: &schema.OwnbaseConfig{
+			SchemaVersion: "v1",
+			Services: map[string]schema.ServiceDecl{
+				"admin": {
+					Source:   "services/admin",
+					Domain:   "admin.example.com",
+					Port:     3000,
+					Internal: true,
+				},
+				"web": {
+					Source: "services/web",
+					Domain: "web.example.com",
+					Port:   8080,
+				},
+			},
+		},
+	}
+	model := compiler.CompileToModel(in)
+
+	if len(model.Routes) != 1 {
+		t.Fatalf("expected exactly 1 Caddy route (for web only), got %d: %v", len(model.Routes), model.Routes)
+	}
+	if model.Routes[0].Host != "web.example.com" {
+		t.Errorf("expected route for web.example.com, got %q", model.Routes[0].Host)
 	}
 }

@@ -1,4 +1,4 @@
-package devbridge_test
+package bridge_test
 
 import (
 	"fmt"
@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ownbase/ownbase/internal/devbridge"
+	"github.com/ownbase/ownbase/internal/bridge"
 )
 
 // backend starts a test HTTP server that always responds with body, and
@@ -25,7 +25,7 @@ func TestNewProxyHandler_DispatchesByHostHeader(t *testing.T) {
 	addrA := backend(t, "response-a")
 	addrB := backend(t, "response-b")
 
-	handler, err := devbridge.NewProxyHandler(map[string]string{
+	handler, err := bridge.NewProxyHandler(map[string]string{
 		"a.example.com.localhost": addrA,
 		"b.example.com.localhost": addrB,
 	})
@@ -53,7 +53,7 @@ func TestNewProxyHandler_DispatchesByHostHeader(t *testing.T) {
 
 func TestNewProxyHandler_HostWithPortStripped(t *testing.T) {
 	addr := backend(t, "ok")
-	handler, err := devbridge.NewProxyHandler(map[string]string{
+	handler, err := bridge.NewProxyHandler(map[string]string{
 		"app.example.com.localhost": addr,
 	})
 	if err != nil {
@@ -74,7 +74,7 @@ func TestNewProxyHandler_HostWithPortStripped(t *testing.T) {
 }
 
 func TestNewProxyHandler_UnknownHostReturns404(t *testing.T) {
-	handler, err := devbridge.NewProxyHandler(map[string]string{
+	handler, err := bridge.NewProxyHandler(map[string]string{
 		"known.example.com.localhost": backend(t, "ok"),
 	})
 	if err != nil {
@@ -99,7 +99,7 @@ func TestNewProxyHandler_ForwardsRealDomainAsHostHeader(t *testing.T) {
 	t.Cleanup(srv.Close)
 	addr := strings.TrimPrefix(srv.URL, "http://")
 
-	handler, err := devbridge.NewProxyHandler(map[string]string{
+	handler, err := bridge.NewProxyHandler(map[string]string{
 		"app.example.com.localhost": addr,
 	})
 	if err != nil {
@@ -124,7 +124,7 @@ func TestNewProxyHandler_ForwardsRealDomainAsHostHeader(t *testing.T) {
 
 func TestNewProxyHandler_MultipleHostnamesSameBackend(t *testing.T) {
 	addr := backend(t, "shared")
-	handler, err := devbridge.NewProxyHandler(map[string]string{
+	handler, err := bridge.NewProxyHandler(map[string]string{
 		"app.example.com.localhost": addr,
 		"app.example.org.localhost": addr,
 	})

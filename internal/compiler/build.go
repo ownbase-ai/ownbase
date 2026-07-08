@@ -14,13 +14,13 @@ import (
 func build(in Input) RuntimeModel {
 	model := RuntimeModel{}
 
-	devPorts := in.Config.DevBridgePorts()
+	devPorts := in.Config.TunnelPorts()
 
 	serviceNames := sortedKeys(in.Config.Services)
 	for _, name := range serviceNames {
 		svc := in.Config.Services[name]
 		c := buildContainer(name, svc)
-		c.DevBridgePort = devPorts[name]
+		c.TunnelPort = devPorts[name]
 		model.Containers = append(model.Containers, c)
 
 		// Every service gets its own capability network keyed by service name.
@@ -84,9 +84,17 @@ func buildContainer(name string, svc schema.ServiceDecl) ContainerModel {
 	containerName := fmt.Sprintf("ownbase-%s", name)
 	dataVolumeName := fmt.Sprintf("ownbase-%s-data", name)
 
+	// Internal services have domains for tunnel routing but must not
+	// receive a Caddy route, so PublicDomains is left nil.
+	var publicDomains []string
+	if !svc.Internal {
+		publicDomains = svc.EffectiveDomains()
+	}
+
 	c := ContainerModel{
 		Name:          containerName,
-		PublicDomains: svc.EffectiveDomains(),
+		Internal:      svc.Internal,
+		PublicDomains: publicDomains,
 		PublicPort:    svc.Port,
 		Env:           svc.Env,
 	}

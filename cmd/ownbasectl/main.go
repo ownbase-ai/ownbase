@@ -17,7 +17,7 @@
 //	upgrade   — check/apply updates to the core package (Caddy)
 //	config    — read/replace ownbase.yaml (agent-first, non-interactive)
 //	service   — add/remove/update a service in ownbase.yaml
-//	dev       — local HTTPS dev bridge (the one command allowed to prompt)
+//	tunnel    — local HTTPS bridge over SSH (the one command allowed to prompt)
 //
 // Local subcommands operate on a repo checkout and take no Base name:
 //
@@ -84,7 +84,7 @@ Start here:
 		newUpgradeCmd(),
 		newConfigCmd(),
 		newServiceCmd(),
-		newDevCmd(),
+		newTunnelCmd(),
 		newCompileCmd(),
 		newPlanCmd(),
 		newApplyCmd(),
