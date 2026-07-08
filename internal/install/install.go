@@ -39,7 +39,7 @@ type PassZeroConfig struct {
 	// domain configured (schema.OwnbaseConfig.HasPublicDomain) — a
 	// domain-less Base (the default state of a fresh Base) has nothing for
 	// Caddy to route, so it exposes only SSH. Reach services directly with
-	// `ownbasectl dev` instead. Default: false (safest).
+	// `ownbasectl tunnel` instead. Default: false (safest).
 	ExposeWebPorts bool
 
 	// DryRun logs what would be done without making changes.

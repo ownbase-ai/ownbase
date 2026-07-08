@@ -127,6 +127,45 @@ func TestDiscover_InvalidYAMLReturnsError(t *testing.T) {
 	}
 }
 
+// TestDiscover_InternalServiceIsIncluded verifies that a service with
+// internal: true is included in tunnel targets even though it has no Caddy
+// route. The tunnel is the only access path for internal services.
+func TestDiscover_InternalServiceIsIncluded(t *testing.T) {
+	const yaml = `schema_version: v1
+services:
+  admin:
+    source: services/admin
+    domain: admin.example.com
+    port: 3000
+    internal: true
+  web:
+    source: services/web
+    domain: web.example.com
+    port: 8080
+`
+	targets, err := devbridge.Discover(yaml)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	got := make(map[string]devbridge.Target, len(targets))
+	for _, tg := range targets {
+		got[tg.Service] = tg
+	}
+	if _, ok := got["admin"]; !ok {
+		t.Error("internal: true service with domain and port must be included in tunnel targets")
+	}
+	if _, ok := got["web"]; !ok {
+		t.Error("public service must also be included in tunnel targets")
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 targets, got %d: %v", len(got), got)
+	}
+	admin := got["admin"]
+	if !reflect.DeepEqual(admin.Domains, []string{"admin.example.com"}) {
+		t.Errorf("admin.Domains = %v, want [admin.example.com]", admin.Domains)
+	}
+}
+
 func TestTarget_LocalHostnames(t *testing.T) {
 	tg := devbridge.Target{
 		Service: "app",

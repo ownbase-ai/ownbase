@@ -68,7 +68,7 @@ func renderContainer(c ContainerModel) string {
 	}
 
 	// Direct-to-container loopback publish. Two independent things dial
-	// this: `ownbasectl dev`'s SSH tunnel (domain'd services only) and the
+	// this: `ownbasectl tunnel`'s SSH bridge (domain'd services only) and the
 	// daemon's own HTTP health_probe during reconcile (any port'd service —
 	// see internal/podman's waitForContainer), so it's emitted for every
 	// port'd service regardless of domain. Caddy itself never touches this;

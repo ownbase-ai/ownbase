@@ -39,8 +39,8 @@ import (
 //
 // A domain-less Base (the default state of a fresh Base) therefore exposes
 // nothing but SSH externally: there is no Caddy route to serve on 80/443
-// yet, and the dev bridge (`ownbasectl dev`) reaches services directly over
-// SSH, bypassing Caddy entirely.
+// yet, and `ownbasectl tunnel` reaches services directly over SSH,
+// bypassing Caddy entirely.
 //
 // Outbound is unrestricted (containers need to pull images, DNS, etc.).
 func ensureFirewall(ctx context.Context, cfg PassZeroConfig) StepStatus {

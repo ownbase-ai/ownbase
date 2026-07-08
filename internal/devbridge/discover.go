@@ -1,4 +1,4 @@
-// Package devbridge implements the core logic behind `ownbasectl dev`: a
+// Package devbridge implements the core logic behind `ownbasectl tunnel`: a
 // human-run local HTTPS bridge that reaches each of a Base's domain'd
 // services directly over an SSH tunnel (bypassing Caddy entirely), serving
 // them locally under their real, already-configured domain with
@@ -14,7 +14,7 @@
 // mkcert certificate that covers them, and a Host-header-dispatching
 // reverse proxy. The actual SSH tunnels (internal/tunnel, reused completely
 // unmodified) and process wiring (flag parsing, signal handling) live in
-// cmd/ownbasectl/dev.go.
+// cmd/ownbasectl/tunnel.go.
 //
 // There is no code-sync mechanism of any kind here: this package only
 // tunnels and proxies traffic to whatever is currently deployed. The only
@@ -67,13 +67,13 @@ func (t Target) LocalHostnames() []string {
 // Discover parses raw ownbase.yaml content and returns every service
 // eligible to be bridged: services with both a port and at least one
 // EffectiveDomains() entry. A service with no domain configured is skipped
-// entirely — not bridged, not tunneled, not returned — because the dev
-// bridge mirrors exactly what is already intentionally publicly reachable
-// in production; it never invents local-only access to something the
-// operator hasn't chosen to expose via a domain. Results are sorted by
-// service name for determinism; a config with no domain'd service returns
-// an empty (nil) slice and no error — that is an expected state, not a
-// failure.
+// entirely — not bridged, not tunneled, not returned — because a domain is
+// required to derive the local ".localhost" hostname. Services marked
+// internal: true are included even though they have no Caddy route; the
+// tunnel is the only access path for those services, which is precisely the
+// point. Results are sorted by service name for determinism; a config with
+// no domain'd service returns an empty (nil) slice and no error — that is
+// an expected state, not a failure.
 func Discover(raw string) ([]Target, error) {
 	cfg, err := schema.ParseConfig(strings.NewReader(raw))
 	if err != nil {

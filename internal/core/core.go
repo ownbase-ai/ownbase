@@ -60,8 +60,8 @@ const OwnbaseInternalNetwork = "ownbase-internal"
 // hasPublicDomain reports whether any service in ownbase.yaml has a domain
 // configured (schema.OwnbaseConfig.HasPublicDomain). When false — the
 // default state of a fresh Base — Caddy publishes no ports at all: there is
-// nothing for it to route yet, and the new dev bridge (`ownbasectl dev`)
-// reaches services directly over SSH, bypassing Caddy entirely.
+// nothing for it to route yet, and `ownbasectl tunnel` reaches services
+// directly over SSH, bypassing Caddy entirely.
 func BuildCoreOutput(cfg schema.CoreConfig, m CoreManifest, hasPublicDomain bool) compiler.RuntimeOutput {
 	caddy := buildCaddyModel(cfg, m, hasPublicDomain)
 
@@ -105,7 +105,7 @@ func buildCaddyModel(cfg schema.CoreConfig, m CoreManifest, hasPublicDomain bool
 	// Caddy is the public web entrypoint: it accepts external traffic on 80
 	// (ACME HTTP-01 + redirects) and 443 (HTTPS) on all interfaces — but only
 	// once there is at least one domain'd service to route to. A domain-less
-	// Base publishes nothing here; ownbasectl dev reaches services directly.
+	// Base publishes nothing here; ownbasectl tunnel reaches services directly.
 	if hasPublicDomain {
 		model.HostPublishPorts = []int{80, 443}
 	}

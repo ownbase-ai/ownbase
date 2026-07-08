@@ -741,3 +741,74 @@ func TestWriteOutput_WritesRuntimeDir(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// internal: true — tunnel-only services (no Caddy route)
+// ---------------------------------------------------------------------------
+
+// TestCompile_InternalService_NoCaddyRoute verifies that a service with
+// internal: true gets NO Caddy route even though it has a domain and port
+// configured. The loopback publish must still be emitted so that
+// `ownbasectl tunnel` and the daemon's health_probe can both reach it.
+func TestCompile_InternalService_NoCaddyRoute(t *testing.T) {
+	in := compiler.Input{
+		Config: &schema.OwnbaseConfig{
+			SchemaVersion: "v1",
+			Services: map[string]schema.ServiceDecl{
+				"admin": {
+					Source:   "services/admin",
+					Domain:   "admin.example.com",
+					Port:     3000,
+					Internal: true,
+				},
+			},
+		},
+	}
+	model := compiler.CompileToModel(in)
+
+	if len(model.Routes) != 0 {
+		t.Errorf("internal: true service must have no Caddy routes, got %v", model.Routes)
+	}
+
+	out := compiler.Compile(in)
+	unit, ok := out.QuadletUnits["ownbase-admin.container"]
+	if !ok {
+		t.Fatal("ownbase-admin.container not found in output")
+	}
+	want := fmt.Sprintf("PublishPort=127.0.0.1:%d:3000", schema.DevBridgeBasePort)
+	if !strings.Contains(unit, want) {
+		t.Errorf("internal service should still get loopback publish %q\nunit:\n%s", want, unit)
+	}
+}
+
+// TestCompile_InternalService_MixedWithPublic verifies that when an
+// internal: true service and a public service coexist, only the public
+// service gets a Caddy route.
+func TestCompile_InternalService_MixedWithPublic(t *testing.T) {
+	in := compiler.Input{
+		Config: &schema.OwnbaseConfig{
+			SchemaVersion: "v1",
+			Services: map[string]schema.ServiceDecl{
+				"admin": {
+					Source:   "services/admin",
+					Domain:   "admin.example.com",
+					Port:     3000,
+					Internal: true,
+				},
+				"web": {
+					Source: "services/web",
+					Domain: "web.example.com",
+					Port:   8080,
+				},
+			},
+		},
+	}
+	model := compiler.CompileToModel(in)
+
+	if len(model.Routes) != 1 {
+		t.Fatalf("expected exactly 1 Caddy route (for web only), got %d: %v", len(model.Routes), model.Routes)
+	}
+	if model.Routes[0].Host != "web.example.com" {
+		t.Errorf("expected route for web.example.com, got %q", model.Routes[0].Host)
+	}
+}

@@ -85,9 +85,17 @@ func buildContainer(name string, svc schema.ServiceDecl) ContainerModel {
 	dataVolumeName := fmt.Sprintf("ownbase-%s-data", name)
 
 	c := ContainerModel{
-		Name:          containerName,
-		PublicDomains: svc.EffectiveDomains(),
-		PublicPort:    svc.Port,
+		Name:     containerName,
+		Internal: svc.Internal,
+		// Internal services have domains for tunnel routing but must not
+		// receive a Caddy route, so PublicDomains is intentionally left nil.
+		PublicDomains: func() []string {
+			if svc.Internal {
+				return nil
+			}
+			return svc.EffectiveDomains()
+		}(),
+		PublicPort: svc.Port,
 		Env:           svc.Env,
 	}
 

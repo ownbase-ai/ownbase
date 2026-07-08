@@ -46,9 +46,14 @@ type ContainerModel struct {
 	// Empty means the repo root.
 	BuildContext string
 
+	// Internal is true when the service has domain(s) and port set but
+	// must not be given a Caddy route. The service is reachable exclusively
+	// via `ownbasectl tunnel`; it is never internet-facing.
+	Internal bool
+
 	// PublicDomains lists the public hostnames for Caddy routing — one Caddy
 	// site block per domain, all pointing at this container's PublicPort.
-	// Empty = internal only.
+	// Empty when the service has no domain, or when Internal is true.
 	PublicDomains []string
 	// PublicPort is the host-local port published for Caddy.
 	// Zero means no public port (internal-only container).
@@ -62,7 +67,7 @@ type ContainerModel struct {
 	// declare port: 80/443, or share a port number with another service,
 	// without colliding with Caddy's own machine-wide bind or with another
 	// service's loopback publish. Despite the name, two independent
-	// consumers dial this: `ownbasectl dev`'s SSH tunnel (domain'd services
+	// consumers dial this: `ownbasectl tunnel`'s SSH bridge (domain'd services
 	// only) and the daemon's own HTTP health_probe (any port'd service,
 	// domain or not). Zero means no port: at all (nothing to publish).
 	DevBridgePort int

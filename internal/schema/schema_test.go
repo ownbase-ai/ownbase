@@ -437,6 +437,17 @@ func TestOwnbaseConfig_HasPublicDomain(t *testing.T) {
 				"b": {Source: "y", Port: 8080},
 			},
 		}, false},
+		{"internal: true service with domain and port is not a public domain", schema.OwnbaseConfig{
+			Services: map[string]schema.ServiceDecl{
+				"a": {Source: "x", Domain: "a.example.com", Port: 8080, Internal: true},
+			},
+		}, false},
+		{"internal service alongside public service: public one counts", schema.OwnbaseConfig{
+			Services: map[string]schema.ServiceDecl{
+				"admin": {Source: "x", Domain: "admin.example.com", Port: 3000, Internal: true},
+				"web":   {Source: "y", Domain: "web.example.com", Port: 8080},
+			},
+		}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

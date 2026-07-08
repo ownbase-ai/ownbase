@@ -52,7 +52,7 @@ ownbasectl create mybase --remote root@mybase.example.com \
 | `--caddy-email` | — | ACME contact email for automatic TLS on public domains |
 | `--yes`, `-y` | `false` | Skip confirmation prompts (e.g. overwriting an existing local VM) |
 
-If a local VM with the same name already exists, `create` asks before deleting it (`--yes` skips the prompt; non-interactive runs proceed as before). Every other step of `create` (and of `vm start|stop|restart`) is guaranteed to never prompt for anything, ever — this is what makes it safe for an AI agent to run unattended. A freshly created Base has no domain configured anywhere, so it exposes nothing but SSH externally (Caddy publishes no ports, the firewall opens no web ports); once a service has a `domain:` (or `domains:`), reach it locally over trusted HTTPS with `ownbasectl dev` (below), or reach it in production once its domain's DNS points at the Base.
+If a local VM with the same name already exists, `create` asks before deleting it (`--yes` skips the prompt; non-interactive runs proceed as before). Every other step of `create` (and of `vm start|stop|restart`) is guaranteed to never prompt for anything, ever — this is what makes it safe for an AI agent to run unattended. A freshly created Base has no domain configured anywhere, so it exposes nothing but SSH externally (Caddy publishes no ports, the firewall opens no web ports); once a service has a `domain:` (or `domains:`), reach it locally over trusted HTTPS with `ownbasectl tunnel` (below), or reach it in production once its domain's DNS points at the Base.
 
 ### `adopt <name> --host <host> --token <token>`
 
@@ -209,39 +209,41 @@ ownbasectl service remove mybase crm
 
 ---
 
-## Local development: `dev <name>`
+## Local HTTPS tunnel: `tunnel <name>`
 
-The one command in `ownbasectl` that is allowed to prompt interactively — starting it is itself a human's explicit "I am sitting here, ready to develop" signal (see [decisions.md](decisions.md)). `create`/`vm` never prompt for anything; this command is the only exception, and only for a one-time `mkcert -install` (trusting a local certificate authority in this machine's OS/browser trust store).
+The one command in `ownbasectl` that is allowed to prompt interactively — starting it is itself a human's explicit "I am sitting here, ready" signal (see [decisions.md](decisions.md)). `create`/`vm` never prompt for anything; this command is the only exception, and only for a one-time `mkcert -install` (trusting a local certificate authority in this machine's OS/browser trust store).
 
 ```bash
-ownbasectl dev mybase
-ownbasectl dev mybase --port 9443   # override the local bind port (default 8443)
+ownbasectl tunnel mybase
+ownbasectl tunnel mybase --port 9443   # override the local bind port (default 8443)
 ```
 
 It reads the Base's live `ownbase.yaml` over SSH, opens one SSH tunnel per service that has both a `port:` and a domain configured (`domain:` or `domains:`) directly to that service's dedicated loopback port — bypassing Caddy entirely, so no port is firewalled on the Base — and serves each at its real domain with `.localhost` appended, e.g. a service with `domain: myapp.example.com` is served at `https://myapp.example.com.localhost:8443`. Per RFC 6761 any hostname ending in `.localhost` always resolves to loopback, with no `/etc/hosts` entry and no DNS lookup, so the URL never changes across a `vm restart` or IP change. A service with **no** domain configured is never bridged — not tunneled, not exposed, not printed.
 
-Each bridged service's loopback port is deliberately a different number than its own `port:` — assigned deterministically starting at 41000 by sorted service name (`schema.OwnbaseConfig.DevBridgePorts()`) — so a service can declare `port: 80`/`443` without colliding with Caddy's own machine-wide bind, and two services can share the same `port:` without colliding with each other. `dev` computes this the same way the daemon's compiler does, straight from `ownbase.yaml`, with no daemon call needed to agree on the number.
+Services marked `internal: true` are included even though they have no Caddy route — the tunnel is the only access path for those services, which is precisely the point. Use `internal: true` for private admin UIs, dashboards, or any service that should be reachable over an authenticated SSH tunnel but never exposed to the internet.
+
+Each bridged service's loopback port is deliberately a different number than its own `port:` — assigned deterministically starting at 41000 by sorted service name (`schema.OwnbaseConfig.DevBridgePorts()`) — so a service can declare `port: 80`/`443` without colliding with Caddy's own machine-wide bind, and two services can share the same `port:` without colliding with each other. `tunnel` computes this the same way the daemon's compiler does, straight from `ownbase.yaml`, with no daemon call needed to agree on the number.
 
 ```
 ownbasectl: reading ownbase.yaml from "mybase" ...
 ownbasectl: opening 1 SSH tunnel(s) to "mybase" ...
 ownbasectl: generating local HTTPS certificate for 1 hostname(s) ...
 
-Bridging:
+Tunneling:
   https://myapp.example.com.localhost:8443
 
 No code-sync — push to the service's bare repo and update ref: to deploy changes.
 Press Ctrl+C to stop.
 ```
 
-**There is no code-sync mechanism.** `ownbasectl dev` only tunnels and proxies traffic to whatever is currently deployed — no bind mount, file watcher, or hot-reload. To iterate on a service's code, use the same git-push-to-deploy flow as production:
+**There is no code-sync mechanism.** `ownbasectl tunnel` only tunnels and proxies traffic to whatever is currently deployed — no bind mount, file watcher, or hot-reload. To iterate on a service's code, use the same git-push-to-deploy flow as production:
 
 ```bash
 git push ssh://<ssh-user>@<host>/opt/ownbase/repos/<service> my-branch:my-branch
 ownbasectl service update mybase <service> --ref my-branch
 ```
 
-The daemon fetches/builds/restarts the service exactly as it would for any other `ref:` change; the dev bridge, if still running, picks up the new container transparently since it tunnels to the service's port, not to a specific container instance.
+The daemon fetches/builds/restarts the service exactly as it would for any other `ref:` change; the tunnel, if still running, picks up the new container transparently since it tunnels to the service's port, not to a specific container instance.
 
 ---
 

@@ -71,7 +71,7 @@ ownbasectl status mybase   # confirm "hello" is running and healthy
 A fresh Base never opens ports 80/443, so there's no real TLS certificate to browse to yet — even before any domain's DNS is live, you can still see the service running, over trusted HTTPS, with:
 
 ```bash
-ownbasectl dev mybase
+ownbasectl tunnel mybase
 ```
 
 ```
@@ -79,14 +79,14 @@ ownbasectl: reading ownbase.yaml from "mybase" ...
 ownbasectl: opening 1 SSH tunnel(s) to "mybase" ...
 ownbasectl: generating local HTTPS certificate for 1 hostname(s) ...
 
-Bridging:
+Tunneling:
   https://hello.example.com.localhost:8443
 
 No code-sync — push to the service's bare repo and update ref: to deploy changes.
 Press Ctrl+C to stop.
 ```
 
-Open that URL — it works fully offline, needs no `/etc/hosts` entry, and stays the same across VM restarts. This is the one `ownbasectl` command allowed to prompt (a one-time `mkcert -install` to trust a local certificate authority). There's no code-sync: to iterate, push new code to the service's repo and bump `ref:` with `ownbasectl service update mybase hello --ref <branch>` — the daemon rebuilds and restarts it, and the dev bridge picks up the change automatically. Once a service's domain actually points DNS at the Base, it's reachable the same way in production, through Caddy.
+Open that URL — it works fully offline, needs no `/etc/hosts` entry, and stays the same across VM restarts. This is the one `ownbasectl` command allowed to prompt (a one-time `mkcert -install` to trust a local certificate authority). There's no code-sync: to iterate, push new code to the service's repo and bump `ref:` with `ownbasectl service update mybase hello --ref <branch>` — the daemon rebuilds and restarts it, and the tunnel picks up the change automatically. Once a service's domain actually points DNS at the Base, it's reachable the same way in production, through Caddy.
 
 ### 5. Set up backups
 

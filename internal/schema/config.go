@@ -176,6 +176,18 @@ type ServiceDecl struct {
 	// route (internal-only).
 	Domains []string `yaml:"domains,omitempty"`
 
+	// Internal marks this service as tunnel-only: it has a domain (used as
+	// the local hostname by `ownbasectl tunnel`) but no Caddy route is
+	// emitted, so it is never reachable from the internet. Use this for
+	// private admin UIs, dashboards, or any service that should only be
+	// accessible over an authenticated SSH tunnel.
+	//
+	// An internal service must still declare domain: (or domains:) and
+	// port: so the tunnel command can derive its local hostname and connect
+	// to it. Without a domain, `ownbasectl tunnel` would have nothing to
+	// route to.
+	Internal bool `yaml:"internal,omitempty"`
+
 	// Requires lists capabilities (service keys) this service depends on.
 	// Each name must match a key in the services map — the compiler joins
 	// this container to that provider's network.
@@ -254,8 +266,8 @@ type HealthProbeDecl struct {
 // older singular Domain field and Domains — every public hostname this
 // service should be reachable at. Domain (if set) comes first, followed by
 // each entry in Domains not already seen. An empty result means the service
-// has no Caddy route (internal-only) and, per the dev bridge design, is
-// never bridged by `ownbasectl dev` either.
+// has no Caddy route (internal-only) and is never bridged by
+// `ownbasectl tunnel` either (no domain means no .localhost URL).
 func (s ServiceDecl) EffectiveDomains() []string {
 	seen := make(map[string]bool, len(s.Domains)+1)
 	var out []string
@@ -282,9 +294,12 @@ func (s ServiceDecl) EffectiveDomains() []string {
 // or the firewall/Caddy would open 80/443 to the world for a service that
 // has no listener to actually reach. A Base with no such service exposes
 // nothing publicly but SSH — Caddy publishes no ports and the firewall
-// opens no web ports; reach such services with `ownbasectl dev` instead.
+// opens no web ports; reach such services with `ownbasectl tunnel` instead.
 func (c *OwnbaseConfig) HasPublicDomain() bool {
 	for _, svc := range c.Services {
+		if svc.Internal {
+			continue
+		}
 		if svc.Port != 0 && len(svc.EffectiveDomains()) > 0 {
 			return true
 		}
@@ -299,18 +314,18 @@ func (c *OwnbaseConfig) HasPublicDomain() bool {
 // declare port: 80/443 (or share a port number with another service)
 // without colliding with Caddy's machine-wide bind or with each other on
 // the loopback publish. Despite the name, this isn't exclusively for
-// `ownbasectl dev`: the daemon's own HTTP health_probe (internal/podman's
+// `ownbasectl tunnel`: the daemon's own HTTP health_probe (internal/podman's
 // waitForContainer) also dials a service's container directly over this
-// same loopback publish, including for domain-less internal services dev
-// never bridges — see DevBridgePorts.
+// same loopback publish, including for domain-less internal services the
+// tunnel never bridges — see DevBridgePorts.
 const DevBridgeBasePort = 41000
 
 // DevBridgePorts returns the deterministic loopback port assigned to each
 // port'd service, keyed by service name. Eligibility here is intentionally
-// broader than HasPublicDomain/what `ownbasectl dev` bridges: ANY service
+// broader than HasPublicDomain/what `ownbasectl tunnel` bridges: ANY service
 // with a Port set gets an entry, domain or not, because two independent
 // things depend on this loopback publish existing —
-//  1. `ownbasectl dev`'s SSH tunnel (domain'd services only — see
+//  1. `ownbasectl tunnel`'s SSH bridge (domain'd services only — see
 //     internal/devbridge.Discover, which filters this map down).
 //  2. The daemon's own startup HTTP health_probe (internal/podman's
 //     waitForContainer), which needs a loopback port to dial for ANY
@@ -322,11 +337,11 @@ const DevBridgeBasePort = 41000
 //
 // Ports are recomputed fresh from the current config on every call — never
 // persisted — which is safe because the compiler (building the Quadlet
-// unit) and `ownbasectl dev` (parsing ownbase.yaml independently, with no
+// unit) and `ownbasectl tunnel` (parsing ownbase.yaml independently, with no
 // daemon call) both compute this from the same ownbase.yaml at the moment
 // they need it, so they'd always agree without coordinating — except for a
 // narrow race if the config changed between the two reads, which is why
-// `ownbasectl dev` additionally cross-checks against the Base's actually-
+// `ownbasectl tunnel` additionally cross-checks against the Base's actually-
 // applied Quadlet units rather than trusting this value alone (see
 // internal/devbridge.ParseActualHostPorts).
 func (c *OwnbaseConfig) DevBridgePorts() map[string]int {

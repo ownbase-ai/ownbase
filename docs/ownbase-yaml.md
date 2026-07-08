@@ -84,19 +84,32 @@ services:
 
 `domain:` (singular) still works exactly as before — it is simply folded into the same effective domain list (`EffectiveDomains()`), so existing configs need no migration. Use `domains:` when a service needs more than one public hostname; there is no need to switch existing single-domain services to `domains:`.
 
-A service with **no** domain configured (`domain:` and `domains:` both empty — the default for a newly added service) is internal-only: Caddy has no route for it, and — since a Base with no domain'd service anywhere exposes only SSH externally (see `docs/decisions.md`, "Local development") — it is not reachable from outside the Base at all. Reach it locally with `ownbasectl dev` instead (below).
+A service with **no** domain configured (`domain:` and `domains:` both empty — the default for a newly added service) is internal-only: Caddy has no route for it, and — since a Base with no domain'd service anywhere exposes only SSH externally (see `docs/decisions.md`, "SSH tunnel bridge") — it is not reachable from outside the Base at all. Reach it locally with `ownbasectl tunnel` instead (below).
 
-## Local HTTPS during development (`ownbasectl dev`)
+To define a service that has a domain for tunnel routing but is **intentionally never internet-facing**, set `internal: true`:
 
-A fresh Base has no domain configured anywhere, so it never opens 80/443 and Caddy never gets a real Let's Encrypt certificate — there's no way to see it over trusted HTTPS the way a real deployed Base would be seen. `ownbasectl dev <name>` solves this without touching `create`/`vm` (which must stay perfectly agent-safe: zero prompts, ever):
-
-```bash
-ownbasectl dev mybase
+```yaml
+services:
+  admin:
+    source: services/admin
+    port: 3000
+    domain: admin.example.com
+    internal: true   # tunnel-only — no Caddy route, never reachable from the internet
 ```
 
-This is the one command in `ownbasectl` allowed to prompt interactively (a one-time `sudo mkcert -install`, ever, on this machine). It reads the Base's live `ownbase.yaml` over SSH, opens one SSH tunnel per service that has both a `port:` and a domain configured — a service with no domain is never bridged — and serves each at its real domain with `.localhost` appended, e.g. `domain: myapp.example.com` → `https://myapp.example.com.localhost:8443`, a locally-trusted HTTPS URL that works fully offline and never changes across a VM restart. See `docs/cli.md` for the full command reference and `docs/decisions.md` for the design rationale.
+An `internal: true` service is reachable via `ownbasectl tunnel` at `https://admin.example.com.localhost:8443`, but the compiler emits no Caddy route for it, so it is never accessible from the internet even if DNS points at the Base.
 
-**There is no code-sync mechanism** — `ownbasectl dev` only tunnels and proxies traffic to whatever is currently deployed. To iterate on a service's code, use the same git-push-to-deploy flow as production: push a branch to the service's bare repo and run `ownbasectl service update <base> <name> --ref <branch>` (see "Updates: the `ref:` model" below); the dev bridge, if still running, picks up the new container transparently.
+## Local HTTPS via tunnel (`ownbasectl tunnel`) {#local-https-during-development-ownbasectl-tunnel}
+
+A fresh Base has no domain configured anywhere, so it never opens 80/443 and Caddy never gets a real Let's Encrypt certificate — there's no way to see it over trusted HTTPS the way a real deployed Base would be seen. `ownbasectl tunnel <name>` solves this without touching `create`/`vm` (which must stay perfectly agent-safe: zero prompts, ever):
+
+```bash
+ownbasectl tunnel mybase
+```
+
+This is the one command in `ownbasectl` allowed to prompt interactively (a one-time `sudo mkcert -install`, ever, on this machine). It reads the Base's live `ownbase.yaml` over SSH, opens one SSH tunnel per service that has both a `port:` and a domain configured — a service with no domain is never bridged — and serves each at its real domain with `.localhost` appended, e.g. `domain: myapp.example.com` → `https://myapp.example.com.localhost:8443`, a locally-trusted HTTPS URL that works fully offline and never changes across a VM restart. Services marked `internal: true` are included. See `docs/cli.md` for the full command reference and `docs/decisions.md` for the design rationale.
+
+**There is no code-sync mechanism** — `ownbasectl tunnel` only tunnels and proxies traffic to whatever is currently deployed. To iterate on a service's code, use the same git-push-to-deploy flow as production: push a branch to the service's bare repo and run `ownbasectl service update <base> <name> --ref <branch>` (see "Updates: the `ref:` model" below); the tunnel, if still running, picks up the new container transparently.
 
 ## `source:` paths — how they work
 
