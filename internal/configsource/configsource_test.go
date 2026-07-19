@@ -147,3 +147,26 @@ func TestEnsureCheckout_DiscardsLocalEdits(t *testing.T) {
 		t.Errorf("local edit not discarded: %q", got)
 	}
 }
+
+func TestEnsureCheckout_ReclonesWhenRepoURLChanges(t *testing.T) {
+	// Simulates `config setup` repointing the Base at a different config repo:
+	// an existing checkout of repo A must be replaced by repo B's content, not
+	// keep syncing A's origin.
+	bareA := newRemote(t, "schema_version: v1\nservices:\n  a: {}\n")
+	bareB := newRemote(t, "schema_version: v1\nservices:\n  b: {}\n")
+	checkout := filepath.Join(t.TempDir(), "checkout")
+
+	if err := EnsureCheckout(context.Background(), Source{RepoURL: bareA, Ref: "main"}, checkout, nil); err != nil {
+		t.Fatalf("EnsureCheckout (repo A): %v", err)
+	}
+	if err := EnsureCheckout(context.Background(), Source{RepoURL: bareB, Ref: "main"}, checkout, nil); err != nil {
+		t.Fatalf("EnsureCheckout (repo B): %v", err)
+	}
+	got, _ := os.ReadFile(filepath.Join(checkout, "ownbase.yaml"))
+	if string(got) != "schema_version: v1\nservices:\n  b: {}\n" {
+		t.Errorf("checkout still reflects old repo after URL change: %q", got)
+	}
+	if url := originURL(context.Background(), nil, checkout); url != bareB {
+		t.Errorf("origin url = %q, want %q (should have re-cloned from repo B)", url, bareB)
+	}
+}

@@ -50,11 +50,14 @@ func saveProfile(base string, mutate func(*serverconfig.ServerProfile)) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	p := scfg.Servers[base]
-	mutate(&p)
-	if scfg.Servers == nil {
-		scfg.Servers = map[string]serverconfig.ServerProfile{}
+	// Only mutate a Base that already exists — otherwise a typo'd name would
+	// write a half-populated profile (config repo set, no host/token). The
+	// Base must have been registered first (create/adopt).
+	p, ok := scfg.Servers[base]
+	if !ok {
+		return fmt.Errorf("Base %q not found; run: ownbasectl list", base)
 	}
+	mutate(&p)
 	scfg.Servers[base] = p
 	return serverconfig.Save(cfgPath, scfg)
 }

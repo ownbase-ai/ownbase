@@ -92,11 +92,15 @@ func EnsureCheckout(ctx context.Context, src Source, checkoutPath string, gitEnv
 	}
 	ref := src.EffectiveRef()
 
-	if !isGitDir(checkoutPath) {
+	// Re-clone from scratch when there is no checkout yet, or when an existing
+	// checkout points at a different origin than the configured RepoURL (e.g.
+	// after `config setup` repoints the Base at a new config repo). Reusing a
+	// stale checkout would silently keep syncing the old remote.
+	if !isGitDir(checkoutPath) || originURL(ctx, gitEnv, checkoutPath) != src.RepoURL {
 		if err := os.MkdirAll(filepath.Dir(checkoutPath), 0o755); err != nil {
 			return fmt.Errorf("create checkout parent: %w", err)
 		}
-		// Remove any partial/empty directory so `git clone` can create it.
+		// Remove any partial/empty/stale directory so `git clone` can create it.
 		_ = os.RemoveAll(checkoutPath)
 		if out, err := runGit(ctx, gitEnv, "", "clone", src.RepoURL, checkoutPath); err != nil {
 			return fmt.Errorf("clone config repo %s: %w\n%s", src.RepoURL, err, out)
@@ -134,6 +138,17 @@ func runGit(ctx context.Context, env []string, dir string, args ...string) ([]by
 func revParseVerifies(ctx context.Context, env []string, dir, ref string) bool {
 	_, err := runGit(ctx, env, dir, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
 	return err == nil
+}
+
+// originURL returns the configured URL of the "origin" remote in dir, or ""
+// when it cannot be determined (no remote, not a repo). Used to detect when an
+// existing checkout must be re-cloned because the config repo URL changed.
+func originURL(ctx context.Context, env []string, dir string) string {
+	out, err := runGit(ctx, env, dir, "remote", "get-url", "origin")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func isGitDir(path string) bool {
