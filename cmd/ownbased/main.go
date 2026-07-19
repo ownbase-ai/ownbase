@@ -35,6 +35,7 @@ import (
 	"github.com/ownbase/ownbase/internal/explain"
 	"github.com/ownbase/ownbase/internal/githost"
 	"github.com/ownbase/ownbase/internal/install"
+	"github.com/ownbase/ownbase/internal/podman"
 	"github.com/ownbase/ownbase/internal/reconcile"
 	"github.com/ownbase/ownbase/internal/repos"
 	"github.com/ownbase/ownbase/internal/runtime"
@@ -1031,6 +1032,11 @@ func reconcileLoop(
 		installedUnits = make(map[string]bool, len(currentUnits))
 		for filename := range currentUnits {
 			installedUnits[filename] = true
+			// Strip the apply-time secrets block so the diff compares the unit
+			// against the compiler's secret-free output; otherwise the injected
+			// EnvironmentFile= directive looks like drift and restarts the
+			// container on every reconcile tick.
+			currentUnits[filename] = podman.StripInjectedSecrets(currentUnits[filename])
 		}
 		// Also include any network/volume units not yet in currentUnits
 		// (readRuntimeUnits only reads ownbase-prefixed files, which is correct).
