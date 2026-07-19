@@ -1012,7 +1012,12 @@ func reconcileLoop(
 	// routes and all TLS/routing stays down until an unrelated config change
 	// happens to trigger a reload. A reload is graceful and idempotent (cached
 	// certs are reused), so forcing one per startup is safe.
-	if consumeStartupCaddyReload() {
+	//
+	// The flag is only *peeked* here, not consumed: it is marked done at the
+	// successful-return points below. If this reconcile fails before the reload
+	// lands, the next tick re-forces it instead of silently skipping it forever.
+	forceStartupCaddyReload := startupCaddyReloadPending()
+	if forceStartupCaddyReload {
 		caddyfileSnapshotAvailable = false
 	}
 
@@ -1086,6 +1091,9 @@ func reconcileLoop(
 
 	if plan.IsEmpty() {
 		fmt.Fprintln(os.Stderr, "ownbased: already converged — no changes needed")
+		if forceStartupCaddyReload {
+			markStartupCaddyReloadDone()
+		}
 		return state, nil
 	}
 
@@ -1105,6 +1113,11 @@ func reconcileLoop(
 	// and unit files that were skipped because the resource already existed.
 	if _, err := compiler.WriteOutput(desired, checkoutPath); err != nil {
 		fmt.Fprintf(os.Stderr, "ownbased: write runtime snapshot: %v (non-fatal)\n", err)
+	}
+	// The forced post-startup reload (if any) has now been applied by a
+	// successful reconcile; stop forcing it on subsequent ticks.
+	if forceStartupCaddyReload {
+		markStartupCaddyReloadDone()
 	}
 	return state, nil
 }
@@ -1161,22 +1174,29 @@ func readRuntimeUnits(runtimeDir string) map[string]string {
 }
 
 // startupCaddyReload guards a one-time forced Caddy reload on the first
-// reconcile after this process started (see the call site for why).
+// *successful* reconcile after this process started (see the call site for why).
 var (
 	startupCaddyReloadMu   sync.Mutex
 	startupCaddyReloadDone bool
 )
 
-// consumeStartupCaddyReload returns true exactly once per process — on the
-// first call — and false thereafter.
-func consumeStartupCaddyReload() bool {
+// startupCaddyReloadPending reports whether the one-time post-startup Caddy
+// reload still needs to happen. It does NOT consume the flag — the reload is
+// only recorded as done once a reconcile completes successfully (see
+// markStartupCaddyReloadDone), so a reconcile that fails before the reload
+// lands is retried on the next tick rather than skipped forever.
+func startupCaddyReloadPending() bool {
 	startupCaddyReloadMu.Lock()
 	defer startupCaddyReloadMu.Unlock()
-	if startupCaddyReloadDone {
-		return false
-	}
+	return !startupCaddyReloadDone
+}
+
+// markStartupCaddyReloadDone records that the forced post-startup Caddy reload
+// has been applied by a successful reconcile. Idempotent.
+func markStartupCaddyReloadDone() {
+	startupCaddyReloadMu.Lock()
+	defer startupCaddyReloadMu.Unlock()
 	startupCaddyReloadDone = true
-	return true
 }
 
 // pinSourceRefsToCommit rewrites each source-built service's Ref to the commit

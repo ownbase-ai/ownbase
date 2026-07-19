@@ -61,22 +61,32 @@ func TestIsConfigError_TransientError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// consumeStartupCaddyReload (forced post-reboot Caddy reload)
+// startupCaddyReload (forced post-reboot Caddy reload, consumed only on success)
 // ---------------------------------------------------------------------------
 
-func TestConsumeStartupCaddyReload_OnceThenFalse(t *testing.T) {
+func TestStartupCaddyReload_PeekDoesNotConsume(t *testing.T) {
 	// Reset guard so the test is deterministic regardless of prior calls.
 	startupCaddyReloadMu.Lock()
 	startupCaddyReloadDone = false
 	startupCaddyReloadMu.Unlock()
 
-	if !consumeStartupCaddyReload() {
-		t.Fatal("expected first consumeStartupCaddyReload() = true")
+	// Peeking must stay pending until explicitly marked done — this is what
+	// lets a failed reconcile retry the forced reload instead of skipping it.
+	if !startupCaddyReloadPending() {
+		t.Fatal("expected pending=true before any success")
 	}
-	if consumeStartupCaddyReload() {
-		t.Fatal("expected second consumeStartupCaddyReload() = false")
+	if !startupCaddyReloadPending() {
+		t.Fatal("expected pending=true on repeated peek (peek must not consume)")
 	}
-	if consumeStartupCaddyReload() {
-		t.Fatal("expected third consumeStartupCaddyReload() = false")
+
+	markStartupCaddyReloadDone()
+
+	if startupCaddyReloadPending() {
+		t.Fatal("expected pending=false after markStartupCaddyReloadDone()")
+	}
+	// Idempotent.
+	markStartupCaddyReloadDone()
+	if startupCaddyReloadPending() {
+		t.Fatal("expected pending=false to remain after repeated mark")
 	}
 }
