@@ -25,6 +25,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -1002,6 +1003,19 @@ func reconcileLoop(
 	currentCaddyfileBeforeWrite, caddyfileReadErr := os.ReadFile(filepath.Join(runtimeDir, "Caddyfile"))
 	caddyfileSnapshotAvailable := caddyfileReadErr == nil
 
+	// On the daemon's first reconcile after startup, force a Caddy reload by
+	// treating the snapshot as unavailable. A host reboot (or a manual restart
+	// of the Caddy container) brings Caddy back up reading its stock on-disk
+	// config — ownbase pushes the real routes only via the admin API, in memory
+	// — so the on-disk snapshot can byte-match desired while the LIVE Caddy is
+	// serving nothing. Without this, the empty-plan reboot case never re-pushes
+	// routes and all TLS/routing stays down until an unrelated config change
+	// happens to trigger a reload. A reload is graceful and idempotent (cached
+	// certs are reused), so forcing one per startup is safe.
+	if consumeStartupCaddyReload() {
+		caddyfileSnapshotAvailable = false
+	}
+
 	// 4b. Write the informational snapshot files (Caddyfile, docker-compose.yml)
 	// before drift detection so they are always present when the detector runs.
 	// These files are unconditionally regenerated from the compiler on every
@@ -1144,6 +1158,25 @@ func readRuntimeUnits(runtimeDir string) map[string]string {
 		}
 	}
 	return units
+}
+
+// startupCaddyReload guards a one-time forced Caddy reload on the first
+// reconcile after this process started (see the call site for why).
+var (
+	startupCaddyReloadMu   sync.Mutex
+	startupCaddyReloadDone bool
+)
+
+// consumeStartupCaddyReload returns true exactly once per process — on the
+// first call — and false thereafter.
+func consumeStartupCaddyReload() bool {
+	startupCaddyReloadMu.Lock()
+	defer startupCaddyReloadMu.Unlock()
+	if startupCaddyReloadDone {
+		return false
+	}
+	startupCaddyReloadDone = true
+	return true
 }
 
 // pinSourceRefsToCommit rewrites each source-built service's Ref to the commit

@@ -59,3 +59,24 @@ func TestIsConfigError_TransientError(t *testing.T) {
 		t.Error("expected isConfigError to return false for transient error")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// consumeStartupCaddyReload (forced post-reboot Caddy reload)
+// ---------------------------------------------------------------------------
+
+func TestConsumeStartupCaddyReload_OnceThenFalse(t *testing.T) {
+	// Reset guard so the test is deterministic regardless of prior calls.
+	startupCaddyReloadMu.Lock()
+	startupCaddyReloadDone = false
+	startupCaddyReloadMu.Unlock()
+
+	if !consumeStartupCaddyReload() {
+		t.Fatal("expected first consumeStartupCaddyReload() = true")
+	}
+	if consumeStartupCaddyReload() {
+		t.Fatal("expected second consumeStartupCaddyReload() = false")
+	}
+	if consumeStartupCaddyReload() {
+		t.Fatal("expected third consumeStartupCaddyReload() = false")
+	}
+}
