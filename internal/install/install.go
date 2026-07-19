@@ -123,6 +123,7 @@ func (r HardeningReport) OK() bool {
 //  8. Configure container DNS and unqualified-search-registries (needed for
 //     Dockerfile builds).
 //  9. Allow container→internet egress through UFW's deny-routed policy.
+//
 // 10. Verify no database ports are publicly reachable.
 //
 // Any step failure returns immediately. The caller (agent main) logs the

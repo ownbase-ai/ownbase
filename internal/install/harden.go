@@ -87,6 +87,19 @@ func ensureFirewall(ctx context.Context, cfg PassZeroConfig) StepStatus {
 		[]string{"ufw", "allow", "proto", "udp", "from", "10.88.0.0/12", "to", "10.88.0.0/12", "port", "53", "comment", "Podman DNS (10.88.0.0/12)"},
 		[]string{"ufw", "allow", "proto", "udp", "from", "10.89.0.0/16", "to", "10.89.0.0/16", "port", "53", "comment", "Podman DNS (10.89.0.0/16)"},
 	)
+	// Container→internet egress (routed/forwarded traffic). These must be part
+	// of the baseline rule set re-applied after every `ufw --force reset`
+	// above: SyncFirewallExposure calls ensureFirewall on each reconcile, and a
+	// web-exposure change triggers a reset that would otherwise wipe the egress
+	// rules ensureContainerEgress added — silently cutting container internet
+	// access (breaking Dockerfile dependency downloads and outbound API calls)
+	// until the next daemon restart re-ran PassZero. Re-adding them here keeps
+	// egress intact across resets. ensureContainerEgress still handles the
+	// upgrade path for an already-hardened Base that never triggers a reset.
+	for _, subnet := range containerEgressSubnets {
+		cmds = append(cmds, []string{"ufw", "route", "allow", "from", subnet,
+			"comment", containerEgressComment(subnet)})
+	}
 	cmds = append(cmds, []string{"ufw", "--force", "enable"})
 	for _, args := range cmds {
 		if _, err := run(ctx, args[0], args[1:]...); err != nil {
