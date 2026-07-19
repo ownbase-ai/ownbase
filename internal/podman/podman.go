@@ -224,11 +224,20 @@ func (p *Applier) writeUnit(unitFilename, diskContent, mirrorContent string) err
 }
 
 // injectSecrets implements the M11 Tier-2 secrets seam. If an age-encrypted
-// secrets file exists for the service at <SecretsDir>/<service>.yaml.age, it
-// is decrypted in-memory with the Base's age key, materialised into a
-// root-only (0600) plaintext env file, and an EnvironmentFile= directive
-// pointing at that file is inserted into the unit's [Container] section so
-// Podman loads every secret as a container environment variable at start.
+// secrets file exists for the service at <SecretsDir>/<service>.yaml.age, it is
+// decrypted in-memory with the Base's age key, each value is registered with
+// the Podman secret store via `podman secret create`, and a
+// `Secret=<name>,type=env,target=<KEY>` directive is inserted into the unit's
+// [Container] section so Podman resolves every secret to a container
+// environment variable at start.
+//
+// Crucially, the decrypted plaintext is streamed to Podman over stdin and is
+// never written to disk by ownbase. This preserves the project invariant that
+// plaintext secrets never touch disk (docs/development.md) — the old
+// EnvironmentFile= approach materialised a plaintext *.env file under
+// /opt/ownbase/secrets/runtime, which both broke that invariant and, because
+// /opt/ownbase/secrets is in the restic backup set (backup.DefaultPaths),
+// leaked those plaintext values into every backup snapshot.
 //
 // The returned content is only ever written to the live Quadlet directory —
 // callers must still mirror the ORIGINAL compiler output to RuntimeDir (see
@@ -263,44 +272,61 @@ func (p *Applier) injectSecrets(containerName, unitFilename, unitContent string)
 		return unitContent, nil
 	}
 
-	// Materialise the decrypted values into a root-only env file. Keys are
-	// written in sorted order so the file is deterministic across restarts.
-	envDir := filepath.Join(secretsDir, "runtime")
-	if err := os.MkdirAll(envDir, 0o700); err != nil {
-		return "", fmt.Errorf("mkdir secrets runtime dir: %w", err)
-	}
-	envPath := filepath.Join(envDir, service+".env")
+	// Register each value as a Podman secret (sorted for deterministic output)
+	// and reference it from the unit. The plaintext is passed to Podman over
+	// stdin — it is never written to disk by ownbase.
 	keys := make([]string, 0, len(values))
 	for k := range values {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	var b strings.Builder
 	for _, k := range keys {
-		fmt.Fprintf(&b, "%s=%s\n", k, values[k])
-	}
-	if err := os.WriteFile(envPath, []byte(b.String()), 0o600); err != nil {
-		return "", fmt.Errorf("write secrets env file %s: %w", envPath, err)
+		if err := createPodmanSecret(podmanSecretName(service, k), values[k]); err != nil {
+			return "", err
+		}
 	}
 
-	return insertEnvironmentFile(unitContent, envPath), nil
+	return insertSecretDirectives(unitContent, service, keys), nil
 }
 
-// insertEnvironmentFile adds an EnvironmentFile= directive to the [Container]
-// section of a Quadlet unit, immediately after the section header so it sits
-// alongside the compiler-emitted Environment= lines. The directive is preceded
-// by injectedSecretsMarker so it can be stripped back out for drift comparison.
-// Returns unitContent unchanged if it has no [Container] section (never the case
-// for .container units, but defensive).
-func insertEnvironmentFile(unitContent, envPath string) string {
+// podmanSecretName is the canonical Podman secret name for a service's key,
+// namespaced so secrets from different services never collide.
+func podmanSecretName(service, key string) string {
+	return "ownbase-" + service + "-" + key
+}
+
+// createPodmanSecret registers (or replaces) a Podman secret, streaming the
+// plaintext value over stdin so it never lands on disk in an ownbase-managed
+// path. `--replace` makes this idempotent and safe to call while a container
+// still references the secret (podman ≥ 4.7).
+func createPodmanSecret(name, value string) error {
+	cmd := exec.Command("podman", "secret", "create", "--replace", name, "-")
+	cmd.Stdin = strings.NewReader(value)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("podman secret create %s: %w — %s", name, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// insertSecretDirectives adds one `Secret=<name>,type=env,target=<KEY>` line per
+// secret to the [Container] section of a Quadlet unit, immediately after the
+// section header so they sit alongside the compiler-emitted Environment= lines.
+// The block is preceded by injectedSecretsMarker so it can be stripped back out
+// for drift comparison. Returns unitContent unchanged if it has no [Container]
+// section (never the case for .container units, but defensive).
+func insertSecretDirectives(unitContent, service string, keys []string) string {
 	const marker = "\n[Container]\n"
 	idx := strings.Index(unitContent, marker)
 	if idx < 0 {
 		return unitContent
 	}
 	insertAt := idx + len(marker)
-	block := injectedSecretsMarker + "\nEnvironmentFile=" + envPath + "\n"
-	return unitContent[:insertAt] + block + unitContent[insertAt:]
+	var b strings.Builder
+	b.WriteString(injectedSecretsMarker + "\n")
+	for _, k := range keys {
+		fmt.Fprintf(&b, "Secret=%s,type=env,target=%s\n", podmanSecretName(service, k), k)
+	}
+	return unitContent[:insertAt] + b.String() + unitContent[insertAt:]
 }
 
 // ---------------------------------------------------------------------------
@@ -319,6 +345,12 @@ func (p *Applier) stopAndRemoveUnit(unitFilename string) error {
 	if strings.HasSuffix(unitFilename, ".container") {
 		svc := unitToService(unitFilename)
 		_ = systemctl("stop", svc) // best-effort; ignore "unit not found"
+		// NOTE: Podman secrets registered for this service (ownbase-<svc>-*) are
+		// intentionally left in place. They carry no plaintext on disk in an
+		// ownbase-managed path and are harmlessly overwritten via --replace on
+		// the next inject; precise per-service teardown belongs behind the
+		// secrets.Injector.Remove seam (it needs the exact key list to avoid
+		// matching a sibling service that shares a name prefix).
 	}
 
 	dst := filepath.Join(p.quadletDir(), unitFilename)

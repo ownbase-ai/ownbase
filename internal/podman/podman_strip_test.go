@@ -21,13 +21,15 @@ Restart=always
 
 // A unit that carries an apply-time secrets block must strip back to exactly the
 // compiler's output, so the reconcile diff sees no drift and does not restart.
-// The injected block is built directly (mirroring insertEnvironmentFile, which
+// The injected block is built directly (mirroring insertSecretDirectives, which
 // is integration-tagged) so this test runs in the default build too.
 func TestStripInjectedSecrets_RoundTripsToCompilerOutput(t *testing.T) {
-	block := injectedSecretsMarker + "\nEnvironmentFile=/opt/ownbase/secrets/runtime/api.env\n"
+	block := injectedSecretsMarker + "\n" +
+		"Secret=ownbase-api-POSTGRES_PASSWORD,type=env,target=POSTGRES_PASSWORD\n" +
+		"Secret=ownbase-api-REVOLVE_DATABASE_URL,type=env,target=REVOLVE_DATABASE_URL\n"
 	injected := strings.Replace(stripTestUnit, "[Container]\n", "[Container]\n"+block, 1)
-	if !strings.Contains(injected, "EnvironmentFile=") {
-		t.Fatalf("precondition: injected unit missing EnvironmentFile:\n%s", injected)
+	if !strings.Contains(injected, "Secret=") {
+		t.Fatalf("precondition: injected unit missing Secret= directives:\n%s", injected)
 	}
 	if got := StripInjectedSecrets(injected); got != stripTestUnit {
 		t.Fatalf("strip did not round-trip to compiler output:\n--- got ---\n%s\n--- want ---\n%s", got, stripTestUnit)

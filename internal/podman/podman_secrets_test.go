@@ -4,6 +4,7 @@ package podman
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -25,26 +26,33 @@ Environment=REVOLVE_DEFAULT_REGION=mx
 Restart=always
 `
 
-func TestInsertEnvironmentFile_AddsDirectiveInContainerSection(t *testing.T) {
-	got := insertEnvironmentFile(secretsTestUnit, "/opt/ownbase/secrets/runtime/api.env")
+func TestInsertSecretDirectives_AddsDirectivesInContainerSection(t *testing.T) {
+	got := insertSecretDirectives(secretsTestUnit, "api",
+		[]string{"POSTGRES_PASSWORD", "REVOLVE_DATABASE_URL"})
 
-	if !strings.Contains(got, "EnvironmentFile=/opt/ownbase/secrets/runtime/api.env\n") {
-		t.Fatalf("EnvironmentFile directive missing:\n%s", got)
+	for _, want := range []string{
+		"Secret=ownbase-api-POSTGRES_PASSWORD,type=env,target=POSTGRES_PASSWORD\n",
+		"Secret=ownbase-api-REVOLVE_DATABASE_URL,type=env,target=REVOLVE_DATABASE_URL\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("Secret directive %q missing:\n%s", want, got)
+		}
 	}
-	// It must sit inside [Container], before the compiler-emitted Environment= line.
-	envFileIdx := strings.Index(got, "EnvironmentFile=")
+	// The directives must sit inside [Container], before the compiler-emitted
+	// Environment= line.
+	secretIdx := strings.Index(got, "Secret=")
 	containerIdx := strings.Index(got, "[Container]")
 	envIdx := strings.Index(got, "Environment=REVOLVE_DEFAULT_REGION")
 	serviceIdx := strings.Index(got, "[Service]")
-	if !(containerIdx < envFileIdx && envFileIdx < envIdx && envIdx < serviceIdx) {
-		t.Fatalf("EnvironmentFile directive misplaced (container=%d envfile=%d env=%d service=%d):\n%s",
-			containerIdx, envFileIdx, envIdx, serviceIdx, got)
+	if !(containerIdx < secretIdx && secretIdx < envIdx && envIdx < serviceIdx) {
+		t.Fatalf("Secret directives misplaced (container=%d secret=%d env=%d service=%d):\n%s",
+			containerIdx, secretIdx, envIdx, serviceIdx, got)
 	}
 }
 
-func TestInsertEnvironmentFile_NoContainerSectionUnchanged(t *testing.T) {
+func TestInsertSecretDirectives_NoContainerSectionUnchanged(t *testing.T) {
 	const netUnit = "[Network]\nDriver=bridge\n"
-	if got := insertEnvironmentFile(netUnit, "/x.env"); got != netUnit {
+	if got := insertSecretDirectives(netUnit, "api", []string{"X"}); got != netUnit {
 		t.Fatalf("expected unchanged content, got:\n%s", got)
 	}
 }
@@ -81,32 +89,51 @@ func TestInjectSecrets_DecryptsAndInjects(t *testing.T) {
 		t.Fatalf("write secrets file: %v", err)
 	}
 
+	if _, err := exec.LookPath("podman"); err != nil {
+		t.Skip("podman not available; skipping secret-injection integration test")
+	}
+	secretNames := []string{"ownbase-api-POSTGRES_PASSWORD", "ownbase-api-REVOLVE_DATABASE_URL"}
+	rmSecrets := func() {
+		for _, n := range secretNames {
+			_ = exec.Command("podman", "secret", "rm", n).Run()
+		}
+	}
+	rmSecrets()          // clean slate
+	t.Cleanup(rmSecrets) // and clean up whatever the test registered
+
 	p := &Applier{SecretsDir: dir, AgeKeyPath: keyPath}
 	got, err := p.injectSecrets("ownbase-api", "ownbase-api.container", secretsTestUnit)
 	if err != nil {
 		t.Fatalf("injectSecrets: %v", err)
 	}
 
-	envPath := filepath.Join(dir, "runtime", "api.env")
-	if !strings.Contains(got, "EnvironmentFile="+envPath+"\n") {
-		t.Fatalf("unit missing EnvironmentFile directive:\n%s", got)
+	// The unit must reference each secret as an env-typed Podman secret, and
+	// carry NO plaintext values or on-disk env file path.
+	for _, want := range []string{
+		"Secret=ownbase-api-POSTGRES_PASSWORD,type=env,target=POSTGRES_PASSWORD\n",
+		"Secret=ownbase-api-REVOLVE_DATABASE_URL,type=env,target=REVOLVE_DATABASE_URL\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("unit missing Secret directive %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "EnvironmentFile=") {
+		t.Fatalf("unit must not carry an EnvironmentFile directive:\n%s", got)
+	}
+	if strings.Contains(got, "s3cr3t") {
+		t.Fatalf("unit leaks a plaintext secret value:\n%s", got)
 	}
 
-	// The env file must be 0600 and contain both secrets, sorted.
-	info, err := os.Stat(envPath)
-	if err != nil {
-		t.Fatalf("stat env file: %v", err)
+	// Plaintext must never land on disk: the old runtime env file must not exist.
+	if _, err := os.Stat(filepath.Join(dir, "runtime", "api.env")); !os.IsNotExist(err) {
+		t.Fatalf("plaintext env file must not be written to disk (stat err=%v)", err)
 	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("env file perms = %o, want 0600", info.Mode().Perm())
-	}
-	data, err := os.ReadFile(envPath)
-	if err != nil {
-		t.Fatalf("read env file: %v", err)
-	}
-	want := "POSTGRES_PASSWORD=s3cr3t\n" +
-		"REVOLVE_DATABASE_URL=postgresql+psycopg://revolve:s3cr3t@ownbase-postgres:5432/revolve\n"
-	if string(data) != want {
-		t.Fatalf("env file content =\n%q\nwant\n%q", string(data), want)
+
+	// Each value must be resolvable from the Podman secret store, proving the
+	// plaintext was actually registered (streamed over stdin, not via disk).
+	for _, name := range []string{"ownbase-api-POSTGRES_PASSWORD", "ownbase-api-REVOLVE_DATABASE_URL"} {
+		if out, err := exec.Command("podman", "secret", "inspect", name).CombinedOutput(); err != nil {
+			t.Fatalf("podman secret inspect %s failed: %v — %s", name, err, out)
+		}
 	}
 }

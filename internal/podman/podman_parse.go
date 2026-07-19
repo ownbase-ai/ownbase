@@ -19,7 +19,7 @@ const QuadletUserDir = ".config/containers/systemd"
 const SystemQuadletDir = "/etc/containers/systemd"
 
 // injectedSecretsMarker is emitted on its own comment line directly above the
-// apply-time EnvironmentFile= directive that injectSecrets adds. It lets
+// apply-time Secret= directives that injectSecrets adds. It lets
 // StripInjectedSecrets remove the injected block again so the reconcile diff can
 // compare the on-disk unit against the compiler's (secret-free) output. Without
 // it, the on-disk unit would always differ from desired and every reconcile
@@ -28,15 +28,15 @@ const SystemQuadletDir = "/etc/containers/systemd"
 const injectedSecretsMarker = "# ownbase:injected-secrets (apply-time; not from ownbase.yaml)"
 
 // StripInjectedSecrets removes the apply-time secrets block that
-// insertEnvironmentFile adds (the injectedSecretsMarker comment plus the
-// EnvironmentFile= directive immediately below it), yielding content equivalent
-// to the compiler's output.
+// insertSecretDirectives adds (the injectedSecretsMarker comment plus the
+// contiguous run of Secret= directives immediately below it), yielding content
+// equivalent to the compiler's output.
 //
 // The reconcile loop reads installed units from the live Quadlet directory to
-// detect config drift and decide when to restart. Because the injected
-// EnvironmentFile directive is deliberately absent from the compiler's view of
-// the unit (secrets never live in ownbase.yaml or the config repo), callers must
-// strip it before comparing against desired, or every reconcile tick would see a
+// detect config drift and decide when to restart. Because the injected Secret=
+// directives are deliberately absent from the compiler's view of the unit
+// (secrets never live in ownbase.yaml or the config repo), callers must strip
+// them before comparing against desired, or every reconcile tick would see a
 // spurious "unit content changed" and restart the container forever.
 func StripInjectedSecrets(unitContent string) string {
 	if !strings.Contains(unitContent, injectedSecretsMarker) {
@@ -46,8 +46,8 @@ func StripInjectedSecrets(unitContent string) string {
 	out := make([]string, 0, len(lines))
 	for i := 0; i < len(lines); i++ {
 		if lines[i] == injectedSecretsMarker {
-			// Drop the marker and the EnvironmentFile= directive it guards.
-			if i+1 < len(lines) && strings.HasPrefix(lines[i+1], "EnvironmentFile=") {
+			// Drop the marker and every Secret= directive it guards.
+			for i+1 < len(lines) && strings.HasPrefix(lines[i+1], "Secret=") {
 				i++
 			}
 			continue
