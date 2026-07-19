@@ -43,3 +43,27 @@ func TestStripInjectedSecrets_NoBlockUnchanged(t *testing.T) {
 		t.Fatalf("expected unchanged content, got:\n%s", got)
 	}
 }
+
+// The daemon appends a secrets-fingerprint comment to the desired unit so a
+// secrets change triggers a restart. Stripping the injected Secret= block must
+// leave that fingerprint intact, otherwise the current-vs-desired comparison
+// would never see the last-applied fingerprint and would restart every tick.
+func TestStripInjectedSecrets_PreservesFingerprint(t *testing.T) {
+	const fingerprint = "# ownbase:secrets-fingerprint=deadbeef\n"
+	desiredWithFingerprint := stripTestUnit + fingerprint
+
+	block := injectedSecretsMarker + "\n" +
+		"Secret=ownbase-api-POSTGRES_PASSWORD,type=env,target=POSTGRES_PASSWORD\n"
+	injected := strings.Replace(desiredWithFingerprint, "[Container]\n", "[Container]\n"+block, 1)
+
+	got := StripInjectedSecrets(injected)
+	if strings.Contains(got, "Secret=") {
+		t.Fatalf("Secret= directive not stripped:\n%s", got)
+	}
+	if !strings.Contains(got, fingerprint) {
+		t.Fatalf("secrets fingerprint must be preserved:\n%s", got)
+	}
+	if got != desiredWithFingerprint {
+		t.Fatalf("strip did not round-trip to desired-with-fingerprint:\n--- got ---\n%s\n--- want ---\n%s", got, desiredWithFingerprint)
+	}
+}

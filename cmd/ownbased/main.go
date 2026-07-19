@@ -16,6 +16,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"io"
@@ -988,6 +990,17 @@ func reconcileLoop(
 	// 4. Compile desired state.
 	desired := compiler.Compile(compiler.Input{Config: cfg})
 
+	// 4a-pre. Fold a fingerprint of each service's encrypted secrets file into
+	// its unit content. Secrets live at /opt/ownbase/secrets/<svc>.yaml.age,
+	// outside the compiler's (and config repo's) view, and the apply-time
+	// Secret= directives are stripped before drift comparison — so without this
+	// a `secrets set` would never change desired-vs-current unit content and
+	// Diff would plan no restart, leaving the running container with stale
+	// values until an unrelated change happened to restart it. Embedding the
+	// fingerprint makes a secrets change move the desired content, which
+	// triggers a restart that re-registers the Podman secrets and re-injects.
+	annotateSecretsFingerprints(desired.QuadletUnits, explain.DefaultSecretsDir)
+
 	// 4a. Read the Caddyfile snapshot that is currently on disk — i.e. what
 	// was actually deployed as of the end of the previous cycle — BEFORE
 	// compiler.WriteOutput overwrites it with the newly-compiled desired
@@ -1171,6 +1184,44 @@ func readRuntimeUnits(runtimeDir string) map[string]string {
 		}
 	}
 	return units
+}
+
+// secretsFingerprintPrefix marks the comment line that carries a service's
+// secrets fingerprint in its compiled unit content. It must survive
+// podman.StripInjectedSecrets (which only removes the injected Secret= block),
+// so the last-applied fingerprint stays visible on the current-unit side of the
+// reconcile diff.
+const secretsFingerprintPrefix = "# ownbase:secrets-fingerprint="
+
+// annotateSecretsFingerprints appends a secrets-fingerprint comment to each
+// container unit whose service has an encrypted secrets file, so that changing
+// that file changes the unit's desired content and triggers a restart (see the
+// call site). Units without a secrets file are left untouched, so services with
+// no secrets never restart spuriously.
+func annotateSecretsFingerprints(units map[string]string, secretsDir string) {
+	for filename, content := range units {
+		if !strings.HasSuffix(filename, ".container") {
+			continue
+		}
+		service := strings.TrimSuffix(strings.TrimPrefix(filename, "ownbase-"), ".container")
+		fp := secretsFileFingerprint(filepath.Join(secretsDir, service+".yaml.age"))
+		if fp == "" {
+			continue
+		}
+		units[filename] = content + secretsFingerprintPrefix + fp + "\n"
+	}
+}
+
+// secretsFileFingerprint returns a hex SHA-256 of the encrypted secrets file at
+// path, or "" if it does not exist (or cannot be read). It hashes the ciphertext
+// bytes — no decryption — so it changes whenever `secrets set` rewrites the file.
+func secretsFileFingerprint(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 // startupCaddyReload guards a one-time forced Caddy reload on the first
