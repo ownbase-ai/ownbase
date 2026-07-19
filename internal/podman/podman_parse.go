@@ -18,6 +18,45 @@ const QuadletUserDir = ".config/containers/systemd"
 // context, so units must be managed by the system systemctl manager from here.
 const SystemQuadletDir = "/etc/containers/systemd"
 
+// injectedSecretsMarker is emitted on its own comment line directly above the
+// apply-time Secret= directives that injectSecrets adds. It lets
+// StripInjectedSecrets remove the injected block again so the reconcile diff can
+// compare the on-disk unit against the compiler's (secret-free) output. Without
+// it, the on-disk unit would always differ from desired and every reconcile
+// tick would needlessly restart the container. Lives here (untagged) so both
+// the integration daemon build and the default build can reference it.
+const injectedSecretsMarker = "# ownbase:injected-secrets (apply-time; not from ownbase.yaml)"
+
+// StripInjectedSecrets removes the apply-time secrets block that
+// insertSecretDirectives adds (the injectedSecretsMarker comment plus the
+// contiguous run of Secret= directives immediately below it), yielding content
+// equivalent to the compiler's output.
+//
+// The reconcile loop reads installed units from the live Quadlet directory to
+// detect config drift and decide when to restart. Because the injected Secret=
+// directives are deliberately absent from the compiler's view of the unit
+// (secrets never live in ownbase.yaml or the config repo), callers must strip
+// them before comparing against desired, or every reconcile tick would see a
+// spurious "unit content changed" and restart the container forever.
+func StripInjectedSecrets(unitContent string) string {
+	if !strings.Contains(unitContent, injectedSecretsMarker) {
+		return unitContent
+	}
+	lines := strings.Split(unitContent, "\n")
+	out := make([]string, 0, len(lines))
+	for i := 0; i < len(lines); i++ {
+		if lines[i] == injectedSecretsMarker {
+			// Drop the marker and every Secret= directive it guards.
+			for i+1 < len(lines) && strings.HasPrefix(lines[i+1], "Secret=") {
+				i++
+			}
+			continue
+		}
+		out = append(out, lines[i])
+	}
+	return strings.Join(out, "\n")
+}
+
 // quadletDirFor returns the directory where Quadlet unit files belong for the
 // process owner. Root uses the system-level path so units are managed by the
 // system manager (no user session bus required); non-root uses the XDG user

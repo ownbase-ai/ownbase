@@ -76,6 +76,7 @@ type StepStatus struct {
 type HardeningReport struct {
 	OS          StepStatus
 	Podman      StepStatus
+	Git         StepStatus
 	Linger      StepStatus
 	Firewall    StepStatus
 	AutoUpdates StepStatus
@@ -98,7 +99,7 @@ type HardeningReport struct {
 // OK returns true when every required hardening step succeeded.
 // Trivy is excluded — its installation failure is non-fatal.
 func (r HardeningReport) OK() bool {
-	for _, s := range []StepStatus{r.OS, r.Podman, r.Linger, r.Firewall,
+	for _, s := range []StepStatus{r.OS, r.Podman, r.Git, r.Linger, r.Firewall,
 		r.AutoUpdates, r.Fail2ban, r.NoExposedDB} {
 		if !s.Done {
 			return false
@@ -114,13 +115,16 @@ func (r HardeningReport) OK() bool {
 // Steps run in dependency order:
 //  1. Verify Ubuntu version.
 //  2. Install Podman container runtime.
-//  3. Enable systemd linger for the agent user.
-//  4. Configure UFW firewall.
-//  5. Enable automatic security updates.
-//  6. Install and configure fail2ban.
-//  7. Configure container DNS and unqualified-search-registries (needed for
+//  3. Install git (repo bootstrap + service builds).
+//  4. Enable systemd linger for the agent user.
+//  5. Configure UFW firewall.
+//  6. Enable automatic security updates.
+//  7. Install and configure fail2ban.
+//  8. Configure container DNS and unqualified-search-registries (needed for
 //     Dockerfile builds).
-//  8. Verify no database ports are publicly reachable.
+//  9. Allow container→internet egress through UFW's deny-routed policy.
+//
+// 10. Verify no database ports are publicly reachable.
 //
 // Any step failure returns immediately. The caller (agent main) logs the
 // error and exits, so systemd will restart the service and PassZero will
@@ -137,6 +141,13 @@ func PassZero(ctx context.Context, cfg PassZeroConfig) (HardeningReport, error) 
 	r.Podman = ensurePodman(ctx, c)
 	if r.Podman.Err != nil {
 		return r, fmt.Errorf("podman: %w", r.Podman.Err)
+	}
+
+	// Git is required for repo bootstrap and every service build; a minimal
+	// Ubuntu image may not ship it, so install it before anything git-backed.
+	r.Git = ensureGit(ctx, c)
+	if r.Git.Err != nil {
+		return r, fmt.Errorf("git: %w", r.Git.Err)
 	}
 
 	r.Linger = ensureLinger(ctx, c)
@@ -171,6 +182,13 @@ func PassZero(ctx context.Context, cfg PassZeroConfig) (HardeningReport, error) 
 		return r, fmt.Errorf("unqualified-search-registries: %w", s.Err)
 	}
 
+	// Allow container→internet egress through UFW's default deny-routed
+	// policy; without it, builds can't download deps and services can't
+	// reach external APIs. Must run after ensureFirewall (UFW active).
+	if s := ensureContainerEgress(ctx, c); s.Err != nil {
+		return r, fmt.Errorf("container-egress: %w", s.Err)
+	}
+
 	r.NoExposedDB = verifyNoExposedDB(ctx, c)
 	if r.NoExposedDB.Err != nil {
 		return r, fmt.Errorf("exposed-db check: %w", r.NoExposedDB.Err)
@@ -201,6 +219,7 @@ func CheckHardeningState(ctx context.Context, cfg PassZeroConfig) HardeningRepor
 	r := HardeningReport{}
 	r.OS = checkOS(ctx, c)
 	r.Podman = checkPodmanState(ctx)
+	r.Git = checkGitState(ctx)
 	r.Linger = checkLingerState(ctx, c.AgentUser)
 	r.Firewall = checkFirewallState(ctx, c)
 	r.AutoUpdates = checkAutoUpdatesState(ctx)

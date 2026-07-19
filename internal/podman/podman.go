@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -26,6 +27,7 @@ import (
 	"github.com/ownbase/ownbase/internal/reconcile"
 	"github.com/ownbase/ownbase/internal/repos"
 	"github.com/ownbase/ownbase/internal/schema"
+	"github.com/ownbase/ownbase/internal/secrets"
 )
 
 // Applier implements reconcile.Applier using the Podman CLI and
@@ -59,6 +61,11 @@ type Applier struct {
 	// /opt/ownbase/secrets/. The agent decrypts the file (if it exists) at
 	// apply time and injects all key-value pairs as environment variables.
 	SecretsDir string
+
+	// AgeKeyPath is the path to the Base's age private key used to decrypt
+	// secrets files. Empty means secrets.DefaultKeyPath
+	// (/opt/ownbase/age/key.age). Configurable mainly for tests.
+	AgeKeyPath string
 }
 
 var _ reconcile.Applier = (*Applier)(nil)
@@ -127,6 +134,7 @@ func (p *Applier) start(a reconcile.PlannedAction) error {
 	// under /opt/ownbase/repos/ before installing the Quadlet unit.
 	// Image-bundled containers (IsImageBundled flag in the unit: no
 	// BuildSource comment) are pulled by Podman on start.
+	diskContent := a.UnitContent
 	if strings.HasSuffix(a.UnitFilename, ".container") {
 		src, ref, dockerfile, buildCtx := parseBuildProvenance(a.UnitContent)
 		if src != "" {
@@ -135,41 +143,15 @@ func (p *Applier) start(a reconcile.PlannedAction) error {
 			}
 		}
 
-		// M11 Tier-2 seam: secrets injection.
-		// Secrets are stored at a conventional path outside git:
-		//   <SecretsDir>/<service>.yaml.age
-		// The service name is derived from the container name (ownbase-<service>).
-		service := strings.TrimPrefix(a.Action.Target, "ownbase-")
-		secretsDir := p.SecretsDir
-		if secretsDir == "" {
-			secretsDir = "/opt/ownbase/secrets"
-		}
-		secretsFile := filepath.Join(secretsDir, service+".yaml.age")
-		if _, err := os.Stat(secretsFile); err == nil {
-			// TODO(M11-Tier2): decrypt secretsFile and inject via Podman secrets.
-			fmt.Fprintf(os.Stderr,
-				"podman.Applier: WARNING: secrets injection not yet implemented for %s (M11 Tier-2)\n",
-				a.Action.Target)
+		var err error
+		diskContent, err = p.injectSecrets(a.Action.Target, a.UnitFilename, a.UnitContent)
+		if err != nil {
+			return fmt.Errorf("inject secrets for %s: %w", a.Action.Target, err)
 		}
 	}
 
-	dst := filepath.Join(p.quadletDir(), a.UnitFilename)
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return fmt.Errorf("mkdir quadlet dir: %w", err)
-	}
-	if err := os.WriteFile(dst, []byte(a.UnitContent), 0o644); err != nil {
-		return fmt.Errorf("write unit %s: %w", dst, err)
-	}
-
-	// Mirror the unit file into RuntimeDir for drift tracking.
-	if p.RuntimeDir != "" {
-		rtDst := filepath.Join(p.RuntimeDir, a.UnitFilename)
-		if err := os.MkdirAll(p.RuntimeDir, 0o755); err != nil {
-			return fmt.Errorf("mkdir runtime dir: %w", err)
-		}
-		if err := os.WriteFile(rtDst, []byte(a.UnitContent), 0o644); err != nil {
-			return fmt.Errorf("write runtime mirror %s: %w", rtDst, err)
-		}
+	if err := p.writeUnit(a.UnitFilename, diskContent, a.UnitContent); err != nil {
+		return err
 	}
 
 	if err := reloadSystemd(); err != nil {
@@ -209,6 +191,151 @@ func (p *Applier) start(a reconcile.PlannedAction) error {
 	return waitForContainer(a.Action.Target, a.UnitContent, 90*time.Second)
 }
 
+// writeUnit installs the unit file into the live Quadlet directory and mirrors
+// a copy into RuntimeDir for drift tracking.
+//
+// diskContent is what is actually installed and run (it may carry an injected
+// EnvironmentFile= directive, see injectSecrets). mirrorContent is the
+// unmodified compiler output — it is what gets written to RuntimeDir so that
+// both drift detection (reconcile.DetectDrift) and restart-on-change
+// (reconcile.Diff, which compares desired compiler output against the
+// RuntimeDir mirror) keep matching the compiler's view. Mirroring diskContent
+// instead would make every reconcile tick see spurious drift / restart the
+// container forever, and would leak secret file paths into the tracked mirror.
+func (p *Applier) writeUnit(unitFilename, diskContent, mirrorContent string) error {
+	dst := filepath.Join(p.quadletDir(), unitFilename)
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return fmt.Errorf("mkdir quadlet dir: %w", err)
+	}
+	if err := os.WriteFile(dst, []byte(diskContent), 0o644); err != nil {
+		return fmt.Errorf("write unit %s: %w", dst, err)
+	}
+
+	if p.RuntimeDir != "" {
+		rtDst := filepath.Join(p.RuntimeDir, unitFilename)
+		if err := os.MkdirAll(p.RuntimeDir, 0o755); err != nil {
+			return fmt.Errorf("mkdir runtime dir: %w", err)
+		}
+		if err := os.WriteFile(rtDst, []byte(mirrorContent), 0o644); err != nil {
+			return fmt.Errorf("write runtime mirror %s: %w", rtDst, err)
+		}
+	}
+	return nil
+}
+
+// injectSecrets implements the M11 Tier-2 secrets seam. If an age-encrypted
+// secrets file exists for the service at <SecretsDir>/<service>.yaml.age, it is
+// decrypted in-memory with the Base's age key, each value is registered with
+// the Podman secret store via `podman secret create`, and a
+// `Secret=<name>,type=env,target=<KEY>` directive is inserted into the unit's
+// [Container] section so Podman resolves every secret to a container
+// environment variable at start.
+//
+// Crucially, the decrypted plaintext is streamed to Podman over stdin and is
+// never written to disk by ownbase. This preserves the project invariant that
+// plaintext secrets never touch disk (docs/development.md) — the old
+// EnvironmentFile= approach materialised a plaintext *.env file under
+// /opt/ownbase/secrets/runtime, which both broke that invariant and, because
+// /opt/ownbase/secrets is in the restic backup set (backup.DefaultPaths),
+// leaked those plaintext values into every backup snapshot.
+//
+// The returned content is only ever written to the live Quadlet directory —
+// callers must still mirror the ORIGINAL compiler output to RuntimeDir (see
+// writeUnit), because secrets are deliberately absent from the compiler's
+// view of the unit (they never live in ownbase.yaml or the config repo).
+//
+// When no secrets file exists (the common case) the unit content is returned
+// unchanged, so services without secrets are entirely unaffected.
+func (p *Applier) injectSecrets(containerName, unitFilename, unitContent string) (string, error) {
+	if !strings.HasSuffix(unitFilename, ".container") {
+		return unitContent, nil
+	}
+
+	service := strings.TrimPrefix(containerName, "ownbase-")
+	secretsDir := p.SecretsDir
+	if secretsDir == "" {
+		secretsDir = "/opt/ownbase/secrets"
+	}
+	secretsFile := filepath.Join(secretsDir, service+".yaml.age")
+	if _, err := os.Stat(secretsFile); err != nil {
+		if os.IsNotExist(err) {
+			return unitContent, nil
+		}
+		return "", fmt.Errorf("stat secrets file %s: %w", secretsFile, err)
+	}
+
+	values, err := secrets.IssueMap(secrets.FileKeyCustody{Path: p.AgeKeyPath}, secretsFile)
+	if err != nil {
+		return "", fmt.Errorf("decrypt secrets for %s: %w", service, err)
+	}
+	if len(values) == 0 {
+		return unitContent, nil
+	}
+
+	// Register each value as a Podman secret (sorted for deterministic output)
+	// and reference it from the unit. The plaintext is passed to Podman over
+	// stdin — it is never written to disk by ownbase.
+	keys := make([]string, 0, len(values))
+	for k := range values {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if err := createPodmanSecret(podmanSecretName(service, k), values[k]); err != nil {
+			return "", err
+		}
+	}
+
+	return insertSecretDirectives(unitContent, service, keys), nil
+}
+
+// podmanSecretName is the canonical Podman secret name for a service's key,
+// namespaced so secrets from different services never collide.
+func podmanSecretName(service, key string) string {
+	return "ownbase-" + service + "-" + key
+}
+
+// createPodmanSecret registers a Podman secret, streaming the plaintext value
+// over stdin so it never lands on disk in an ownbase-managed path.
+//
+// It removes any existing secret of the same name first, then creates it fresh,
+// rather than using `podman secret create --replace`: on some Podman versions
+// (e.g. 4.9 rootless with the file driver) --replace fails with "deleting
+// secret: no secret data with ID". The rm is best-effort (the secret may not
+// exist yet); create is the authoritative step. Reconcile is single-threaded
+// and the container is not (re)started until after injection completes, so the
+// brief window where the secret is absent is safe.
+func createPodmanSecret(name, value string) error {
+	_ = exec.Command("podman", "secret", "rm", name).Run()
+	cmd := exec.Command("podman", "secret", "create", name, "-")
+	cmd.Stdin = strings.NewReader(value)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("podman secret create %s: %w — %s", name, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// insertSecretDirectives adds one `Secret=<name>,type=env,target=<KEY>` line per
+// secret to the [Container] section of a Quadlet unit, immediately after the
+// section header so they sit alongside the compiler-emitted Environment= lines.
+// The block is preceded by injectedSecretsMarker so it can be stripped back out
+// for drift comparison. Returns unitContent unchanged if it has no [Container]
+// section (never the case for .container units, but defensive).
+func insertSecretDirectives(unitContent, service string, keys []string) string {
+	const marker = "\n[Container]\n"
+	idx := strings.Index(unitContent, marker)
+	if idx < 0 {
+		return unitContent
+	}
+	insertAt := idx + len(marker)
+	var b strings.Builder
+	b.WriteString(injectedSecretsMarker + "\n")
+	for _, k := range keys {
+		fmt.Fprintf(&b, "Secret=%s,type=env,target=%s\n", podmanSecretName(service, k), k)
+	}
+	return unitContent[:insertAt] + b.String() + unitContent[insertAt:]
+}
+
 // ---------------------------------------------------------------------------
 // stop
 // ---------------------------------------------------------------------------
@@ -225,6 +352,12 @@ func (p *Applier) stopAndRemoveUnit(unitFilename string) error {
 	if strings.HasSuffix(unitFilename, ".container") {
 		svc := unitToService(unitFilename)
 		_ = systemctl("stop", svc) // best-effort; ignore "unit not found"
+		// NOTE: Podman secrets registered for this service (ownbase-<svc>-*) are
+		// intentionally left in place. They carry no plaintext on disk in an
+		// ownbase-managed path and are harmlessly overwritten via --replace on
+		// the next inject; precise per-service teardown belongs behind the
+		// secrets.Injector.Remove seam (it needs the exact key list to avoid
+		// matching a sibling service that shares a name prefix).
 	}
 
 	dst := filepath.Join(p.quadletDir(), unitFilename)
@@ -263,6 +396,7 @@ func (p *Applier) restart(a reconcile.PlannedAction) error {
 	// Rebuild the image if this is a source-built container. Unlike start,
 	// restart is triggered by unit content changes (env vars, ref updates) so
 	// we must rebuild to pick up any ref change before restarting.
+	diskContent := a.UnitContent
 	if strings.HasSuffix(a.UnitFilename, ".container") {
 		src, ref, dockerfile, buildCtx := parseBuildProvenance(a.UnitContent)
 		if src != "" {
@@ -270,26 +404,16 @@ func (p *Applier) restart(a reconcile.PlannedAction) error {
 				return fmt.Errorf("build image for %s: %w", a.Action.Target, err)
 			}
 		}
+
+		var err error
+		diskContent, err = p.injectSecrets(a.Action.Target, a.UnitFilename, a.UnitContent)
+		if err != nil {
+			return fmt.Errorf("inject secrets for %s: %w", a.Action.Target, err)
+		}
 	}
 
-	// Write the updated unit file.
-	dst := filepath.Join(p.quadletDir(), a.UnitFilename)
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return fmt.Errorf("mkdir quadlet dir: %w", err)
-	}
-	if err := os.WriteFile(dst, []byte(a.UnitContent), 0o644); err != nil {
-		return fmt.Errorf("write unit %s: %w", dst, err)
-	}
-
-	// Mirror the unit file into RuntimeDir for drift tracking.
-	if p.RuntimeDir != "" {
-		rtDst := filepath.Join(p.RuntimeDir, a.UnitFilename)
-		if err := os.MkdirAll(p.RuntimeDir, 0o755); err != nil {
-			return fmt.Errorf("mkdir runtime dir: %w", err)
-		}
-		if err := os.WriteFile(rtDst, []byte(a.UnitContent), 0o644); err != nil {
-			return fmt.Errorf("write runtime mirror %s: %w", rtDst, err)
-		}
+	if err := p.writeUnit(a.UnitFilename, diskContent, a.UnitContent); err != nil {
+		return err
 	}
 
 	if err := reloadSystemd(); err != nil {

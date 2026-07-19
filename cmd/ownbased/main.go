@@ -16,6 +16,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"io"
@@ -25,6 +27,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -35,6 +38,7 @@ import (
 	"github.com/ownbase/ownbase/internal/explain"
 	"github.com/ownbase/ownbase/internal/githost"
 	"github.com/ownbase/ownbase/internal/install"
+	"github.com/ownbase/ownbase/internal/podman"
 	"github.com/ownbase/ownbase/internal/reconcile"
 	"github.com/ownbase/ownbase/internal/repos"
 	"github.com/ownbase/ownbase/internal/runtime"
@@ -974,8 +978,28 @@ func reconcileLoop(
 		fmt.Fprintf(os.Stderr, "ownbased: ensure repos: %v (non-fatal)\n", err)
 	}
 
+	// 3b. Pin each source-built service to the exact commit its ref currently
+	// resolves to, so the compiled unit's BuildRef changes when the branch
+	// advances. Without this, a source service built from a branch (e.g. main)
+	// never redeploys on push: the unit content is ref-name-stable, the diff
+	// sees no change, and no rebuild/restart is triggered — new code silently
+	// never ships. Best-effort: an unresolvable ref (empty repo, missing
+	// commit) is left untouched so the build falls back to the branch name.
+	pinSourceRefsToCommit(cfg)
+
 	// 4. Compile desired state.
 	desired := compiler.Compile(compiler.Input{Config: cfg})
+
+	// 4a-pre. Fold a fingerprint of each service's encrypted secrets file into
+	// its unit content. Secrets live at /opt/ownbase/secrets/<svc>.yaml.age,
+	// outside the compiler's (and config repo's) view, and the apply-time
+	// Secret= directives are stripped before drift comparison — so without this
+	// a `secrets set` would never change desired-vs-current unit content and
+	// Diff would plan no restart, leaving the running container with stale
+	// values until an unrelated change happened to restart it. Embedding the
+	// fingerprint makes a secrets change move the desired content, which
+	// triggers a restart that re-registers the Podman secrets and re-injects.
+	annotateSecretsFingerprints(desired.QuadletUnits, explain.DefaultSecretsDir)
 
 	// 4a. Read the Caddyfile snapshot that is currently on disk — i.e. what
 	// was actually deployed as of the end of the previous cycle — BEFORE
@@ -991,6 +1015,24 @@ func reconcileLoop(
 	runtimeDir := filepath.Join(checkoutPath, "runtime")
 	currentCaddyfileBeforeWrite, caddyfileReadErr := os.ReadFile(filepath.Join(runtimeDir, "Caddyfile"))
 	caddyfileSnapshotAvailable := caddyfileReadErr == nil
+
+	// On the daemon's first reconcile after startup, force a Caddy reload by
+	// treating the snapshot as unavailable. A host reboot (or a manual restart
+	// of the Caddy container) brings Caddy back up reading its stock on-disk
+	// config — ownbase pushes the real routes only via the admin API, in memory
+	// — so the on-disk snapshot can byte-match desired while the LIVE Caddy is
+	// serving nothing. Without this, the empty-plan reboot case never re-pushes
+	// routes and all TLS/routing stays down until an unrelated config change
+	// happens to trigger a reload. A reload is graceful and idempotent (cached
+	// certs are reused), so forcing one per startup is safe.
+	//
+	// The flag is only *peeked* here, not consumed: it is marked done at the
+	// successful-return points below. If this reconcile fails before the reload
+	// lands, the next tick re-forces it instead of silently skipping it forever.
+	forceStartupCaddyReload := startupCaddyReloadPending()
+	if forceStartupCaddyReload {
+		caddyfileSnapshotAvailable = false
+	}
 
 	// 4b. Write the informational snapshot files (Caddyfile, docker-compose.yml)
 	// before drift detection so they are always present when the detector runs.
@@ -1031,6 +1073,11 @@ func reconcileLoop(
 		installedUnits = make(map[string]bool, len(currentUnits))
 		for filename := range currentUnits {
 			installedUnits[filename] = true
+			// Strip the apply-time secrets block so the diff compares the unit
+			// against the compiler's secret-free output; otherwise the injected
+			// EnvironmentFile= directive looks like drift and restarts the
+			// container on every reconcile tick.
+			currentUnits[filename] = podman.StripInjectedSecrets(currentUnits[filename])
 		}
 		// Also include any network/volume units not yet in currentUnits
 		// (readRuntimeUnits only reads ownbase-prefixed files, which is correct).
@@ -1057,6 +1104,9 @@ func reconcileLoop(
 
 	if plan.IsEmpty() {
 		fmt.Fprintln(os.Stderr, "ownbased: already converged — no changes needed")
+		if forceStartupCaddyReload {
+			markStartupCaddyReloadDone()
+		}
 		return state, nil
 	}
 
@@ -1076,6 +1126,11 @@ func reconcileLoop(
 	// and unit files that were skipped because the resource already existed.
 	if _, err := compiler.WriteOutput(desired, checkoutPath); err != nil {
 		fmt.Fprintf(os.Stderr, "ownbased: write runtime snapshot: %v (non-fatal)\n", err)
+	}
+	// The forced post-startup reload (if any) has now been applied by a
+	// successful reconcile; stop forcing it on subsequent ticks.
+	if forceStartupCaddyReload {
+		markStartupCaddyReloadDone()
 	}
 	return state, nil
 }
@@ -1129,6 +1184,112 @@ func readRuntimeUnits(runtimeDir string) map[string]string {
 		}
 	}
 	return units
+}
+
+// secretsFingerprintPrefix marks the comment line that carries a service's
+// secrets fingerprint in its compiled unit content. It must survive
+// podman.StripInjectedSecrets (which only removes the injected Secret= block),
+// so the last-applied fingerprint stays visible on the current-unit side of the
+// reconcile diff.
+const secretsFingerprintPrefix = "# ownbase:secrets-fingerprint="
+
+// annotateSecretsFingerprints appends a secrets-fingerprint comment to each
+// container unit whose service has an encrypted secrets file, so that changing
+// that file changes the unit's desired content and triggers a restart (see the
+// call site). Units without a secrets file are left untouched, so services with
+// no secrets never restart spuriously.
+func annotateSecretsFingerprints(units map[string]string, secretsDir string) {
+	for filename, content := range units {
+		if !strings.HasSuffix(filename, ".container") {
+			continue
+		}
+		service := strings.TrimSuffix(strings.TrimPrefix(filename, "ownbase-"), ".container")
+		fp := secretsFileFingerprint(filepath.Join(secretsDir, service+".yaml.age"))
+		if fp == "" {
+			continue
+		}
+		units[filename] = content + secretsFingerprintPrefix + fp + "\n"
+	}
+}
+
+// secretsFileFingerprint returns a hex SHA-256 of the encrypted secrets file at
+// path, or "" if it does not exist (or cannot be read). It hashes the ciphertext
+// bytes — no decryption — so it changes whenever `secrets set` rewrites the file.
+func secretsFileFingerprint(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+// startupCaddyReload guards a one-time forced Caddy reload on the first
+// *successful* reconcile after this process started (see the call site for why).
+var (
+	startupCaddyReloadMu   sync.Mutex
+	startupCaddyReloadDone bool
+)
+
+// startupCaddyReloadPending reports whether the one-time post-startup Caddy
+// reload still needs to happen. It does NOT consume the flag — the reload is
+// only recorded as done once a reconcile completes successfully (see
+// markStartupCaddyReloadDone), so a reconcile that fails before the reload
+// lands is retried on the next tick rather than skipped forever.
+func startupCaddyReloadPending() bool {
+	startupCaddyReloadMu.Lock()
+	defer startupCaddyReloadMu.Unlock()
+	return !startupCaddyReloadDone
+}
+
+// markStartupCaddyReloadDone records that the forced post-startup Caddy reload
+// has been applied by a successful reconcile. Idempotent.
+func markStartupCaddyReloadDone() {
+	startupCaddyReloadMu.Lock()
+	defer startupCaddyReloadMu.Unlock()
+	startupCaddyReloadDone = true
+}
+
+// pinSourceRefsToCommit rewrites each source-built service's Ref to the commit
+// SHA it currently resolves to in the service's local bare repo. This makes the
+// compiled unit's BuildRef move with the branch tip, so a `git push` to a
+// tracked branch produces a unit-content change that the reconcile diff detects
+// and turns into a rebuild+restart. Mirror services (svc.Source == "") are left
+// alone — they are pinned to an explicit external ref by the operator.
+//
+// Resolution is best-effort and mutates cfg in place; any service whose ref
+// cannot be resolved (empty repo, missing commit, git not yet installed) is
+// skipped, and the build falls back to the branch name as before.
+func pinSourceRefsToCommit(cfg *schema.OwnbaseConfig) {
+	if cfg == nil {
+		return
+	}
+	for name, svc := range cfg.Services {
+		if svc.Source == "" {
+			continue
+		}
+		ref := svc.Ref
+		if ref == "" {
+			ref = "HEAD"
+		}
+		sha, err := gitResolveCommit(repos.RepoPath(svc.Source), ref)
+		if err != nil || sha == "" {
+			continue
+		}
+		svc.Ref = sha
+		cfg.Services[name] = svc
+	}
+}
+
+// gitResolveCommit returns the full commit SHA that ref resolves to in the bare
+// repo at repoPath (the repo path is itself the git dir). The ^{commit}
+// peeling ensures annotated tags resolve to their commit, not the tag object.
+func gitResolveCommit(repoPath, ref string) (string, error) {
+	out, err := exec.Command("git", "--git-dir="+repoPath, "rev-parse", "--verify", "--quiet", ref+"^{commit}").Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // sendVulnResult sends result to ch, replacing any already-queued result when

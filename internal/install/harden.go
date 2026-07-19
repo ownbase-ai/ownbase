@@ -87,6 +87,19 @@ func ensureFirewall(ctx context.Context, cfg PassZeroConfig) StepStatus {
 		[]string{"ufw", "allow", "proto", "udp", "from", "10.88.0.0/12", "to", "10.88.0.0/12", "port", "53", "comment", "Podman DNS (10.88.0.0/12)"},
 		[]string{"ufw", "allow", "proto", "udp", "from", "10.89.0.0/16", "to", "10.89.0.0/16", "port", "53", "comment", "Podman DNS (10.89.0.0/16)"},
 	)
+	// Container→internet egress (routed/forwarded traffic). These must be part
+	// of the baseline rule set re-applied after every `ufw --force reset`
+	// above: SyncFirewallExposure calls ensureFirewall on each reconcile, and a
+	// web-exposure change triggers a reset that would otherwise wipe the egress
+	// rules ensureContainerEgress added — silently cutting container internet
+	// access (breaking Dockerfile dependency downloads and outbound API calls)
+	// until the next daemon restart re-ran PassZero. Re-adding them here keeps
+	// egress intact across resets. ensureContainerEgress still handles the
+	// upgrade path for an already-hardened Base that never triggers a reset.
+	for _, subnet := range containerEgressSubnets {
+		cmds = append(cmds, []string{"ufw", "route", "allow", "from", subnet,
+			"comment", containerEgressComment(subnet)})
+	}
 	cmds = append(cmds, []string{"ufw", "--force", "enable"})
 	for _, args := range cmds {
 		if _, err := run(ctx, args[0], args[1:]...); err != nil {
@@ -182,6 +195,57 @@ func webPortsMatchDesired(status string, exposeWebPorts bool) bool {
 // requiring a daemon restart.
 func SyncFirewallExposure(ctx context.Context, cfg PassZeroConfig) StepStatus {
 	return ensureFirewall(ctx, cfg.withDefaults())
+}
+
+// containerEgressSubnets are the Podman subnet ranges whose forwarded
+// (routed) traffic UFW must allow out. Podman assigns container networks from
+// 10.88.0.0/12 (default) and 10.89.0.0/16 (ownbase capability nets).
+var containerEgressSubnets = []string{"10.88.0.0/12", "10.89.0.0/16"}
+
+func containerEgressComment(subnet string) string {
+	return "Container egress (" + subnet + ")"
+}
+
+// ensureContainerEgress allows container networks to reach the internet.
+//
+// ensureFirewall sets UFW's default routed policy to DENY (deny (routed) /
+// DEFAULT_FORWARD_POLICY=DROP) and only opens the FORWARD path for Caddy's
+// DNAT'd ingress. Container→internet traffic is *forwarded* (routed) traffic,
+// not host-originated, so "ufw default allow outgoing" does NOT cover it — it
+// is dropped by the default deny-routed policy. That silently breaks every
+// Dockerfile build that downloads dependencies (apt/apk, npm, pip/uv, plugin
+// zips) and every runtime call a service makes to an external API. This step
+// adds a `ufw route allow` for each Podman subnet so containers can egress.
+//
+// Idempotent: it checks `ufw status` for the marker comment on each subnet
+// and only adds the rules that are missing, so it is safe to run on every
+// daemon start (including on an already-hardened Base that predates this fix).
+func ensureContainerEgress(ctx context.Context, cfg PassZeroConfig) StepStatus {
+	if cfg.DryRun {
+		return StepStatus{Done: false, Detail: "would allow container egress forwarding"}
+	}
+	if !cmdExists("ufw") {
+		return StepStatus{Done: true, AlreadyOK: true, Detail: "ufw not installed; skipping egress rules"}
+	}
+	out, err := run(ctx, "ufw", "status")
+	if err != nil {
+		return StepStatus{Err: fmt.Errorf("ufw status: %w", err)}
+	}
+	added := 0
+	for _, subnet := range containerEgressSubnets {
+		if strings.Contains(out, containerEgressComment(subnet)) {
+			continue
+		}
+		if _, err := run(ctx, "ufw", "route", "allow", "from", subnet,
+			"comment", containerEgressComment(subnet)); err != nil {
+			return StepStatus{Err: fmt.Errorf("ufw route allow from %s: %w", subnet, err)}
+		}
+		added++
+	}
+	if added == 0 {
+		return StepStatus{Done: true, AlreadyOK: true, Detail: "container egress already allowed"}
+	}
+	return StepStatus{Done: true, Detail: fmt.Sprintf("container egress allowed (%d subnet rule(s) added)", added)}
 }
 
 // ---------------------------------------------------------------------------

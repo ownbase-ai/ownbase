@@ -63,7 +63,7 @@ func TestPassZero_DryRunNoop(t *testing.T) {
 func TestHardeningReport_OK_AllDone(t *testing.T) {
 	done := install.StepStatus{Done: true}
 	r := install.HardeningReport{
-		OS: done, Podman: done, Linger: done,
+		OS: done, Podman: done, Git: done, Linger: done,
 		Firewall: done, AutoUpdates: done, Fail2ban: done,
 		NoExposedDB: done,
 	}
