@@ -975,6 +975,15 @@ func reconcileLoop(
 		fmt.Fprintf(os.Stderr, "ownbased: ensure repos: %v (non-fatal)\n", err)
 	}
 
+	// 3b. Pin each source-built service to the exact commit its ref currently
+	// resolves to, so the compiled unit's BuildRef changes when the branch
+	// advances. Without this, a source service built from a branch (e.g. main)
+	// never redeploys on push: the unit content is ref-name-stable, the diff
+	// sees no change, and no rebuild/restart is triggered — new code silently
+	// never ships. Best-effort: an unresolvable ref (empty repo, missing
+	// commit) is left untouched so the build falls back to the branch name.
+	pinSourceRefsToCommit(cfg)
+
 	// 4. Compile desired state.
 	desired := compiler.Compile(compiler.Input{Config: cfg})
 
@@ -1135,6 +1144,48 @@ func readRuntimeUnits(runtimeDir string) map[string]string {
 		}
 	}
 	return units
+}
+
+// pinSourceRefsToCommit rewrites each source-built service's Ref to the commit
+// SHA it currently resolves to in the service's local bare repo. This makes the
+// compiled unit's BuildRef move with the branch tip, so a `git push` to a
+// tracked branch produces a unit-content change that the reconcile diff detects
+// and turns into a rebuild+restart. Mirror services (svc.Source == "") are left
+// alone — they are pinned to an explicit external ref by the operator.
+//
+// Resolution is best-effort and mutates cfg in place; any service whose ref
+// cannot be resolved (empty repo, missing commit, git not yet installed) is
+// skipped, and the build falls back to the branch name as before.
+func pinSourceRefsToCommit(cfg *schema.OwnbaseConfig) {
+	if cfg == nil {
+		return
+	}
+	for name, svc := range cfg.Services {
+		if svc.Source == "" {
+			continue
+		}
+		ref := svc.Ref
+		if ref == "" {
+			ref = "HEAD"
+		}
+		sha, err := gitResolveCommit(repos.RepoPath(svc.Source), ref)
+		if err != nil || sha == "" {
+			continue
+		}
+		svc.Ref = sha
+		cfg.Services[name] = svc
+	}
+}
+
+// gitResolveCommit returns the full commit SHA that ref resolves to in the bare
+// repo at repoPath (the repo path is itself the git dir). The ^{commit}
+// peeling ensures annotated tags resolve to their commit, not the tag object.
+func gitResolveCommit(repoPath, ref string) (string, error) {
+	out, err := exec.Command("git", "--git-dir="+repoPath, "rev-parse", "--verify", "--quiet", ref+"^{commit}").Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // sendVulnResult sends result to ch, replacing any already-queued result when
