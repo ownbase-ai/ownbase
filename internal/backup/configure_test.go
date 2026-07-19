@@ -11,7 +11,7 @@ import (
 // used by the /backup/configure API.
 
 func TestSetCoreBackupConfig_NoCoreBlock(t *testing.T) {
-	in := "schema_version: v1\nservices:\n  crm:\n    source: services/crm\n"
+	in := "schema_version: v1\nservices:\n  crm:\n    repo: https://github.com/example/crm.git\n"
 	out := SetCoreBackupConfig(in, "s3:s3.amazonaws.com/bucket/ownbase", "1h", "24h")
 
 	assertParsesWithBackup(t, out, "s3:s3.amazonaws.com/bucket/ownbase", "1h", "24h")

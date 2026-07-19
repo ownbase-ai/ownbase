@@ -4,7 +4,8 @@ package main
 // the standard way remote backups get turned on for a Base (local VM or
 // remote server alike). Credentials go through the existing secrets API
 // (ownbasectl secrets set <name> backup); the repo URL and cadence are
-// committed to ownbase.yaml via the daemon's /backup/configure endpoint.
+// committed to ownbase.yaml in the external config repo client-side and
+// applied via a reconcile (the same path as any other config mutation).
 
 import (
 	"encoding/json"
@@ -14,6 +15,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/ownbase/ownbase/internal/backup"
 )
 
 func newBackupCmd() *cobra.Command {
@@ -113,20 +116,20 @@ func runBackupSetup(base, repo string, credFlags backupCredFlags, interval, veri
 	}
 
 	fmt.Printf("==> Configuring backup repo %s ...\n", repo)
-	configurePayload, _ := json.Marshal(map[string]string{
-		"repo":            repo,
-		"interval":        interval,
-		"verify_interval": verifyInterval,
+	// The repo/cadence live in ownbase.yaml (external config repo); commit
+	// them client-side and reconcile — the same path as any other config
+	// mutation. Credentials go through the secrets API above (never git).
+	cfgErr := mutateConfig(base, func(current string) (string, string, error) {
+		updated := backup.SetCoreBackupConfig(current, repo, interval, verifyInterval)
+		return updated, fmt.Sprintf("chore(backup): configure backup repo %s", repo), nil
 	})
-	if _, err := apiCall(conn, http.MethodPost, "/backup/configure", configurePayload); err != nil {
-		return fmt.Errorf("configure backup: %w", err)
+	if cfgErr != nil && cfgErr != errNoConfigChange {
+		return fmt.Errorf("configure backup: %w", cfgErr)
 	}
 
 	fmt.Println("==> Running the first backup now (this may take a while for large volumes) ...")
-	// The config commit above lands on the local bare repo directly; it
-	// reaches the checkout the daemon reads from only after the next
-	// reconcile pulls it in (the daemon wakes the reconcile loop immediately
-	// on commit, but that happens concurrently with this call). Retry briefly, but only for
+	// The reconcile triggered above pulls the config into the checkout the
+	// daemon reads from. Retry briefly, but only for
 	// that specific "not configured yet" race — a permanent failure (bad
 	// restic credentials, unreachable repo) should surface immediately
 	// rather than being retried for 30 seconds as if it might resolve itself.

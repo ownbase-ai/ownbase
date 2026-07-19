@@ -40,25 +40,39 @@ ownbasectl create mybase --remote root@mybase.example.com \
   --caddy-email you@example.com
 ```
 
-One command: provisions the target, hardens it (Podman, UFW, fail2ban, unattended-upgrades, CVE scanning), installs and verifies the signed `ownbased` daemon, bootstraps a local config repo with a starter `ownbase.yaml`, and registers the Base in `~/.ownbase/config` — nothing to copy-paste. A freshly created Base has no domain configured anywhere, so it exposes nothing but SSH externally.
+One command: provisions the target, hardens it (Podman, UFW, fail2ban, unattended-upgrades, CVE scanning), installs and verifies the signed `ownbased` daemon, and registers the Base in `~/.ownbase/config` — nothing to copy-paste. A freshly created Base has no domain configured anywhere, so it exposes nothing but SSH externally.
 
 ```bash
 ownbasectl status mybase       # confirm it's up
+```
+
+### 3. Point the Base at a config repo
+
+`ownbase.yaml` — the single source of truth for the Base — lives in an **external git repo you own** (e.g. on GitHub). The Base only ever *reads* it; every change is committed client-side by `ownbasectl` with your git credentials. First give the Base a read-only deploy identity, then point it at the repo:
+
+```bash
+ownbasectl ssh-key mybase add --host github.com   # prints an ed25519 public key
+# → register that key as a read-only deploy key on your config repo (and each service repo)
+
+ownbasectl config setup mybase \
+  --repo git@github.com:you/mybase-config.git --init   # --init seeds an empty repo with a starter ownbase.yaml
 ownbasectl config get mybase   # see the starter ownbase.yaml
 ```
 
-### 3. Add a service
+### 4. Add and deploy a service
 
-Declare a service with one command — the daemon creates it and builds it from source, health-gated. [`traefik/whoami`](https://github.com/traefik/whoami) is a good first service to try: a tiny, dependency-free Go web server (commonly used to smoke-test reverse proxies) that just echoes back request info, with a `Dockerfile` already at the repo root:
+Declare a service, then deploy a ref — the daemon clones the external repo and builds it from source, health-gated. [`traefik/whoami`](https://github.com/traefik/whoami) is a good first service to try: a tiny, dependency-free Go web server (commonly used to smoke-test reverse proxies) that just echoes back request info, with a `Dockerfile` already at the repo root:
 
 ```bash
 ownbasectl service add mybase hello \
-  --mirror https://github.com/traefik/whoami \
-  --ref master --port 80 --domain hello.example.com \
+  --repo https://github.com/traefik/whoami \
+  --port 80 --domain hello.example.com \
   --add-capabilities NET_BIND_SERVICE
+
+ownbasectl deploy mybase hello --ref master   # resolve master -> SHA, commit it, reconcile
 ```
 
-`--mirror` points at an external Git repo the daemon clones and maintains a local mirror of; use `--source <path>` instead to push your own code directly into a bare repo the daemon creates for you. Either way there's no image registry involved — every user service is built locally on the Base from source at the pinned `ref:`. You can also skip the CLI and edit `ownbase.yaml` by hand (`ownbasectl config get`/`set`, or `git push` straight to the Base) — see [docs/ownbase-yaml.md](docs/ownbase-yaml.md) for the full schema.
+`--repo` points at an external Git repo the daemon keeps a read-only clone of; there's no image registry involved — every user service is built locally on the Base from source at the pinned `ref:`. `deploy` resolves your ref (branch, tag, or SHA) to a concrete commit, commits it to your config repo, and asks the Base to pull and reconcile — the single, explicit way to move a service to a new version. See [docs/ownbase-yaml.md](docs/ownbase-yaml.md) for the full schema.
 
 `--add-capabilities` is only needed here because every container starts with every Linux capability dropped, and `whoami` listens directly on port 80 — a privileged port. Most images listen on an unprivileged port (3000, 8080, ...) by default and never need this flag at all.
 
@@ -66,7 +80,7 @@ ownbasectl service add mybase hello \
 ownbasectl status mybase   # confirm "hello" is running and healthy
 ```
 
-### 4. Access the service locally
+### 5. Access the service locally
 
 On a local VM, services have no DNS records, so Caddy never gets a real certificate and there's no URL to browse to. `ownbasectl tunnel` solves this: it reaches the service directly over SSH and serves it at a locally-trusted HTTPS URL:
 
@@ -82,15 +96,15 @@ ownbasectl: generating local HTTPS certificate for 1 hostname(s) ...
 Tunneling:
   https://hello.example.com.localhost:8443
 
-No code-sync — push to the service's bare repo and update ref: to deploy changes.
+No code-sync — push to the service's git host and run `ownbasectl deploy` to roll out changes.
 Press Ctrl+C to stop.
 ```
 
 Open that URL — it works fully offline, needs no `/etc/hosts` entry, and stays the same across VM restarts. `tunnel` also works for accessing internal services on a live server.
 
-To iterate, push new code to the service's repo and bump `ref:` with `ownbasectl service update mybase hello --ref <branch>` — the daemon rebuilds and restarts it, and the tunnel picks up the change automatically. Once DNS points at the Base, the service is reachable through Caddy with a real Let's Encrypt certificate.
+To iterate, push new code to the service's git host and roll it out with `ownbasectl deploy mybase hello --ref <branch>` — the daemon rebuilds and restarts it, and the tunnel picks up the change automatically. Once DNS points at the Base, the service is reachable through Caddy with a real Let's Encrypt certificate.
 
-### 5. Set up backups
+### 6. Set up backups
 
 Not optional — do this right after `create`, before you have data you'd miss:
 
@@ -108,7 +122,7 @@ ownbasectl backup run mybase       # trigger an extra snapshot on demand
 ownbasectl backup status mybase    # last snapshot, restorable?, last verify drill
 ```
 
-### 6. Restore from backups
+### 7. Restore from backups
 
 Whether the machine was lost or you tore it down yourself, rebuild onto a fresh VM or server with the same repo and password:
 

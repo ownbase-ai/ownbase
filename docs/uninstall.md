@@ -24,11 +24,11 @@ For a local VM, plain `ownbasectl delete <name>` also destroys the VM (it asks f
 
 Export is always available — the source of truth already lives in your repos and your data is in open formats. Nothing here requires OwnBase to still be running afterwards.
 
-**Code and config.** Every repo is a local bare git repo on the Base itself. Clone what you want to keep over SSH (from the admin user's account, e.g. `ubuntu`):
+**Code and config.** The config repo (`ownbase.yaml`) is an external git repo you already control — nothing to export from the Base. Service code likewise lives in the external repos referenced by each service's `repo:`. The Base keeps only read-only clones; if you want a copy straight off the machine you can grab the working checkout and the bare service clones over SSH (from the admin user's account, e.g. `ubuntu`):
 
 ```bash
-git clone ssh://ubuntu@<base-host>/opt/ownbase/repo                        # the config repo (ownbase.yaml)
-git clone ssh://ubuntu@<base-host>/opt/ownbase/repos/services/<name>       # each source-built or mirrored service
+scp -r ubuntu@<base-host>:/opt/ownbase/checkout ./ownbase-checkout          # the read-only config checkout (ownbase.yaml)
+git clone ssh://ubuntu@<base-host>/opt/ownbase/repos/<name>                 # each service's local bare clone
 ```
 
 **Service data.** Data lives in Podman volumes named `ownbase-<service>-<volume>` (`ownbase-<service>-data` for the single-volume shorthand). Export any of them on the Base:

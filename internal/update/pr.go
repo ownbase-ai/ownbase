@@ -1,18 +1,15 @@
 package update
 
-// pr.go contains helpers for committing field edits to ownbase.yaml on the
-// local config repo (used by blank-ref resolution) and YAML-editing utilities.
+// pr.go contains YAML-editing utilities for ownbase.yaml (BumpRef/BumpDigest).
 //
 // The PR-generation path (OpenUpdatePR, branch creation, PR body templates)
-// has been removed. Updates are now driven by the user editing ref: and
-// committing directly — see docs/decisions.md ("Updates and drift").
+// and the daemon-side commit path (CommitFile) have both been removed. All
+// config mutations are now made client-side by ownbasectl, which clones the
+// external config repo, edits ownbase.yaml, commits, and pushes with the
+// operator's own git credentials — see docs/decisions.md ("Updates and drift").
 
 import (
-	"context"
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 )
 
@@ -95,54 +92,4 @@ func bumpField(yamlContent, serviceName, fieldName, oldValue, newValue string) (
 		return "", fmt.Errorf("service %q: field %q not found in ownbase.yaml", serviceName, fieldName)
 	}
 	return strings.Join(lines, "\n"), nil
-}
-
-// shortRef returns a display-friendly version of a git ref. Long SHAs are
-// truncated to 12 characters; tags and branch names are returned as-is.
-func shortRef(ref string) string {
-	if ref == "" {
-		return "(unpinned)"
-	}
-	if len(ref) == 40 && isHex(ref) {
-		return ref[:12]
-	}
-	return ref
-}
-
-func isHex(s string) bool {
-	for _, c := range s {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
-			return false
-		}
-	}
-	return true
-}
-
-// ---------------------------------------------------------------------------
-// Local config-repo commit helper (used by blank-ref resolution)
-// ---------------------------------------------------------------------------
-
-// CommitFile writes content to path (relative to cfg.CheckoutPath), then
-// commits and pushes it from the checkout to its origin — the local bare
-// repo at /opt/ownbase/repo. This is the single front-door for programmatic
-// ownbase.yaml edits (blank-ref resolution, the daemon's /backup/configure
-// API): always a real commit through the checkout, exactly like a user's
-// own `git push`, so the post-receive hook and reconcile loop see it the
-// same way regardless of who made the change.
-func CommitFile(ctx context.Context, cfg Config, path, content, commitMsg string) error {
-	_ = ctx // no network I/O; kept for API symmetry with the update loop
-	fullPath := filepath.Join(cfg.CheckoutPath, path)
-	if err := os.WriteFile(fullPath, []byte(content), 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", fullPath, err)
-	}
-	if out, err := exec.Command("git", "-C", cfg.CheckoutPath, "add", path).CombinedOutput(); err != nil {
-		return fmt.Errorf("git add %s: %w\n%s", path, err, out)
-	}
-	if out, err := exec.Command("git", "-C", cfg.CheckoutPath, "commit", "-m", commitMsg).CombinedOutput(); err != nil {
-		return fmt.Errorf("git commit: %w\n%s", err, out)
-	}
-	if out, err := exec.Command("git", "-C", cfg.CheckoutPath, "push", "origin", "HEAD").CombinedOutput(); err != nil {
-		return fmt.Errorf("git push: %w\n%s", err, out)
-	}
-	return nil
 }

@@ -48,13 +48,9 @@ type ServiceStatus struct {
 	// Empty means no probe has run yet. (M12 Tier-2 seam.)
 	HealthProbeResult string `json:"health_probe_result,omitempty"`
 
-	// Source-built services (source: is set in ownbase.yaml).
-	Source string `json:"source,omitempty"` // local bare repo path, e.g. "services/auth"
-	Ref    string `json:"ref,omitempty"`    // pinned branch/tag/SHA; empty = auto-pin in progress
-
-	// Mirror services (mirror: is set — external git URL mirrored into a
-	// local bare repo under /opt/ownbase/repos/).
-	Mirror string `json:"mirror,omitempty"`
+	// Repo is the external git URL (repo:) the service builds from.
+	Repo string `json:"repo,omitempty"`
+	Ref  string `json:"ref,omitempty"` // pinned branch/tag/SHA; empty = default HEAD
 
 	// Public exposure. Domain is the first entry of Domains, kept for
 	// backward-compatible API consumers that only read a single hostname;

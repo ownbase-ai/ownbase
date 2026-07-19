@@ -41,8 +41,8 @@ func TestGather_Services_SortedAlphabetically(t *testing.T) {
 	cfg := &schema.OwnbaseConfig{
 		SchemaVersion: "v1",
 		Services: map[string]schema.ServiceDecl{
-			"zebra": {Source: "services/zebra"},
-			"alpha": {Source: "services/alpha", Ref: "v1.0.0"},
+			"zebra": {Repo: "https://github.com/example/zebra.git"},
+			"alpha": {Repo: "https://github.com/example/alpha.git", Ref: "v1.0.0"},
 		},
 	}
 	s := explain.Gather(explain.GatherInput{Config: cfg})
@@ -54,11 +54,11 @@ func TestGather_Services_SortedAlphabetically(t *testing.T) {
 	}
 }
 
-func TestGather_Services_SourceFields(t *testing.T) {
+func TestGather_Services_RepoFields(t *testing.T) {
 	cfg := &schema.OwnbaseConfig{
 		SchemaVersion: "v1",
 		Services: map[string]schema.ServiceDecl{
-			"auth": {Source: "services/auth", Ref: "v2.1.0"},
+			"auth": {Repo: "https://github.com/example/auth.git", Ref: "v2.1.0"},
 		},
 	}
 	s := explain.Gather(explain.GatherInput{
@@ -75,28 +75,25 @@ func TestGather_Services_SourceFields(t *testing.T) {
 	if !svc.Healthy {
 		t.Error("auth should be healthy (V1: same as running)")
 	}
-	if svc.Source != "services/auth" {
-		t.Errorf("Source = %q, want services/auth", svc.Source)
+	if svc.Repo != "https://github.com/example/auth.git" {
+		t.Errorf("Repo = %q, want https://github.com/example/auth.git", svc.Repo)
 	}
 	if svc.Ref != "v2.1.0" {
 		t.Errorf("Ref = %q, want v2.1.0", svc.Ref)
 	}
 }
 
-func TestGather_Services_MirrorService(t *testing.T) {
+func TestGather_Services_RepoURL(t *testing.T) {
 	cfg := &schema.OwnbaseConfig{
 		SchemaVersion: "v1",
 		Services: map[string]schema.ServiceDecl{
-			"postgres": {Mirror: "https://github.com/docker-library/postgres"},
+			"postgres": {Repo: "https://github.com/docker-library/postgres"},
 		},
 	}
 	s := explain.Gather(explain.GatherInput{Config: cfg})
 	svc := s.Services[0]
-	if svc.Mirror != "https://github.com/docker-library/postgres" {
-		t.Errorf("Mirror = %q", svc.Mirror)
-	}
-	if svc.Source != "" {
-		t.Errorf("Source should be empty for mirror service, got %q", svc.Source)
+	if svc.Repo != "https://github.com/docker-library/postgres" {
+		t.Errorf("Repo = %q", svc.Repo)
 	}
 }
 
@@ -104,7 +101,7 @@ func TestGather_Services_NotRunningWhenAbsent(t *testing.T) {
 	cfg := &schema.OwnbaseConfig{
 		SchemaVersion: "v1",
 		Services: map[string]schema.ServiceDecl{
-			"auth": {Source: "services/auth"},
+			"auth": {Repo: "https://github.com/example/auth.git"},
 		},
 	}
 	// No running containers provided.
@@ -283,7 +280,7 @@ func TestStatusServer_Status_ReturnsJSON(t *testing.T) {
 		Config: &schema.OwnbaseConfig{
 			SchemaVersion: "v1",
 			Services: map[string]schema.ServiceDecl{
-				"auth": {Source: "services/auth"},
+				"auth": {Repo: "https://github.com/example/auth.git"},
 			},
 		},
 	})

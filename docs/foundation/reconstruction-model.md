@@ -94,14 +94,14 @@ secrets (enc)--+--> compile() --> runtime/   (generated; never hand-edited)
 - **Runnable without any cloud service, and previewable by an AI.** `ownbasectl plan` runs the compiler and shows the diff before anything is applied.
 - **Single writer.** The compiler is the only thing that writes `runtime/`. A change in `runtime/` the compiler did not make is a drift/tamper signal.
 
-## The source of truth lives on owned hardware
+## The source of truth is a git repo the user owns
 
-The ownership promise collapses if the authoritative repository lives on someone else's servers. So the authoritative copy of the user's repo lives **on the Base itself** — a plain filesystem bare repo, with no hosted git server in front of it. This is what makes the commit-driven loop above possible: a commit to the source of truth is an *internal* event, not a remote poll.
+The ownership promise collapses if the authoritative repository is something only the platform can read or write. So the authoritative copy of `ownbase.yaml` lives in an **external git repo the user controls** (e.g. their own GitHub org). The operator commits to it client-side with their own git credentials via `ownbasectl`; the Base holds only a **read-only clone** at `/opt/ownbase/checkout` and reconciles the machine to match it. A commit is still the one event that drives the loop — it is now an explicit `ownbasectl deploy`/mutation that pushes to the repo and then asks the Base to pull and reconcile, rather than a remote poll or a webhook.
 
-- **A filesystem bare repo is the irreducible truth.** There is no chicken-and-egg to avoid: the bare repo at `/opt/ownbase/repo` (config) and the per-service bare repos under `/opt/ownbase/repos/` *are* the git host — `ownbasectl` and the user push into them directly over the normal admin SSH connection. A hosted git UI (Forgejo) was tried and removed; it added a second attack surface and a second thing to reconstruct without adding any capability the bare repos didn't already have.
-- **External mirrors are optional and never authoritative.** A `mirror:` service clones an external URL into a local bare mirror, refreshed only when a newly pinned `ref:` isn't yet present locally — but the authoritative copy stays on the Base and the update loop runs locally regardless.
+- **The external repo is the irreducible truth, and it is portable.** Because the user owns the repo and its credentials, the Base is fully reconstructable from it plus secrets: point a fresh daemon at the same config repo (`ownbasectl config setup`) and it clones and reconciles. The Base needs only *read* access (a deploy key), so a compromised or destroyed Base can never rewrite history.
+- **Service code is external too, and pinned.** Each service declares a `repo:` git URL; the Base clones it into a local bare clone under `/opt/ownbase/repos/` and builds from the exact `ref:` (a concrete SHA written by `ownbasectl deploy`). Reproducibility *is* recoverability: `repo @ ref` → same Dockerfile → same build → same image, from anywhere.
 
-This is the deepest expression of [architecture-principles.md](architecture-principles.md), principles 1 and 2: not just "Git is the source of truth," but *the source of truth is an artifact the user physically owns.*
+This is the deepest expression of [architecture-principles.md](architecture-principles.md), principles 1 and 2: not just "Git is the source of truth," but *the source of truth is an artifact the user owns and can move.*
 
 ## Secrets are an owned, recoverable, scoped asset
 

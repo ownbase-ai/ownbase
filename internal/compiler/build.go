@@ -99,14 +99,12 @@ func buildContainer(name string, svc schema.ServiceDecl) ContainerModel {
 		Env:           svc.Env,
 	}
 
-	// All user services build from a local bare repo under /opt/ownbase/repos/.
-	// source: uses the path directly; mirror: derives the name as mirrors-<basename>.
-	buildSource := svc.Source
-	if buildSource == "" && svc.Mirror != "" {
-		buildSource = MirrorRepoName(svc.Mirror)
-	}
+	// Every service builds from a read-only local bare clone of its repo: URL,
+	// stored at /opt/ownbase/repos/<service-name>. The service name keys the
+	// local repo directory (BuildSource), so it is collision-free even when
+	// two services share the same upstream URL.
 	c.Image = fmt.Sprintf("localhost/ownbase-%s:local", name)
-	c.BuildSource = buildSource
+	c.BuildSource = name
 	c.BuildRef = svc.Ref
 	c.BuildDockerfile = svc.Dockerfile
 	c.BuildContext = svc.Context
@@ -174,30 +172,6 @@ func buildContainer(name string, svc schema.ServiceDecl) ContainerModel {
 	}
 
 	return c
-}
-
-// MirrorRepoName derives the local bare-repo name for an external git mirror
-// URL. The convention is "mirrors-<basename>", stored at
-// /opt/ownbase/repos/mirrors-<basename>. Using a dash (not a slash) keeps the
-// repo name flat — no nested directories required.
-//
-// Examples:
-//
-//	"https://github.com/docker-library/postgres" → "mirrors-postgres"
-//	"https://github.com/org/crm.git"             → "mirrors-crm"
-//	"git@github.com:org/myapp.git"               → "mirrors-myapp"
-func MirrorRepoName(mirrorURL string) string {
-	u := strings.TrimRight(mirrorURL, "/")
-	u = strings.TrimSuffix(u, ".git")
-	// Handle git@host:org/repo form.
-	if idx := strings.Index(u, ":"); idx >= 0 && !strings.Contains(u[:idx], "/") {
-		u = u[idx+1:]
-	}
-	idx := strings.LastIndex(u, "/")
-	if idx < 0 {
-		return "mirrors-" + u
-	}
-	return "mirrors-" + u[idx+1:]
 }
 
 func capabilityNetworkName(serviceName string) string {

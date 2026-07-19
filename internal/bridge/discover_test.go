@@ -11,23 +11,23 @@ import (
 const sampleYAML = `schema_version: v1
 services:
   auth:
-    source: services/auth
+    repo: https://github.com/example/auth.git
     port: 8080
 
   hello:
-    source: apps/hello
+    repo: https://github.com/example/hello.git
     domain: hello.example.com
     port: 3000
 
   multi:
-    source: apps/multi
+    repo: https://github.com/example/multi.git
     domains:
       - multi.example.com
       - multi.example.org
     port: 4000
 
   noport:
-    source: apps/noport
+    repo: https://github.com/example/noport.git
     domain: noport.example.com
 `
 
@@ -109,7 +109,7 @@ func TestDiscover_NoDomainAnywhereReturnsEmptyNoError(t *testing.T) {
 	const noDomains = `schema_version: v1
 services:
   a:
-    source: apps/a
+    repo: https://github.com/example/a.git
     port: 8080
 `
 	targets, err := bridge.Discover(noDomains)
@@ -134,12 +134,12 @@ func TestDiscover_InternalServiceIsIncluded(t *testing.T) {
 	const yaml = `schema_version: v1
 services:
   admin:
-    source: services/admin
+    repo: https://github.com/example/admin.git
     domain: admin.example.com
     port: 3000
     internal: true
   web:
-    source: services/web
+    repo: https://github.com/example/web.git
     domain: web.example.com
     port: 8080
 `

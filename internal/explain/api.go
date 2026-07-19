@@ -50,19 +50,22 @@ type APIConfig struct {
 	// from the checkout. Called by GET /config — the read side of
 	// `ownbasectl config get`.
 	GetConfig func() (string, error)
-	// SetConfig, when non-nil, validates newContent and commits it through
-	// the front-door commit path (see update.CommitFile) — exactly like a
-	// user's own git push — then wakes the reconcile loop. Called by
-	// POST /config, the write side of `ownbasectl config set` and
-	// `ownbasectl service add/remove/update` (which read-modify-write the
-	// full document through this same endpoint; there is no partial-update
-	// API to keep the front door singular).
-	SetConfig func(newContent, commitMsg string) error
-	// ConfigureBackup, when non-nil, commits core.backup.repo (and optionally
-	// interval/verify_interval) to ownbase.yaml through the front-door commit
-	// path. Called by POST /backup/configure — the API `ownbasectl base
-	// backup setup` uses to turn on backups without hand-editing YAML.
-	ConfigureBackup func(repo, interval, verifyInterval string) error
+	// Reconcile, when non-nil, pulls the external config repo into the
+	// checkout and triggers a reconcile. Called by POST /reconcile — the way
+	// every client-side config mutation (deploy, config set, service *,
+	// backup setup) asks the Base to apply the just-pushed change.
+	Reconcile func() error
+	// SetConfigSource, when non-nil, records the external config repo
+	// (repo_url + ref) on the Base, (re)clones it, and reconciles. Called by
+	// POST /config/source — the write side of `ownbasectl config setup`.
+	SetConfigSource func(repoURL, ref string) error
+	// EnsureSSHKey, when non-nil, ensures the Base's managed SSH identity
+	// exists, optionally records host keys for host, and returns the public
+	// key to register as a read-only deploy key. Called by POST /ssh-key.
+	EnsureSSHKey func(host string) (publicKey string, err error)
+	// GetSSHKey, when non-nil, returns the Base's managed SSH public key (or
+	// "" when none exists yet). Called by GET /ssh-key.
+	GetSSHKey func() (publicKey string, err error)
 	// RunBackup, when non-nil, runs one backup cycle immediately and returns
 	// the resulting status. Called by POST /backup/run.
 	RunBackup func() (BackupRunStatus, error)
@@ -160,55 +163,119 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 		}
 	})
 
-	// /config — read or atomically replace ownbase.yaml. This is the single
-	// front door for every programmatic config mutation: `ownbasectl config
-	// set` writes here directly, and `ownbasectl service add/remove/update`
-	// read the current document (GET), edit it locally, and write the whole
-	// document back (POST) — no partial-update surface to keep in sync with
-	// git push semantics.
+	// /config — read the current ownbase.yaml from the checkout (read-only).
+	// The config repo is external; all mutations are committed client-side by
+	// ownbasectl and applied via POST /reconcile.
 	mux.HandleFunc("/config", func(w http.ResponseWriter, r *http.Request) {
+		if !authRequired(w, r, cfg.StatusSrv) {
+			return
+		}
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if cfg.GetConfig == nil {
+			http.Error(w, "config read not available", http.StatusNotImplemented)
+			return
+		}
+		content, err := cfg.GetConfig()
+		if err != nil {
+			http.Error(w, "read config: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-yaml; charset=utf-8")
+		_, _ = io.WriteString(w, content)
+	})
+
+	// /reconcile — pull the external config repo into the checkout and
+	// reconcile. Called after a client-side commit+push.
+	mux.HandleFunc("/reconcile", func(w http.ResponseWriter, r *http.Request) {
+		if !authRequired(w, r, cfg.StatusSrv) {
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if cfg.Reconcile == nil {
+			http.Error(w, "reconcile not available", http.StatusNotImplemented)
+			return
+		}
+		if err := cfg.Reconcile(); err != nil {
+			http.Error(w, "reconcile: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]string{"status": "reconciling"})
+	})
+
+	// /config/source — record the external config repo (repo_url + ref),
+	// (re)clone it, and reconcile. The write side of `ownbasectl config setup`.
+	mux.HandleFunc("/config/source", func(w http.ResponseWriter, r *http.Request) {
+		if !authRequired(w, r, cfg.StatusSrv) {
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if cfg.SetConfigSource == nil {
+			http.Error(w, "config source not available", http.StatusNotImplemented)
+			return
+		}
+		var body struct {
+			RepoURL string `json:"repo_url"`
+			Ref     string `json:"ref"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if strings.TrimSpace(body.RepoURL) == "" {
+			http.Error(w, "repo_url is required", http.StatusBadRequest)
+			return
+		}
+		if err := cfg.SetConfigSource(body.RepoURL, body.Ref); err != nil {
+			http.Error(w, "set config source: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]string{"status": "configured", "repo_url": body.RepoURL})
+	})
+
+	// /ssh-key — manage the Base's read-only git deploy identity. POST ensures
+	// the key (and optionally records a host's keys) and returns the public
+	// key; GET returns the current public key.
+	mux.HandleFunc("/ssh-key", func(w http.ResponseWriter, r *http.Request) {
 		if !authRequired(w, r, cfg.StatusSrv) {
 			return
 		}
 		switch r.Method {
 		case http.MethodGet:
-			if cfg.GetConfig == nil {
-				http.Error(w, "config read not available", http.StatusNotImplemented)
+			if cfg.GetSSHKey == nil {
+				http.Error(w, "ssh-key not available", http.StatusNotImplemented)
 				return
 			}
-			content, err := cfg.GetConfig()
+			pub, err := cfg.GetSSHKey()
 			if err != nil {
-				http.Error(w, "read config: "+err.Error(), http.StatusInternalServerError)
+				http.Error(w, "read ssh key: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
-			w.Header().Set("Content-Type", "application/x-yaml; charset=utf-8")
-			_, _ = io.WriteString(w, content)
-		case http.MethodPost, http.MethodPut:
-			if cfg.SetConfig == nil {
-				http.Error(w, "config write not available", http.StatusNotImplemented)
+			writeJSON(w, map[string]string{"public_key": pub})
+		case http.MethodPost:
+			if cfg.EnsureSSHKey == nil {
+				http.Error(w, "ssh-key not available", http.StatusNotImplemented)
 				return
 			}
 			var body struct {
-				Content string `json:"content"`
-				Message string `json:"message"`
+				Host string `json:"host"`
 			}
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
+			// Body is optional; ignore decode errors on an empty body.
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			pub, err := cfg.EnsureSSHKey(body.Host)
+			if err != nil {
+				http.Error(w, "ensure ssh key: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
-			if strings.TrimSpace(body.Content) == "" {
-				http.Error(w, "content is required", http.StatusBadRequest)
-				return
-			}
-			msg := body.Message
-			if msg == "" {
-				msg = "chore(config): update ownbase.yaml via ownbasectl"
-			}
-			if err := cfg.SetConfig(body.Content, msg); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			writeJSON(w, map[string]string{"status": "applied"})
+			writeJSON(w, map[string]string{"public_key": pub})
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
@@ -347,45 +414,6 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 			return
 		}
 		writeJSON(w, map[string]any{"packages": cfg.CoreStatus()})
-	})
-
-	// /backup/configure — commit core.backup.repo (and optionally interval /
-	// verify_interval) to ownbase.yaml. This is how `ownbasectl backup
-	// setup` turns on backups: the daemon's independent backup scheduler
-	// picks up the change on its next poll (within a minute) — no restart.
-	mux.HandleFunc("/backup/configure", func(w http.ResponseWriter, r *http.Request) {
-		if !authRequired(w, r, cfg.StatusSrv) {
-			return
-		}
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		if cfg.ConfigureBackup == nil {
-			http.Error(w, "backup configuration not available", http.StatusNotImplemented)
-			return
-		}
-		var body struct {
-			Repo           string `json:"repo"`
-			Interval       string `json:"interval"`
-			VerifyInterval string `json:"verify_interval"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		if strings.TrimSpace(body.Repo) == "" {
-			http.Error(w, "repo is required", http.StatusBadRequest)
-			return
-		}
-		if err := cfg.ConfigureBackup(body.Repo, body.Interval, body.VerifyInterval); err != nil {
-			http.Error(w, "configure backup: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		writeJSON(w, map[string]any{
-			"status": "configured",
-			"repo":   body.Repo,
-		})
 	})
 
 	// /backup/run — trigger an immediate backup snapshot and return once it

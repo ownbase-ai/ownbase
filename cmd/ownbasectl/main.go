@@ -15,8 +15,10 @@
 //	backup    — configure/run/check remote backups
 //	secrets   — view and manage per-service secrets
 //	upgrade   — check/apply updates to the core package (Caddy)
-//	config    — read/replace ownbase.yaml (agent-first, non-interactive)
+//	config    — set up / read / replace ownbase.yaml (agent-first, non-interactive)
 //	service   — add/remove/update a service in ownbase.yaml
+//	deploy    — resolve a ref to a commit, pin it, and reconcile
+//	ssh-key   — provision the Base's read-only git deploy key
 //	tunnel    — local HTTPS bridge over SSH (the one command allowed to prompt)
 //
 // Local subcommands operate on a repo checkout and take no Base name:
@@ -84,6 +86,8 @@ Start here:
 		newUpgradeCmd(),
 		newConfigCmd(),
 		newServiceCmd(),
+		newDeployCmd(),
+		newSSHKeyCmd(),
 		newTunnelCmd(),
 		newCompileCmd(),
 		newPlanCmd(),

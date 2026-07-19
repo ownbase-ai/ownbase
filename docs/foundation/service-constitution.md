@@ -41,7 +41,7 @@ There is no standalone manifest file a service must author. A service is declare
 ```yaml
 services:
   auth: # this key is the capability name — services that `requires: [auth]` depend on it
-    source: services/auth
+    repo: https://github.com/example/auth.git
     ref: v1.0.0
     port: 8080
     requires:
@@ -55,7 +55,7 @@ Because services depend on the capability name (`auth`) rather than the product 
 ```yaml
 services:
   auth:
-    source: services/my-auth-fork # was services/auth
+    repo: https://github.com/example/my-auth-fork.git # was example/auth
     ref: main
     port: 8080
 ```
@@ -64,7 +64,7 @@ That is what "replaceable" means in practice.
 
 ## Alternative providers
 
-A service that is not part of OwnBase — forked, self-written, or taken from elsewhere — can stand in for any default service as long as it honestly satisfies all five rules above and can be declared under `ownbase.yaml` like any other service (a local bare repo with a Dockerfile). Using one never weakens these rules.
+A service that is not part of OwnBase — forked, self-written, or taken from elsewhere — can stand in for any default service as long as it honestly satisfies all five rules above and can be declared under `ownbase.yaml` like any other service (an external repo with a Dockerfile). Using one never weakens these rules.
 
 ## The test
 

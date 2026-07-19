@@ -166,9 +166,10 @@ func agentQuadletDir() string {
 // unit without the ACME email it was just configured with — silently
 // dropping it and forcing an unnecessary restart. Deletion instead happens
 // exactly once, from the one-time startup path in main.go, after the very
-// first bootstrapCore call (and, for a brand-new config repo, after
-// install.SeedConfigRepo has already persisted the email into ownbase.yaml
-// itself — the durable source of truth every later call reads from).
+// first bootstrapCore call. For a brand-new Base the email lives in
+// ownbase.yaml in the external config repo (seeded client-side by
+// `ownbasectl config setup --init`), the durable source of truth every later
+// call reads from.
 func readFirstRunEnv() install.FirstRunEnv {
 	return install.ReadFirstRunEnv(install.FirstRunEnvPath)
 }

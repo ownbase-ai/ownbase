@@ -2,13 +2,13 @@ schema_version: v1
 
 services:
   auth:
-    source: services/auth
+    repo: https://github.com/example/auth.git
     mode: managed
     ref: v2.1.0
     port: 8080
 
   hello:
-    source: apps/hello
+    repo: https://github.com/example/hello.git
     domain: hello.example.com
     port: 3000
     requires:

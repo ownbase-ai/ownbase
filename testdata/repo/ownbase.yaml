@@ -1,0 +1,22 @@
+schema_version: v1
+
+# Test fixture: services built from external git repos (repo:).
+# Used to verify that repo services resolve to a local bare clone keyed by
+# service name and compile correctly (build from localhost image, not a
+# registry pull).
+
+services:
+  postgres:
+    repo: https://github.com/docker-library/postgres
+    context: "17/alpine"
+    port: 5432
+    health_probe:
+      http: /health
+
+  myapp:
+    repo: https://github.com/example/myapp.git
+    ref: v1.0.0
+    port: 8080
+    domain: app.example.com
+    requires:
+      - postgres

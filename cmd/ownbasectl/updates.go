@@ -100,7 +100,7 @@ func printUpdatesSummary(base string, body []byte) error {
 	}
 
 	fmt.Println("────────────────────────────────────────────────────────────────────────")
-	fmt.Println("  To update a service: edit ref: in ownbase.yaml and commit.")
-	fmt.Println("  To get the latest:   delete ref: — the agent will auto-pin.")
+	fmt.Println("  To update a service: ownbasectl deploy <base> <service> --ref <branch|tag|sha>")
+	fmt.Println("  (deploy resolves the ref to a concrete SHA and commits it to the config repo.)")
 	return nil
 }

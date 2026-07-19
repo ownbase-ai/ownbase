@@ -77,7 +77,7 @@ multipass info ownbase-fresh | grep IPv4
 multipass exec ownbase-fresh -- sudo podman ps                         # caddy running
 multipass exec ownbase-fresh -- sudo systemctl list-units 'ownbase-*'  # units loaded
 multipass exec ownbase-fresh -- sudo ls /etc/containers/systemd/       # Quadlet unit files
-multipass exec ownbase-fresh -- sudo ls /opt/ownbase/repo /opt/ownbase/repos  # config + service bare repos
+multipass exec ownbase-fresh -- sudo ls /opt/ownbase/checkout /opt/ownbase/repos  # config checkout + service bare clones
 
 # Verify trivy was installed by PassZero
 multipass exec ownbase-fresh -- trivy --version
@@ -99,7 +99,7 @@ go run ./cmd/ownbasectl config get ownbase-fresh
 go run ./cmd/ownbasectl tunnel ownbase-fresh
 ```
 
-This is the one command allowed to prompt (a one-time `sudo mkcert -install`). It opens an SSH tunnel directly to the service's container port (bypassing Caddy) and serves it at `https://<domain>.localhost:8443`. See [ownbase-yaml.md](ownbase-yaml.md#local-https-during-development-ownbasectl-tunnel) and [decisions.md](decisions.md#ssh-tunnel-bridge-ownbasectl-tunnel) for the full design. There is no code-sync — iterate by pushing to the service's bare repo and bumping `ref:`, exactly as in production.
+This is the one command allowed to prompt (a one-time `sudo mkcert -install`). It opens an SSH tunnel directly to the service's container port (bypassing Caddy) and serves it at `https://<domain>.localhost:8443`. See [ownbase-yaml.md](ownbase-yaml.md#local-https-during-development-ownbasectl-tunnel) and [decisions.md](decisions.md#ssh-tunnel-bridge-ownbasectl-tunnel) for the full design. There is no code-sync — iterate by pushing to the service's git host and running `ownbasectl deploy`, exactly as in production.
 
 ## Agent-level bootstrap tests
 

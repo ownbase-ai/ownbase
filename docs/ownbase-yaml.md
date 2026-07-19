@@ -1,6 +1,6 @@
 # `ownbase.yaml` reference
 
-> The single declarative config file of a Base. It lives at the root of the Base's config repo — a local, remote-less bare git repo at `/opt/ownbase/repo`. Pushing a change (via `ownbasectl config set`/`service add|update|remove`, or a direct `git push` over SSH) triggers a `post-receive` hook → reconcile.
+> The single declarative config file of a Base. It lives at the root of the Base's **external config repo** (e.g. a GitHub repo). Operators change it client-side with `ownbasectl` (`config set` / `service add|update|remove` / `deploy`), which clones the config repo, edits `ownbase.yaml`, commits, and pushes with the operator's own git credentials, then asks the Base to pull and reconcile. The daemon has **read-only** access to the config repo.
 
 ## Full schema
 
@@ -17,14 +17,11 @@ core:
 
 services:
   <name>:
-    # Source-built service (built from a local bare repo the user pushes into)
-    source: <local-repo-path> # e.g. "services/auth" or "myorg/crm"
-    ref: <branch|tag|sha> # git ref to build from; blank = auto-pin to latest commit
+    # Every service is built from an external git repo (repo:).
+    repo: <external-git-url> # e.g. "git@github.com:org/app.git" or "https://github.com/docker-library/postgres"
+    ref: <branch|tag|sha> # git ref to build from; set by `ownbasectl deploy`
     dockerfile: Dockerfile # optional; defaults to "Dockerfile"
     context: "" # optional build context subdirectory
-
-    # OR: mirror-built (daemon clones + maintains a local bare mirror)
-    mirror: <external-git-url> # e.g. "https://github.com/docker-library/postgres"
 
     # Runtime
     port: <int> # container port; required for public domain
@@ -66,7 +63,7 @@ services:
 
 ## The no-registry rule
 
-`image:` is intentionally absent from user services. Every user service is **built locally on the Base** from a local bare repo at the pinned `ref:` — no pre-built application images, ever. The core package (Caddy) is the only exception and is managed by `ownbasectl upgrade`, not by `ownbase.yaml`.
+`image:` is intentionally absent from user services. Every user service is **built locally on the Base** from a read-only clone of its `repo:` at the pinned `ref:` — no pre-built application images, ever. The core package (Caddy) is the only exception and is managed by `ownbasectl upgrade`, not by `ownbase.yaml`.
 
 ## Public domains: `domain:` and `domains:`
 
@@ -75,7 +72,7 @@ A service becomes publicly reachable once it has **both** a `port:` and at least
 ```yaml
 services:
   app:
-    source: apps/app
+    repo: git@github.com:org/app.git
     port: 3000
     domains: # serve the same service under two hostnames
       - app.example.com
@@ -91,7 +88,7 @@ To define a service that has a domain for tunnel routing but is **intentionally 
 ```yaml
 services:
   admin:
-    source: services/admin
+    repo: git@github.com:org/admin.git
     port: 3000
     domain: admin.example.com
     internal: true   # tunnel-only — no Caddy route, never reachable from the internet
@@ -109,48 +106,46 @@ ownbasectl tunnel mybase
 
 This is the one command in `ownbasectl` allowed to prompt interactively (a one-time `sudo mkcert -install`, ever, on this machine). It reads the Base's live `ownbase.yaml` over SSH, opens one SSH tunnel per service that has both a `port:` and a domain configured — a service with no domain is never bridged — and serves each at its real domain with `.localhost` appended, e.g. `domain: myapp.example.com` → `https://myapp.example.com.localhost:8443`, a locally-trusted HTTPS URL that works fully offline and never changes across a VM restart. Services marked `internal: true` are included. See `docs/cli.md` for the full command reference and `docs/decisions.md` for the design rationale.
 
-**There is no code-sync mechanism** — `ownbasectl tunnel` only tunnels and proxies traffic to whatever is currently deployed. To iterate on a service's code, use the same git-push-to-deploy flow as production: push a branch to the service's bare repo and run `ownbasectl service update <base> <name> --ref <branch>` (see "Updates: the `ref:` model" below); the tunnel, if still running, picks up the new container transparently.
+**There is no code-sync mechanism** — `ownbasectl tunnel` only tunnels and proxies traffic to whatever is currently deployed. To iterate on a service's code, push to the service's `repo:` on your git host and run `ownbasectl deploy <base> <name> --ref <branch>` (see "Updates: the `ref:` model" below); the tunnel, if still running, picks up the new container transparently.
 
-## `source:` paths — how they work
+## `repo:` — how services are sourced
 
-`source:` is always a **local bare repo path** under `/opt/ownbase/repos/`, never a URL:
+`repo:` is always an **external git URL** — the daemon keeps a read-only `git clone --bare --mirror` of it locally under `/opt/ownbase/repos/<service-name>` (keyed by the service name, so two services can safely point at the same upstream):
 
 ```yaml
-source: services/auth    # → /opt/ownbase/repos/services/auth
-source: myorg/crm        # → /opt/ownbase/repos/myorg/crm
+repo: git@github.com:org/auth.git                     # SSH (private repos)
+repo: https://github.com/docker-library/postgres      # anonymous HTTPS
 ```
 
-There is no reserved "apps" vs. "services" split, and no notion of an org on the Base itself — the path is just a directory nesting under `/opt/ownbase/repos/`. Every entry under `services:` in `ownbase.yaml` is declared and built the same way regardless of the path.
-
-The daemon (`internal/repos`) creates an empty bare repo at that path the first time the service is declared; the user (or an agent) then pushes real content into it directly over SSH, exactly like the config repo — `git push ssh://<user>@<base>/opt/ownbase/repos/services/auth <branch>`. To track a GitHub repo instead, declare it with `mirror:` — the daemon clones it into a local bare mirror and builds from there. Never put a GitHub URL directly in `source:`.
+Private repos are cloned using the Base's managed SSH identity (see [cli.md](cli.md), `ssh-key`): run `ownbasectl ssh-key <base> add --host github.com`, then register the printed public key as a **read-only deploy key** on the repo. There is no push-to-Base source path — the Base never hosts service code, it only clones from your git host.
 
 ## Updates: the `ref:` model
 
-Updates are user-driven — edit `ref:` and commit (by hand, or with `ownbasectl service update <base> <name> --ref <new-ref>`):
+A service moves to new code only when the operator runs `ownbasectl deploy`:
 
-```yaml
-services:
-  auth:
-    ref: v1.0.0 # edit this to v1.1.0 and commit to update
+```bash
+ownbasectl deploy mybase auth --ref v1.1.0   # tag, branch, or commit
 ```
 
-Committing the change triggers the normal reconcile: if the new `ref:` isn't already present in the service's local bare repo, the daemon fetches it from the external URL (`mirror:` services only — `source:` services are pushed into directly, so the ref is already there), then rebuilds and restarts the service health-gated. No silent mutations, no daemon-opened PRs.
+`deploy` resolves the requested ref to a concrete commit SHA against the service's `repo:` (client-side, via `git ls-remote`), writes that SHA into `ownbase.yaml`, commits + pushes it to the config repo, and triggers a reconcile. Because the committed `ref:` is always a concrete SHA, deploys are deterministic and reproducible — there is no server-side branch-tip pinning and no automatic blank-ref resolution.
 
-- **Blank `ref:` auto-pin.** A service with no `ref:` gets the default-branch HEAD commit SHA resolved and committed back to `ownbase.yaml` automatically — a concrete, reproducible pin without looking up the SHA by hand. Deleting `ref:` is therefore "give me the latest, then pin it".
+- **Branch-named refs never auto-redeploy.** `deploy` is the sole path to move a service; a service pinned to a branch does not follow that branch's tip until you deploy again. This is intentional ("explicit only").
 - **Drift visibility.** `ownbasectl updates` shows commits-behind and the newest semver tag for every service (see [cli.md](cli.md)).
 - **Deprecated: `mode:`.** The field is still parsed (so old configs don't break) but has no effect; a warning is emitted when present. Remove it.
 
-## What the daemon does on every push
+## What the daemon does on every reconcile
 
-1. Pulls the latest commit from the config bare repo into the checkout
+1. Fetches the external config repo into the read-only checkout at `/opt/ownbase/checkout` (`internal/configsource`)
 2. Reads `ownbase.yaml` and compiles the desired state (Quadlet units, Caddyfile)
-3. Ensures a local bare repo exists for every service, cloning `mirror:` services on first sight and fetching any pinned `ref:` not yet present locally (`internal/repos`)
+3. Ensures a local bare clone exists for every service, cloning each `repo:` on first sight and fetching any pinned `ref:` not yet present locally (`internal/repos`)
 4. Checks for drift (compiler output vs. `runtime/` on disk)
 5. Queries what Podman/systemd is actually running
 6. Diffs desired vs. actual → produces a `PlannedAction` list
-7. For each service: clones its local bare repo at `ref:` and runs `podman build`
+7. For each service: checks out its local bare clone at `ref:` and runs `podman build`
 8. Applies the plan — each action is checkpoint-authorized and audit-logged
 9. Updates the `/status` API with the new state
+
+Reconciles are triggered explicitly by `ownbasectl` (`deploy`, `config set`, `service *`, `config setup`) via `POST /reconcile`; a periodic timer backstop also runs as a safety net.
 
 ## Secrets
 
@@ -168,13 +163,14 @@ The age private key (`/opt/ownbase/age/key.age`) never leaves the Base; plaintex
 Any service can be integrated by following [integration-contract.md](integration-contract.md). The short version, done non-interactively with `ownbasectl`:
 
 ```bash
-ownbasectl service add mybase auth --mirror https://github.com/org/auth --ref main --port 8080 --domain auth.example.com
+ownbasectl service add mybase auth --repo git@github.com:org/auth.git --port 8080 --domain auth.example.com
+ownbasectl deploy mybase auth --ref main
 ```
 
 Or the same steps by hand:
 
-1. **Add the repo** — add a `mirror:` entry (the daemon clones a local bare mirror automatically), or use `source:` and push real content into the empty bare repo the daemon creates for you
-2. **Declare it** — `ref:` (or omit to auto-pin), `port:`, `data_path:` (or `volumes:`), `requires:`
+1. **Add the repo** — set `repo:` to the external git URL. For a private repo, register the Base's deploy key first (`ownbasectl ssh-key <base> add --host github.com`).
+2. **Declare it** — `port:`, `data_path:` (or `volumes:`), `requires:`
 3. **Ensure a Dockerfile** in the repo root (or set `dockerfile:`/`context:` for non-standard layouts)
 4. **Run the Service Constitution audit** — [foundation/service-constitution.md](foundation/service-constitution.md)
-5. **Push** — the daemon builds it locally and brings it up health-gated
+5. **Deploy** — `ownbasectl deploy <base> <name> --ref <ref>`; the daemon builds it locally and brings it up health-gated

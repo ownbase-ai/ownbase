@@ -12,9 +12,9 @@ package install
 // PassZero resumable — restart after a failure, and only the incomplete
 // steps run.
 //
-// Git access is over the normal admin SSH port using the standard admin user
-// (no dedicated "git" system user, no AuthorizedKeysCommand shim): ownbasectl
-// pushes directly to the bare repo at /opt/ownbase/repo over SSH.
+// The config repo is external (see internal/configsource); the Base only ever
+// reads it, using the ownbase-managed SSH identity (see internal/gitssh). The
+// admin SSH port carries only the ownbasectl management tunnel, not git pushes.
 
 import (
 	"context"
