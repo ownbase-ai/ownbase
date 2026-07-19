@@ -295,12 +295,19 @@ func podmanSecretName(service, key string) string {
 	return "ownbase-" + service + "-" + key
 }
 
-// createPodmanSecret registers (or replaces) a Podman secret, streaming the
-// plaintext value over stdin so it never lands on disk in an ownbase-managed
-// path. `--replace` makes this idempotent and safe to call while a container
-// still references the secret (podman ≥ 4.7).
+// createPodmanSecret registers a Podman secret, streaming the plaintext value
+// over stdin so it never lands on disk in an ownbase-managed path.
+//
+// It removes any existing secret of the same name first, then creates it fresh,
+// rather than using `podman secret create --replace`: on some Podman versions
+// (e.g. 4.9 rootless with the file driver) --replace fails with "deleting
+// secret: no secret data with ID". The rm is best-effort (the secret may not
+// exist yet); create is the authoritative step. Reconcile is single-threaded
+// and the container is not (re)started until after injection completes, so the
+// brief window where the secret is absent is safe.
 func createPodmanSecret(name, value string) error {
-	cmd := exec.Command("podman", "secret", "create", "--replace", name, "-")
+	_ = exec.Command("podman", "secret", "rm", name).Run()
+	cmd := exec.Command("podman", "secret", "create", name, "-")
 	cmd.Stdin = strings.NewReader(value)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("podman secret create %s: %w — %s", name, err, strings.TrimSpace(string(out)))
