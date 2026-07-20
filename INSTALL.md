@@ -72,7 +72,7 @@ ownbasectl create mybase --remote root@mybase.example.com \
 What `create` does, in order:
 
 1. Provisions the target — launches a fresh Ubuntu 24.04 VM via Multipass (deleting any existing VM with the same name first), or connects over SSH to the server you provisioned.
-2. Uploads the installer (embedded in `ownbasectl`) and runs it as root: it downloads the `ownbased` daemon release matching your `ownbasectl` version, verifies its minisign signature, then runs pass zero (Podman, UFW, fail2ban, unattended-upgrades, trivy) and seeds the local config bare repo with a starter `ownbase.yaml`.
+2. Uploads the installer (embedded in `ownbasectl`) and runs it as root: it downloads the `ownbased` daemon release matching your `ownbasectl` version, verifies its minisign signature, then runs pass zero (Podman, UFW, fail2ban, unattended-upgrades, trivy). The Base starts with no config source; you point it at an external config repo afterward with `ownbasectl ssh-key` + `ownbasectl config setup`.
 3. Reads the generated API token back and registers the Base as `mybase` in `~/.ownbase/config` — nothing to copy-paste.
 
 `--caddy-email` is only needed if you're putting services on public domains with automatic TLS; omit it otherwise.

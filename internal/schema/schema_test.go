@@ -44,9 +44,8 @@ func TestParseConfig_InvalidFixtures(t *testing.T) {
 	}{
 		{"missing-schema-version.yaml", "schema_version"},
 		{"unknown-schema-version.yaml", "schema_version"},
-		{"missing-build-context.yaml", "source"},
-		{"source-is-url.yaml", "repo-relative path"},
-		{"mirror-is-not-url.yaml", "mirror must be a git URL"},
+		{"repo-missing.yaml", "repo is required"},
+		{"repo-not-url.yaml", "repo must be a git URL"},
 		{"missing-capability-provider.yaml", "capability"},
 		{"unknown-field.yaml", "unexpected_field"},
 	}
@@ -98,7 +97,7 @@ func TestParseConfig_Warnings_BlankRef(t *testing.T) {
 	cfg := &schema.OwnbaseConfig{
 		SchemaVersion: "v1",
 		Services: map[string]schema.ServiceDecl{
-			"auth": {Source: "services/auth"},
+			"auth": {Repo: "https://github.com/example/auth.git"},
 		},
 	}
 	warns := cfg.Warnings()
@@ -107,12 +106,12 @@ func TestParseConfig_Warnings_BlankRef(t *testing.T) {
 	}
 	found := false
 	for _, w := range warns {
-		if strings.Contains(w, "auto-pin") {
+		if strings.Contains(w, "ownbasectl deploy") {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("expected auto-pin warning, got: %v", warns)
+		t.Errorf("expected deploy-to-pin warning, got: %v", warns)
 	}
 }
 
@@ -120,7 +119,7 @@ func TestParseConfig_Warnings_DeprecatedMode(t *testing.T) {
 	cfg := &schema.OwnbaseConfig{
 		SchemaVersion: "v1",
 		Services: map[string]schema.ServiceDecl{
-			"auth": {Source: "services/auth", Mode: "managed", Ref: "v1.0.0"},
+			"auth": {Repo: "https://github.com/example/auth.git", Mode: "managed", Ref: "v1.0.0"},
 		},
 	}
 	warns := cfg.Warnings()
@@ -139,7 +138,7 @@ func TestParseConfig_Warnings_NoRefAndDeprecatedMode(t *testing.T) {
 	cfg := &schema.OwnbaseConfig{
 		SchemaVersion: "v1",
 		Services: map[string]schema.ServiceDecl{
-			"auth": {Source: "services/auth", Mode: "pinned"},
+			"auth": {Repo: "https://github.com/example/auth.git", Mode: "pinned"},
 		},
 	}
 	warns := cfg.Warnings()
@@ -153,7 +152,7 @@ func TestParseConfig_Warnings_RefSet_NoMode_NoWarnings(t *testing.T) {
 	cfg := &schema.OwnbaseConfig{
 		SchemaVersion: "v1",
 		Services: map[string]schema.ServiceDecl{
-			"auth": {Source: "services/auth", Ref: "v1.0.0"},
+			"auth": {Repo: "https://github.com/example/auth.git", Ref: "v1.0.0"},
 		},
 	}
 	if warns := cfg.Warnings(); len(warns) != 0 {
@@ -162,44 +161,46 @@ func TestParseConfig_Warnings_RefSet_NoMode_NoWarnings(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Mirror service validation
+// Repo service validation
 // ---------------------------------------------------------------------------
 
-func TestParseConfig_MirrorService_ValidURL(t *testing.T) {
+func TestParseConfig_RepoService_ValidURL(t *testing.T) {
 	cfg := &schema.OwnbaseConfig{
 		SchemaVersion: "v1",
 		Services: map[string]schema.ServiceDecl{
-			"postgres": {Mirror: "https://github.com/docker-library/postgres"},
+			"postgres": {Repo: "https://github.com/docker-library/postgres"},
 		},
 	}
 	if err := cfg.Validate(); err != nil {
-		t.Errorf("expected valid mirror service, got: %v", err)
+		t.Errorf("expected valid repo service, got: %v", err)
 	}
 }
 
-func TestParseConfig_MirrorService_InvalidURL(t *testing.T) {
+func TestParseConfig_RepoService_InvalidURL(t *testing.T) {
 	cfg := &schema.OwnbaseConfig{
 		SchemaVersion: "v1",
 		Services: map[string]schema.ServiceDecl{
-			"postgres": {Mirror: "docker-library/postgres"},
+			"postgres": {Repo: "docker-library/postgres"},
 		},
 	}
 	if err := cfg.Validate(); err == nil {
-		t.Error("expected error for mirror without URL scheme")
-	} else if !strings.Contains(err.Error(), "mirror must be a git URL") {
-		t.Errorf("error %q does not mention 'mirror must be a git URL'", err.Error())
+		t.Error("expected error for repo without URL scheme")
+	} else if !strings.Contains(err.Error(), "repo must be a git URL") {
+		t.Errorf("error %q does not mention 'repo must be a git URL'", err.Error())
 	}
 }
 
-func TestParseConfig_MirrorAndSource_Exclusive(t *testing.T) {
+func TestParseConfig_RepoRequired(t *testing.T) {
 	cfg := &schema.OwnbaseConfig{
 		SchemaVersion: "v1",
 		Services: map[string]schema.ServiceDecl{
-			"auth": {Source: "services/auth", Mirror: "https://github.com/org/auth"},
+			"auth": {Port: 8080},
 		},
 	}
 	if err := cfg.Validate(); err == nil {
-		t.Error("expected error for source + mirror together")
+		t.Error("expected error for service with no repo")
+	} else if !strings.Contains(err.Error(), "repo is required") {
+		t.Errorf("error %q does not mention 'repo is required'", err.Error())
 	}
 }
 
@@ -294,12 +295,12 @@ func TestOwnAuthOwnbaseYAML(t *testing.T) {
 	if _, ok := cfg.Services["postgres"]; !ok {
 		t.Error("ownauth/ownbase.yaml must have a postgres service")
 	}
-	if cfg.Services["auth"].Source != "services/auth" {
-		t.Errorf("auth.Source = %q, want services/auth", cfg.Services["auth"].Source)
+	if cfg.Services["auth"].Repo != "https://github.com/anonlogin/anonlogin.git" {
+		t.Errorf("auth.Repo = %q, want https://github.com/anonlogin/anonlogin.git", cfg.Services["auth"].Repo)
 	}
-	if cfg.Services["postgres"].Mirror != "https://github.com/docker-library/postgres" {
-		t.Errorf("postgres.Mirror = %q, want https://github.com/docker-library/postgres",
-			cfg.Services["postgres"].Mirror)
+	if cfg.Services["postgres"].Repo != "https://github.com/docker-library/postgres" {
+		t.Errorf("postgres.Repo = %q, want https://github.com/docker-library/postgres",
+			cfg.Services["postgres"].Repo)
 	}
 }
 
@@ -417,35 +418,35 @@ func TestOwnbaseConfig_HasPublicDomain(t *testing.T) {
 	}{
 		{"no services", schema.OwnbaseConfig{}, false},
 		{"service with no domain", schema.OwnbaseConfig{
-			Services: map[string]schema.ServiceDecl{"a": {Source: "x", Port: 8080}},
+			Services: map[string]schema.ServiceDecl{"a": {Repo: "x", Port: 8080}},
 		}, false},
 		{"service with domain: and port:", schema.OwnbaseConfig{
-			Services: map[string]schema.ServiceDecl{"a": {Source: "x", Domain: "a.example.com", Port: 8080}},
+			Services: map[string]schema.ServiceDecl{"a": {Repo: "x", Domain: "a.example.com", Port: 8080}},
 		}, true},
 		{"service with domains: and port:", schema.OwnbaseConfig{
-			Services: map[string]schema.ServiceDecl{"a": {Source: "x", Domains: []string{"a.example.com"}, Port: 8080}},
+			Services: map[string]schema.ServiceDecl{"a": {Repo: "x", Domains: []string{"a.example.com"}, Port: 8080}},
 		}, true},
 		{"service with domain: but no port", schema.OwnbaseConfig{
-			Services: map[string]schema.ServiceDecl{"a": {Source: "x", Domain: "a.example.com"}},
+			Services: map[string]schema.ServiceDecl{"a": {Repo: "x", Domain: "a.example.com"}},
 		}, false},
 		{"service with port but no domain", schema.OwnbaseConfig{
-			Services: map[string]schema.ServiceDecl{"a": {Source: "x", Port: 8080}},
+			Services: map[string]schema.ServiceDecl{"a": {Repo: "x", Port: 8080}},
 		}, false},
 		{"one service domain-only, another port-only: still no routable public service", schema.OwnbaseConfig{
 			Services: map[string]schema.ServiceDecl{
-				"a": {Source: "x", Domain: "a.example.com"},
-				"b": {Source: "y", Port: 8080},
+				"a": {Repo: "x", Domain: "a.example.com"},
+				"b": {Repo: "y", Port: 8080},
 			},
 		}, false},
 		{"internal: true service with domain and port is not a public domain", schema.OwnbaseConfig{
 			Services: map[string]schema.ServiceDecl{
-				"a": {Source: "x", Domain: "a.example.com", Port: 8080, Internal: true},
+				"a": {Repo: "x", Domain: "a.example.com", Port: 8080, Internal: true},
 			},
 		}, false},
 		{"internal service alongside public service: public one counts", schema.OwnbaseConfig{
 			Services: map[string]schema.ServiceDecl{
-				"admin": {Source: "x", Domain: "admin.example.com", Port: 3000, Internal: true},
-				"web":   {Source: "y", Domain: "web.example.com", Port: 8080},
+				"admin": {Repo: "x", Domain: "admin.example.com", Port: 3000, Internal: true},
+				"web":   {Repo: "y", Domain: "web.example.com", Port: 8080},
 			},
 		}, true},
 	}
@@ -468,9 +469,9 @@ func TestOwnbaseConfig_TunnelPorts_Empty(t *testing.T) {
 func TestOwnbaseConfig_TunnelPorts_AnyPortedServiceEligibleDomainOrNot(t *testing.T) {
 	cfg := schema.OwnbaseConfig{
 		Services: map[string]schema.ServiceDecl{
-			"domain-and-port": {Source: "x", Domain: "a.example.com", Port: 8080},
-			"port-only":       {Source: "y", Port: 8080},
-			"domain-only":     {Source: "z", Domain: "b.example.com"},
+			"domain-and-port": {Repo: "x", Domain: "a.example.com", Port: 8080},
+			"port-only":       {Repo: "y", Port: 8080},
+			"domain-only":     {Repo: "z", Domain: "b.example.com"},
 		},
 	}
 	got := cfg.TunnelPorts()
@@ -496,7 +497,7 @@ func TestOwnbaseConfig_TunnelPorts_AnyPortedServiceEligibleDomainOrNot(t *testin
 func TestOwnbaseConfig_TunnelPorts_SingleService(t *testing.T) {
 	cfg := schema.OwnbaseConfig{
 		Services: map[string]schema.ServiceDecl{
-			"hello": {Source: "x", Domain: "hello.example.com", Port: 8080},
+			"hello": {Repo: "x", Domain: "hello.example.com", Port: 8080},
 		},
 	}
 	got := cfg.TunnelPorts()
@@ -508,9 +509,9 @@ func TestOwnbaseConfig_TunnelPorts_SingleService(t *testing.T) {
 func TestOwnbaseConfig_TunnelPorts_DeterministicSortedAssignment(t *testing.T) {
 	cfg := schema.OwnbaseConfig{
 		Services: map[string]schema.ServiceDecl{
-			"zeta":  {Source: "z", Domain: "zeta.example.com", Port: 3000},
-			"alpha": {Source: "a", Domain: "alpha.example.com", Port: 3000},
-			"multi": {Source: "m", Domain: "multi.example.com", Port: 9090},
+			"zeta":  {Repo: "z", Domain: "zeta.example.com", Port: 3000},
+			"alpha": {Repo: "a", Domain: "alpha.example.com", Port: 3000},
+			"multi": {Repo: "m", Domain: "multi.example.com", Port: 9090},
 		},
 	}
 	// Run several times to make sure map iteration order never affects the result.

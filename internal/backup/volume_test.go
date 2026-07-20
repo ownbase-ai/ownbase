@@ -55,7 +55,7 @@ func minimalOC(serviceName string) *schema.OwnbaseConfig {
 	return &schema.OwnbaseConfig{
 		SchemaVersion: "v1",
 		Services: map[string]schema.ServiceDecl{
-			serviceName: {Source: "local/" + serviceName},
+			serviceName: {Repo: "local/" + serviceName},
 		},
 	}
 }
@@ -96,7 +96,7 @@ func TestBuildPaths_ExplicitVolumes_WholeMount(t *testing.T) {
 		SchemaVersion: "v1",
 		Services: map[string]schema.ServiceDecl{
 			"svc": {
-				Source: "local/svc",
+				Repo: "local/svc",
 				Volumes: []schema.VolumeDecl{
 					{Name: "config", Mount: "/config", Backup: []string{"."}},
 				},
@@ -126,7 +126,7 @@ func TestBuildPaths_ExplicitVolumes_Subdirs(t *testing.T) {
 		SchemaVersion: "v1",
 		Services: map[string]schema.ServiceDecl{
 			"media": {
-				Source: "local/media",
+				Repo: "local/media",
 				Volumes: []schema.VolumeDecl{
 					{
 						Name:   "storage",
@@ -162,7 +162,7 @@ func TestBuildPaths_VolumeNoBackup(t *testing.T) {
 		SchemaVersion: "v1",
 		Services: map[string]schema.ServiceDecl{
 			"svc": {
-				Source: "local/svc",
+				Repo: "local/svc",
 				Volumes: []schema.VolumeDecl{
 					{Name: "config", Mount: "/config", Backup: []string{"."}},
 					{Name: "cache", Mount: "/cache"}, // no Backup → excluded
@@ -238,8 +238,8 @@ func TestBuildPaths_NoDuplicates(t *testing.T) {
 	oc := &schema.OwnbaseConfig{
 		SchemaVersion: "v1",
 		Services: map[string]schema.ServiceDecl{
-			"a": {Source: "local/a"},
-			"b": {Source: "local/b"},
+			"a": {Repo: "local/a"},
+			"b": {Repo: "local/b"},
 		},
 	}
 	resolver := fakeResolver{
@@ -290,7 +290,7 @@ func TestBuildPaths_RelativePathVariants(t *testing.T) {
 		SchemaVersion: "v1",
 		Services: map[string]schema.ServiceDecl{
 			"svc": {
-				Source: "local/svc",
+				Repo: "local/svc",
 				Volumes: []schema.VolumeDecl{
 					{
 						Name:  "data",
@@ -328,9 +328,9 @@ func TestBuildPaths_Deterministic(t *testing.T) {
 	oc := &schema.OwnbaseConfig{
 		SchemaVersion: "v1",
 		Services: map[string]schema.ServiceDecl{
-			"alpha": {Source: "local/alpha"},
-			"beta":  {Source: "local/beta"},
-			"gamma": {Source: "local/gamma"},
+			"alpha": {Repo: "local/alpha"},
+			"beta":  {Repo: "local/beta"},
+			"gamma": {Repo: "local/gamma"},
 		},
 	}
 	resolver := fakeResolver{

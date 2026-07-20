@@ -6,10 +6,10 @@
 //	reconcile(desired, current)
 //
 // Two triggers fire this loop:
-//  1. A SIGUSR1 signal from the post-receive hook after a git push.
-//  2. A periodic timer backstop that catches drift between commits.
+//  1. An explicit reconcile signal (POST /reconcile via ownbasectl), which
+//     first syncs the checkout from the external config repo.
+//  2. A periodic timer backstop that catches drift between deploys.
 //
-// The hook sends SIGUSR1 to the PID written to /opt/ownbase/daemon.pid.
 // Both paths call the identical reconcileLoop so there is never a divergence
 // between event-driven and timer-driven convergence.
 package main
@@ -34,9 +34,11 @@ import (
 	"github.com/ownbase/ownbase/internal/authz"
 	"github.com/ownbase/ownbase/internal/backup"
 	"github.com/ownbase/ownbase/internal/compiler"
+	"github.com/ownbase/ownbase/internal/configsource"
 	"github.com/ownbase/ownbase/internal/core"
 	"github.com/ownbase/ownbase/internal/explain"
 	"github.com/ownbase/ownbase/internal/githost"
+	"github.com/ownbase/ownbase/internal/gitssh"
 	"github.com/ownbase/ownbase/internal/install"
 	"github.com/ownbase/ownbase/internal/podman"
 	"github.com/ownbase/ownbase/internal/reconcile"
@@ -53,12 +55,6 @@ const (
 	// DefaultCheckoutPath is where the agent reads ownbase.yaml.
 	DefaultCheckoutPath = githost.DefaultCheckoutPath
 
-	// DefaultRepoPath is the bare repo the agent bootstraps and the hook targets.
-	DefaultRepoPath = githost.DefaultRepoPath
-
-	// DefaultPIDPath is where the agent writes its PID for hook signaling.
-	DefaultPIDPath = githost.DefaultPIDPath
-
 	// DefaultTickInterval is the drift-backstop reconcile interval.
 	DefaultTickInterval = 5 * time.Minute
 
@@ -73,9 +69,9 @@ const (
 	// Bind to loopback only — the status API contains sensitive data
 	// (audit records, security posture, service topology) and must not be
 	// reachable from the network without auth. Relying solely on UFW is
-	// insufficient (docs/decisions.md); the same rule applies here. The
-	// post-receive hook reaches the agent via SIGUSR1 directly (not via the
-	// status port), so loopback is correct.
+	// insufficient (docs/decisions.md); the same rule applies here. Clients
+	// reach it through an SSH tunnel; reconciles are triggered via the
+	// authenticated POST /reconcile endpoint, so loopback is correct.
 	DefaultStatusAddr = "127.0.0.1:7070"
 )
 
@@ -83,12 +79,8 @@ func main() {
 	fs := flag.NewFlagSet("ownbased", flag.ExitOnError)
 	checkoutPath := fs.String("checkout", DefaultCheckoutPath,
 		"path to the ownbase checkout (contains ownbase.yaml)")
-	repoPath := fs.String("repo", DefaultRepoPath,
-		"path to the bare git repo")
 	auditLogPath := fs.String("audit-log", authz.DefaultAuditLogPath,
 		"path to the audit log file")
-	pidPath := fs.String("pid", DefaultPIDPath,
-		"path to write the agent PID for hook signaling")
 	tickInterval := fs.Duration("tick", DefaultTickInterval,
 		"drift-backstop reconcile interval")
 	dryRun := fs.Bool("dry-run", false,
@@ -126,9 +118,7 @@ func main() {
 
 	if err := run(agentConfig{
 		checkoutPath:     *checkoutPath,
-		repoPath:         *repoPath,
 		auditLogPath:     *auditLogPath,
-		pidPath:          *pidPath,
 		tickInterval:     *tickInterval,
 		dryRun:           *dryRun,
 		once:             *once,
@@ -150,9 +140,7 @@ func main() {
 
 type agentConfig struct {
 	checkoutPath     string
-	repoPath         string
 	auditLogPath     string
-	pidPath          string
 	tickInterval     time.Duration
 	dryRun           bool
 	once             bool
@@ -224,42 +212,28 @@ func run(cfg agentConfig) error {
 		}
 	}
 
-	// Bootstrap: ensure the bare repo and checkout exist.
+	// Bootstrap: sync the read-only config checkout from the external config
+	// repo (see internal/configsource). The daemon never writes to it — the
+	// operator commits changes client-side via ownbasectl and the daemon only
+	// pulls + reconciles.
 	if !cfg.skipBootstrap {
 		// Must run before any git operation touches a repo that may already
 		// be chowned to the admin user (from a prior start) — otherwise the
-		// daemon's own git commands (seed, pull, fetch) fail with git's
-		// "dubious ownership" refusal. See githost.TrustAllRepos.
+		// daemon's own git commands fail with git's "dubious ownership"
+		// refusal. See githost.TrustAllRepos.
 		if err := githost.TrustAllRepos(); err != nil {
 			fmt.Fprintf(os.Stderr, "ownbased: trust local repos (non-fatal): %v\n", err)
 		}
-		if err := githost.Bootstrap(cfg.repoPath, cfg.checkoutPath); err != nil {
-			return fmt.Errorf("bootstrap: %w", err)
+		src, err := configsource.Load(configsource.DefaultStatePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ownbased: load config source (non-fatal): %v\n", err)
 		}
-		if err := githost.InstallHook(cfg.repoPath); err != nil {
-			return fmt.Errorf("install hook: %w", err)
-		}
-		// Grant the admin SSH user write access to the bare repo — the
-		// daemon creates it as root, so without this a direct `git push`
-		// over SSH (the documented way to edit ownbase.yaml) fails with a
-		// permission error. Non-fatal: ownbasectl config/service (the
-		// API-based commit path) works regardless.
-		if adminUser := install.ReadAdminUser(install.AdminUserPath); adminUser != "" {
-			if err := githost.SetRepoOwner(cfg.repoPath, adminUser); err != nil {
-				fmt.Fprintf(os.Stderr, "ownbased: set repo owner (non-fatal): %v\n", err)
+		if src.Configured() {
+			if err := configsource.EnsureCheckout(context.Background(), src, cfg.checkoutPath, gitssh.Env()); err != nil {
+				fmt.Fprintf(os.Stderr, "ownbased: sync config repo (non-fatal): %v\n", err)
 			}
-			// Let the post-receive hook (running as adminUser) wake this
-			// (root) process after a direct push — see githost.HookScript.
-			if err := install.EnsureNotifySudoers(adminUser); err != nil {
-				fmt.Fprintf(os.Stderr, "ownbased: ensure notify sudoers (non-fatal): %v\n", err)
-			}
-		}
-		// Seed a template ownbase.yaml (and README) on a brand-new config
-		// repo. A no-op once the user (or a prior boot) has committed a real
-		// config — see internal/install/seed.go.
-		firstRun := install.ReadFirstRunEnv(install.FirstRunEnvPath)
-		if err := install.SeedConfigRepo(cfg.checkoutPath, firstRun.CaddyEmail); err != nil {
-			fmt.Fprintf(os.Stderr, "ownbased: seed config repo (non-fatal): %v\n", err)
+		} else {
+			fmt.Fprintln(os.Stderr, "ownbased: no config source set — run `ownbasectl config setup <base> --repo <url>`")
 		}
 		// Remove any stale OWNBASE.md left by a previous daemon version that
 		// wrote a generated status file to the checkout. The file is no longer
@@ -310,11 +284,6 @@ func run(cfg agentConfig) error {
 		install.DeleteFirstRunEnv(install.FirstRunEnvPath)
 	}
 
-	// Write PID file so the post-receive hook can signal us via SIGUSR1.
-	if err := githost.WritePIDFile(cfg.pidPath); err != nil {
-		fmt.Fprintf(os.Stderr, "ownbased: write pid file: %v (hook signaling disabled)\n", err)
-	}
-
 	// Open the audit log (nop in dry-run).
 	var auditLog authz.AuditLogger
 	if cfg.dryRun {
@@ -341,18 +310,18 @@ func run(cfg agentConfig) error {
 
 	// newApplier is provided by applier_default.go (noop) or
 	// applier_integration.go (real Podman) depending on build tags.
-	// For source-built services, the Applier clones the local bare repo
-	// under /opt/ownbase/repos/ (see internal/repos) — no credentials needed.
+	// The Applier clones each service's local bare clone under
+	// /opt/ownbase/repos/ (see internal/repos) using the managed SSH identity.
 	applier := newApplier(cfg)
 
-	// reconcileSig carries "please reconcile now" wakeups from sources other
-	// than SIGUSR1: the backup API (ConfigureBackup/RunBackup) and the backup
-	// scheduler. Created before the HTTP server starts so the handler
-	// closures capture it.
+	// reconcileSig carries "please reconcile now" wakeups: the explicit
+	// POST /reconcile endpoint (every client-side config mutation), the
+	// config-source and backup API handlers, and the backup scheduler.
+	// Created before the HTTP server starts so the handler closures capture it.
 	reconcileSig := make(chan struct{}, 4)
 
-	// Build the update-loop config here (moved up from below) so the
-	// ConfigureBackup API closure and reconcileOnce can both capture it.
+	// Build the update-loop config here so the API closures and reconcileOnce
+	// can both capture it.
 	updateCfg := update.Config{
 		CheckoutPath: cfg.checkoutPath,
 		DryRun:       cfg.dryRun,
@@ -462,52 +431,58 @@ func run(cfg agentConfig) error {
 				}
 				return string(data), nil
 			},
-			// SetConfig validates newContent as a well-formed ownbase.yaml,
-			// commits it through the local config-repo front door (see
-			// update.CommitFile) exactly like a user's own git push, then
-			// wakes the reconcile loop immediately so the change doesn't
-			// wait for the timer backstop. Used by `ownbasectl config set`
-			// and `ownbasectl service add/remove/update`.
-			SetConfig: func(newContent, commitMsg string) error {
-				if _, err := schema.ParseConfig(strings.NewReader(newContent)); err != nil {
-					return fmt.Errorf("resulting ownbase.yaml would be invalid: %w", err)
+			// Reconcile pulls the external config repo into the checkout
+			// (synchronously, so the pushed change is on disk when this
+			// returns) and wakes the reconcile loop. Called by POST
+			// /reconcile after every client-side config mutation.
+			Reconcile: func() error {
+				src, err := configsource.Load(configsource.DefaultStatePath)
+				if err != nil {
+					return fmt.Errorf("load config source: %w", err)
 				}
-				commitCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-				if err := update.CommitFile(commitCtx, updateCfg, "ownbase.yaml", newContent, commitMsg); err != nil {
-					return fmt.Errorf("commit ownbase.yaml: %w", err)
+				if src.Configured() {
+					syncCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+					defer cancel()
+					if err := configsource.EnsureCheckout(syncCtx, src, cfg.checkoutPath, gitssh.Env()); err != nil {
+						return fmt.Errorf("sync config repo: %w", err)
+					}
 				}
 				signalReconcile(reconcileSig)
 				return nil
 			},
-			// ConfigureBackup commits core.backup.repo (and optionally
-			// interval/verify_interval) to ownbase.yaml through the local
-			// config-repo front door (see update.CommitFile). The independent
-			// backup scheduler (see backup_scheduler.go) picks up the change
-			// on its next poll — no restart needed.
-			ConfigureBackup: func(repo, interval, verifyInterval string) error {
-				cfgPath := filepath.Join(cfg.checkoutPath, "ownbase.yaml")
-				original, err := os.ReadFile(cfgPath)
-				if err != nil {
-					return fmt.Errorf("read ownbase.yaml: %w", err)
+			// SetConfigSource records the external config repo, (re)clones it,
+			// and reconciles. Called by POST /config/source
+			// (`ownbasectl config setup`).
+			SetConfigSource: func(repoURL, ref string) error {
+				src := configsource.Source{RepoURL: repoURL, Ref: ref}
+				if err := configsource.Save(configsource.DefaultStatePath, src); err != nil {
+					return fmt.Errorf("save config source: %w", err)
 				}
-				updated := backup.SetCoreBackupConfig(string(original), repo, interval, verifyInterval)
-				if _, err := schema.ParseConfig(strings.NewReader(updated)); err != nil {
-					return fmt.Errorf("resulting ownbase.yaml would be invalid: %w", err)
-				}
-				commitCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				syncCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 				defer cancel()
-				msg := fmt.Sprintf("chore(backup): configure backup repo %s", repo)
-				if err := update.CommitFile(commitCtx, updateCfg, "ownbase.yaml", updated, msg); err != nil {
-					return fmt.Errorf("commit ownbase.yaml: %w", err)
+				if err := configsource.EnsureCheckout(syncCtx, src, cfg.checkoutPath, gitssh.Env()); err != nil {
+					return fmt.Errorf("clone config repo: %w", err)
 				}
-				// Wake the reconcile loop immediately so the commit above
-				// propagates into the checkout without waiting for the
-				// 5-minute backstop ticker. `ownbasectl backup setup` runs an
-				// immediate backup right after this call and needs the
-				// config on disk.
 				signalReconcile(reconcileSig)
 				return nil
+			},
+			// EnsureSSHKey provisions the Base's managed read-only git
+			// identity and returns its public key. Called by POST /ssh-key
+			// (`ownbasectl ssh-key add`).
+			EnsureSSHKey: func(host string) (string, error) {
+				pub, err := gitssh.EnsureKey(gitssh.DefaultDir)
+				if err != nil {
+					return "", err
+				}
+				if err := gitssh.AddKnownHost(gitssh.DefaultDir, host); err != nil {
+					return "", err
+				}
+				return pub, nil
+			},
+			// GetSSHKey returns the Base's managed public key. Called by
+			// GET /ssh-key (`ownbasectl ssh-key list`).
+			GetSSHKey: func() (string, error) {
+				return gitssh.PublicKey(gitssh.DefaultDir)
 			},
 			// RunBackup triggers one backup cycle immediately (ownbasectl
 			// backup run) rather than waiting for the scheduler.
@@ -551,8 +526,8 @@ func run(cfg agentConfig) error {
 		mode = applierMode(applier)
 	}
 	fmt.Fprintf(os.Stderr,
-		"ownbased: starting (mode=%s, tick=%s, checkout=%s, repo=%s)\n",
-		mode, cfg.tickInterval, cfg.checkoutPath, cfg.repoPath)
+		"ownbased: starting (mode=%s, tick=%s, checkout=%s)\n",
+		mode, cfg.tickInterval, cfg.checkoutPath)
 
 	// secProbeInterval is the minimum time between expensive secwatch probes
 	// (ss + ufw + fail2ban + journald). Reconcile can fire frequently on busy
@@ -656,8 +631,8 @@ func run(cfg agentConfig) error {
 		return nil
 	}
 
-	// SIGUSR1 is sent by the post-receive hook after every git push.
-	// SIGTERM / SIGINT signal graceful shutdown.
+	// SIGTERM / SIGINT signal graceful shutdown. Reconciles are triggered
+	// explicitly via POST /reconcile (reconcileSig), not by signals.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
@@ -670,9 +645,6 @@ func run(cfg agentConfig) error {
 		}()
 	}
 
-	hookSig := make(chan os.Signal, 4) // buffer so the hook never blocks
-	signal.Notify(hookSig, syscall.SIGUSR1)
-
 	ticker := time.NewTicker(cfg.tickInterval)
 	defer ticker.Stop()
 
@@ -684,14 +656,14 @@ func run(cfg agentConfig) error {
 	// `ownbasectl secrets set <base> backup` take effect on the next poll too.
 	go runBackupScheduler(ctx, cfg, auditLog, reconcileSig)
 
-	// Update ticker: blank-ref resolution and drift reporting, read straight
-	// from each service's local bare repo — always active, no credentials
-	// needed.
+	// Update ticker: drift reporting, read straight from each service's local
+	// bare repo — always active, no credentials needed. Informational only;
+	// a service moves to a new ref exclusively via `ownbasectl deploy`.
 	updateTickerObj := time.NewTicker(cfg.updateInterval)
 	defer updateTickerObj.Stop()
 	updateTicker := updateTickerObj.C
 	fmt.Fprintf(os.Stderr,
-		"ownbased: update loop enabled (interval=%s, resolves blank refs + reports drift)\n",
+		"ownbased: update loop enabled (interval=%s, reports drift)\n",
 		cfg.updateInterval)
 
 	// Vulnerability scan ticker: runs trivy against the host OS packages and
@@ -719,14 +691,12 @@ func run(cfg agentConfig) error {
 
 	for {
 		select {
-		case <-hookSig:
-			reconcileOnce("post-receive hook")
 		case <-reconcileSig:
 			reconcileOnce("manual reconcile signal")
 		case <-ticker.C:
 			reconcileOnce("timer backstop")
 		case <-updateTicker:
-			runRefResolveAndDrift(ctx, cfg.checkoutPath, updateCfg, auditLog, statusSrv)
+			runDrift(ctx, cfg.checkoutPath, updateCfg, statusSrv)
 		case <-vulnTicker.C:
 			// Run the scan in a goroutine — trivy can take minutes on first run
 			// (DB download) and must not block the main reconcile/backup loop.
@@ -764,20 +734,18 @@ func run(cfg agentConfig) error {
 			afterReconcile(lastReconcileState)
 		case <-ctx.Done():
 			fmt.Fprintln(os.Stderr, "ownbased: shutting down")
-			// Remove the PID file so the hook does not signal a dead process.
-			_ = os.Remove(cfg.pidPath)
 			return nil
 		}
 	}
 }
 
-// runRefResolveAndDrift reads the current ownbase.yaml, resolves any blank
-// ref: fields by committing the default-branch HEAD SHA (read from each
-// service's local bare repo) to the config repo, and then computes drift for
-// all services with concrete refs. The drift snapshot is pushed into the
-// status server so ownbasectl updates can read it. Non-fatal — a transient
-// error for one service is logged and skipped.
-func runRefResolveAndDrift(ctx context.Context, checkoutPath string, cfg update.Config, al authz.AuditLogger, statusSrv *explain.StatusServer) {
+// runDrift reads the current ownbase.yaml and computes drift for all services
+// with concrete refs, reading each service's local bare repo. The drift
+// snapshot is pushed into the status server so `ownbasectl updates` can read
+// it. Non-fatal — a transient error for one service is logged and skipped.
+// Drift is informational only: a service moves to a new ref exclusively via
+// `ownbasectl deploy`.
+func runDrift(ctx context.Context, checkoutPath string, cfg update.Config, statusSrv *explain.StatusServer) {
 	cfgPath := filepath.Join(checkoutPath, "ownbase.yaml")
 	oc, err := schema.ParseConfigFile(cfgPath)
 	if err != nil {
@@ -786,15 +754,6 @@ func runRefResolveAndDrift(ctx context.Context, checkoutPath string, cfg update.
 	}
 
 	services := update.ServicesFromConfig(oc)
-
-	// Resolve blank refs: commit default-branch HEAD SHA for any service with
-	// no ref: set. These commits trigger the hook → reconcile → build path.
-	update.ResolveBlankRefs(ctx, cfg, services, al)
-
-	// Re-read config after blank-ref resolution so drift sees updated refs.
-	if oc2, err := schema.ParseConfigFile(cfgPath); err == nil {
-		services = update.ServicesFromConfig(oc2)
-	}
 
 	// Compute drift and cache in the status server.
 	drift := update.ComputeDrift(ctx, cfg, services)
@@ -922,9 +881,10 @@ func syncCoreForConfig(ctx context.Context, agentCfg agentConfig, cfg *schema.Ow
 	}
 }
 
-// reconcileLoop runs one full: update checkout → compile → drift check →
-// diff → apply cycle. It is identical whether triggered by the hook or the
-// timer, satisfying the Reconstruction Model's "same code path" requirement.
+// reconcileLoop runs one full: sync checkout → compile → drift check →
+// diff → apply cycle. It is identical whether triggered by an explicit
+// reconcile signal or the timer, satisfying the Reconstruction Model's
+// "same code path" requirement.
 //
 // It returns a reconcileState populated with whatever it successfully computed,
 // so the caller can gather status even when an error occurred mid-cycle.
@@ -935,13 +895,18 @@ func reconcileLoop(
 	auditLog authz.AuditLogger,
 	dryRun bool,
 ) (reconcileState, error) {
-	checkoutPath, repoPath := agentCfg.checkoutPath, agentCfg.repoPath
+	checkoutPath := agentCfg.checkoutPath
 	var state reconcileState
 
-	// 1. Pull latest from the bare repo into the checkout.
-	if err := githost.UpdateCheckout(repoPath, checkoutPath); err != nil {
-		// Non-fatal on empty repo (no commits yet).
-		fmt.Fprintf(os.Stderr, "ownbased: update checkout: %v\n", err)
+	// 1. Sync the checkout with the external config repo (read-only). A no-op
+	// until a config source is set via `ownbasectl config setup`.
+	if src, err := configsource.Load(configsource.DefaultStatePath); err != nil {
+		fmt.Fprintf(os.Stderr, "ownbased: load config source: %v\n", err)
+	} else if src.Configured() {
+		if err := configsource.EnsureCheckout(context.Background(), src, checkoutPath, gitssh.Env()); err != nil {
+			// Non-fatal — reconcile continues with whatever is already on disk.
+			fmt.Fprintf(os.Stderr, "ownbased: sync config repo: %v\n", err)
+		}
 	}
 
 	// 2. Parse ownbase.yaml from the checkout.
@@ -963,10 +928,10 @@ func reconcileLoop(
 	// without waiting for a daemon restart.
 	syncCoreForConfig(context.Background(), agentCfg, cfg, dryRun)
 
-	// 3. Ensure a local bare repo exists for every service: cloning mirror:
-	// services from their external URL on first sight, and fetching any
+	// 3. Ensure a local bare clone exists for every service: cloning each
+	// service's repo: from its external URL on first sight, and fetching any
 	// pinned ref: not yet available locally. Idempotent and non-fatal — a
-	// service whose external source is temporarily unreachable is skipped;
+	// service whose external repo is temporarily unreachable is skipped;
 	// the reconcile continues with whatever is already on disk.
 	//
 	// Each repo is chowned to the admin SSH user (read fresh on every tick,
@@ -977,15 +942,6 @@ func reconcileLoop(
 	for _, err := range repos.EnsureRepos(cfg, adminUser) {
 		fmt.Fprintf(os.Stderr, "ownbased: ensure repos: %v (non-fatal)\n", err)
 	}
-
-	// 3b. Pin each source-built service to the exact commit its ref currently
-	// resolves to, so the compiled unit's BuildRef changes when the branch
-	// advances. Without this, a source service built from a branch (e.g. main)
-	// never redeploys on push: the unit content is ref-name-stable, the diff
-	// sees no change, and no rebuild/restart is triggered — new code silently
-	// never ships. Best-effort: an unresolvable ref (empty repo, missing
-	// commit) is left untouched so the build falls back to the branch name.
-	pinSourceRefsToCommit(cfg)
 
 	// 4. Compile desired state.
 	desired := compiler.Compile(compiler.Input{Config: cfg})
@@ -1248,48 +1204,6 @@ func markStartupCaddyReloadDone() {
 	startupCaddyReloadMu.Lock()
 	defer startupCaddyReloadMu.Unlock()
 	startupCaddyReloadDone = true
-}
-
-// pinSourceRefsToCommit rewrites each source-built service's Ref to the commit
-// SHA it currently resolves to in the service's local bare repo. This makes the
-// compiled unit's BuildRef move with the branch tip, so a `git push` to a
-// tracked branch produces a unit-content change that the reconcile diff detects
-// and turns into a rebuild+restart. Mirror services (svc.Source == "") are left
-// alone — they are pinned to an explicit external ref by the operator.
-//
-// Resolution is best-effort and mutates cfg in place; any service whose ref
-// cannot be resolved (empty repo, missing commit, git not yet installed) is
-// skipped, and the build falls back to the branch name as before.
-func pinSourceRefsToCommit(cfg *schema.OwnbaseConfig) {
-	if cfg == nil {
-		return
-	}
-	for name, svc := range cfg.Services {
-		if svc.Source == "" {
-			continue
-		}
-		ref := svc.Ref
-		if ref == "" {
-			ref = "HEAD"
-		}
-		sha, err := gitResolveCommit(repos.RepoPath(svc.Source), ref)
-		if err != nil || sha == "" {
-			continue
-		}
-		svc.Ref = sha
-		cfg.Services[name] = svc
-	}
-}
-
-// gitResolveCommit returns the full commit SHA that ref resolves to in the bare
-// repo at repoPath (the repo path is itself the git dir). The ^{commit}
-// peeling ensures annotated tags resolve to their commit, not the tag object.
-func gitResolveCommit(repoPath, ref string) (string, error) {
-	out, err := exec.Command("git", "--git-dir="+repoPath, "rev-parse", "--verify", "--quiet", ref+"^{commit}").Output()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(out)), nil
 }
 
 // sendVulnResult sends result to ch, replacing any already-queued result when

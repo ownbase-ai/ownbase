@@ -1,13 +1,9 @@
 // Package repos manages the on-Base bare repos that back user services —
-// one bare repo per service under /opt/ownbase/repos/. This replaces
-// Forgejo as the source of truth for service source code:
+// one bare repo per service under /opt/ownbase/repos/, keyed by service name.
 //
-//   - source: services get an empty bare repo that the user (or an agent,
-//     via ownbasectl) pushes into directly over SSH — exactly like the
-//     config repo at /opt/ownbase/repo.
-//   - mirror: services get a `git clone --bare --mirror` of the external
-//     URL, refreshed on demand (FetchRef) when ownbase.yaml pins a ref that
-//     is not yet present locally.
+// Every service declares an external git URL (repo:); OwnBase keeps a
+// read-only `git clone --bare --mirror` of it locally, refreshed on demand
+// (FetchRef) when ownbase.yaml pins a ref that is not yet present locally.
 //
 // Every repo is backed up locally (see internal/backup), so a Base is
 // self-contained: the external git host is only consulted when a new ref is
@@ -15,8 +11,7 @@
 //
 // Repos are created by the daemon, which runs as root (see install.sh's
 // systemd unit) — EnsureRepo/EnsureRepos chown each repo to the configured
-// admin user (internal/fsowner) so a direct `git push` over SSH as that
-// user actually has write access to it.
+// admin user (internal/fsowner) so file ownership stays consistent.
 package repos
 
 import (
@@ -24,19 +19,19 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
-	"github.com/ownbase/ownbase/internal/compiler"
 	"github.com/ownbase/ownbase/internal/fsowner"
+	"github.com/ownbase/ownbase/internal/gitssh"
 	"github.com/ownbase/ownbase/internal/schema"
 )
 
 // DefaultReposDir is the root directory containing one bare repo per service.
 const DefaultReposDir = "/opt/ownbase/repos"
 
-// RepoPath returns the on-disk path of the bare repo for the given repo name
-// (a schema.ServiceDecl.Source value, or the mirrors-<basename> name derived
-// from Mirror by compiler.MirrorRepoName). name may contain slashes (e.g.
-// "services/auth"), which nest naturally as subdirectories.
+// RepoPath returns the on-disk path of the bare repo for the given service
+// name. Each service's local bare clone lives at
+// /opt/ownbase/repos/<service-name>.
 func RepoPath(name string) string {
 	return filepath.Join(DefaultReposDir, name)
 }
@@ -49,18 +44,16 @@ func HasRef(name, ref string) bool {
 	return hasRefAt(RepoPath(name), ref)
 }
 
-// EnsureRepo makes sure a bare repo exists at RepoPath(name). For mirror
-// services (externalURL non-empty) it performs an initial
-// `git clone --bare --mirror` from externalURL when the repo does not yet
-// exist locally. For source services (externalURL empty) it creates an
-// empty bare repo that the user pushes into directly (over SSH, exactly like
-// the config repo). Idempotent: a no-op when the repo already exists.
+// EnsureRepo makes sure a read-only bare clone exists at RepoPath(name),
+// performing an initial `git clone --bare --mirror` from externalURL (the
+// service's repo: URL) when it does not yet exist locally. Idempotent: a
+// no-op when the repo already exists. The clone uses the managed SSH identity
+// (see internal/gitssh) for private repos.
 //
 // adminUser, when non-empty, is chowned onto the repo (see internal/fsowner)
-// so a direct git push over SSH as that account has write access — the
-// daemon that creates the repo runs as root, so without this only root (or
-// the ownbasectl config/service API path) could write to it. Pass "" to
-// skip this step (e.g. a local dev/test build with no installer run).
+// so file ownership stays consistent with the admin account; the daemon that
+// creates the repo runs as root. Pass "" to skip this step (e.g. a local
+// dev/test build with no installer run).
 func EnsureRepo(name, externalURL, adminUser string) error {
 	return ensureRepoAtWithOwner(RepoPath(name), externalURL, adminUser)
 }
@@ -80,8 +73,8 @@ func FetchRef(name, externalURL, ref, adminUser string) error {
 	return fetchRefAt(RepoPath(name), externalURL, ref)
 }
 
-// EnsureRepos ensures a local bare repo exists for every service declared in
-// cfg, cloning mirror: services from their external URL on first sight and
+// EnsureRepos ensures a local bare clone exists for every service declared in
+// cfg, cloning each service's repo: from its external URL on first sight and
 // fetching any pinned ref: that is not yet available locally. Each error is
 // collected and returned rather than aborting early, so a problem with one
 // service's repo does not block the others from being ensured. Callers
@@ -93,21 +86,19 @@ func EnsureRepos(cfg *schema.OwnbaseConfig, adminUser string) []error {
 	}
 	var errs []error
 	for name, svc := range cfg.Services {
-		repoName := svc.Source
-		externalURL := ""
-		if repoName == "" && svc.Mirror != "" {
-			repoName = compiler.MirrorRepoName(svc.Mirror)
-			externalURL = svc.Mirror
-		}
-		if repoName == "" {
+		externalURL := svc.Repo
+		if externalURL == "" {
 			continue // invalid service decl; schema.Validate already rejects this
 		}
-		if err := EnsureRepo(repoName, externalURL, adminUser); err != nil {
-			errs = append(errs, fmt.Errorf("service %q: ensure repo %q: %w", name, repoName, err))
+		// The local bare clone is keyed by the service name (see
+		// compiler.build) so it is collision-free even when two services
+		// share the same upstream URL.
+		if err := EnsureRepo(name, externalURL, adminUser); err != nil {
+			errs = append(errs, fmt.Errorf("service %q: ensure repo: %w", name, err))
 			continue
 		}
-		if externalURL != "" && svc.Ref != "" {
-			if err := FetchRef(repoName, externalURL, svc.Ref, adminUser); err != nil {
+		if svc.Ref != "" {
+			if err := FetchRef(name, externalURL, svc.Ref, adminUser); err != nil {
 				errs = append(errs, fmt.Errorf("service %q: fetch ref %q: %w", name, svc.Ref, err))
 			}
 		}
@@ -138,26 +129,44 @@ func hasRefAt(repoPath, ref string) bool {
 }
 
 func ensureRepoAt(repoPath, externalURL string) error {
+	if externalURL == "" {
+		return fmt.Errorf("ensure repo %s: no repo URL — every service must declare repo:", repoPath)
+	}
 	if isBareRepo(repoPath) {
-		return nil
+		// Reuse the existing clone only when its origin still matches repo:.
+		// After `service update --repo` (or forking + repointing) the URL
+		// changes; a stale clone would keep serving the previous upstream's
+		// refs, so re-clone from scratch on mismatch.
+		if originURLAt(repoPath) == externalURL {
+			return nil
+		}
+		if err := os.RemoveAll(repoPath); err != nil {
+			return fmt.Errorf("remove stale clone %s: %w", repoPath, err)
+		}
 	}
 	if err := os.MkdirAll(filepath.Dir(repoPath), 0o755); err != nil {
 		return fmt.Errorf("mkdir parent of %s: %w", repoPath, err)
 	}
 
-	if externalURL == "" {
-		out, err := exec.Command("git", "init", "--bare", "--initial-branch=main", repoPath).CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("git init --bare %s: %w\n%s", repoPath, err, out)
-		}
-		return nil
-	}
-
-	out, err := exec.Command("git", "clone", "--bare", "--mirror", externalURL, repoPath).CombinedOutput()
+	cmd := exec.Command("git", "clone", "--bare", "--mirror", externalURL, repoPath)
+	cmd.Env = gitssh.Env()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git clone --bare --mirror %s -> %s: %w\n%s", externalURL, repoPath, err, out)
 	}
 	return nil
+}
+
+// originURLAt returns the configured origin remote URL of the bare repo at
+// repoPath, or "" when it has no origin (e.g. an old push-to-Base source repo
+// created with `git init --bare`). Used to detect when a local clone must be
+// re-created because the service's repo: URL changed.
+func originURLAt(repoPath string) string {
+	out, err := exec.Command("git", "-C", repoPath, "remote", "get-url", "origin").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // ensureRepoAtWithOwner is ensureRepoAt plus a chown of the repo to
@@ -178,7 +187,9 @@ func fetchRefAt(repoPath, externalURL, ref string) error {
 	if hasRefAt(repoPath, ref) {
 		return nil
 	}
-	out, err := exec.Command("git", "-C", repoPath, "fetch", externalURL, "+refs/*:refs/*", "--prune").CombinedOutput()
+	cmd := exec.Command("git", "-C", repoPath, "fetch", externalURL, "+refs/*:refs/*", "--prune")
+	cmd.Env = gitssh.Env()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git fetch %s: %w\n%s", externalURL, err, out)
 	}

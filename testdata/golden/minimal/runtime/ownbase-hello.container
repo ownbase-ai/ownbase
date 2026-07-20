@@ -14,7 +14,7 @@ Network=ownbase-internal.network
 Volume=ownbase-hello-data:/data
 PublishPort=127.0.0.1:41001:3000
 # Requires=auth
-# BuildSource=apps/hello
+# BuildSource=hello
 NoNewPrivileges=true
 DropCapability=ALL
 

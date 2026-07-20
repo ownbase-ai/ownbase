@@ -13,7 +13,7 @@ The mental model for the whole system:
 
 ### 1. Git is the source of truth
 
-The desired state of a Base lives in a Git repository the user owns — a local, remote-less bare repo running on their own machine, with no hosted git server in between. The server reconciles itself toward that repo. Nothing important exists only in a vendor database. If OwnBase disappeared, the repo plus the machine is a complete, working system.
+The desired state of a Base lives in a Git repository the user owns — an external repo on their own git host, which the operator commits to client-side and the Base clones read-only. The server reconciles itself toward that repo. Nothing important exists only in a vendor database. If OwnBase disappeared, the repo plus the machine is a complete, working system.
 
 More precisely: the **ownership invariant** is `reconstructable = (repo, secrets, backups)` — own these three and you can reconstruct anything. The **operational model** is `reconcile(compile(repo, secrets), current)`, where for a rebuild `current` begins as `restore(backups)` rather than the running state. This is what makes install, update, recover, and rebuild the same `reconcile` call from different starting conditions. See [reconstruction-model.md](reconstruction-model.md).
 
@@ -61,7 +61,7 @@ ownbase/
 
 A single file, `ownbase.yaml`, is the contract between the CLI, the daemon, and any AI. The user (or their AI) edits intent at a high level; the daemon compiles the boring details.
 
-Everything on a Base is a **repo**: a Postgres instance, an auth service, and a custom CRM are all local bare repos under `/opt/ownbase/repos/` on the Base itself, either pushed into directly or mirrored from an upstream GitHub repository. There is no catalog of pre-built images — everything is built locally from source. See [ownbase-yaml.md](../ownbase-yaml.md) for the full schema.
+Everything on a Base is a **repo**: a Postgres instance, an auth service, and a custom CRM each declare an external `repo:` git URL, which the daemon keeps a read-only clone of under `/opt/ownbase/repos/` on the Base. There is no catalog of pre-built images — everything is built locally from source. See [ownbase-yaml.md](../ownbase-yaml.md) for the full schema.
 
 Generated artifacts (the `runtime/` units, the generated Caddyfile) are derived from `ownbase.yaml` by a deterministic compiler and must never be the place a human edits intent.
 

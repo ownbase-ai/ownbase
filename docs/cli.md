@@ -23,7 +23,7 @@ ownbasectl secrets list mybase
 
 ## How commands reach a Base
 
-Commands that talk to a Base (`status`, `updates`, `security`, `secrets`, `config`, `service`, `upgrade`, `backup`, `checkup`) open an SSH tunnel to the host in the named profile (`~/.ownbase/config`) and call the daemon's HTTP API through it (see [api.md](api.md)). The API port is never exposed to the network. Host keys are verified against `~/.ownbase/known_hosts` (trust-on-first-use, like the `ssh` CLI).
+Commands that talk to a Base (`status`, `updates`, `security`, `secrets`, `config`, `service`, `deploy`, `ssh-key`, `upgrade`, `backup`, `checkup`) open an SSH tunnel to the host in the named profile (`~/.ownbase/config`) and call the daemon's HTTP API through it (see [api.md](api.md)). The API port is never exposed to the network. Host keys are verified against `~/.ownbase/known_hosts` (trust-on-first-use, like the `ssh` CLI). Mutating config commands additionally clone/push the external config repo directly from your machine using your own git credentials.
 
 ---
 
@@ -122,7 +122,7 @@ ownbasectl backup status mybase    # last snapshot, restorable?, last verify dri
 | `--interval` | snapshot cadence (default `1h`) |
 | `--verify-interval` | verified-restore drill cadence (default `24h`) |
 
-Credentials are stored age-encrypted on the Base; the repo URL and cadence are committed to `ownbase.yaml` through the daemon's API. No daemon restart needed.
+Credentials are stored age-encrypted on the Base; the repo URL and cadence are committed to `ownbase.yaml` client-side (see `config set` below) and applied via a reconcile. No daemon restart needed.
 
 ---
 
@@ -139,7 +139,7 @@ ownbasectl status mybase --json       # full BaseStatus JSON (schema v3 — see 
 
 ### `updates <name>`
 
-Per-service drift table: pinned `ref:`, commits behind the default branch, newest semver tag. Updates are user-driven — edit `ref:` in `ownbase.yaml` and commit.
+Per-service drift table: pinned `ref:`, commits behind the default branch, newest semver tag. Updates are explicit — move a service with `ownbasectl deploy <base> <service> --ref <ref>`.
 
 ```bash
 ownbasectl updates mybase
@@ -174,36 +174,64 @@ ownbasectl upgrade mybase --apply     # pull latest pinned image, restart the co
 
 ---
 
-## Config and services
+## Config repo, ssh-key, deploy, and services
+
+OwnBase's config lives in an **external git repo** (e.g. on GitHub) that holds `ownbase.yaml`. All mutating commands (`config set`, `service *`, `deploy`, `backup setup`) run client-side: `ownbasectl` clones the config repo, edits `ownbase.yaml`, commits, and pushes with **your** git credentials, then asks the Base to pull and reconcile. The Base itself needs only **read** access.
+
+### `ssh-key <name> {add,list}`
+
+Provision the Base's read-only git deploy identity. `add` generates an ed25519 key under `/opt/ownbase/ssh` (if none exists), optionally records a host's SSH host keys, and prints the public key to register as a **read-only deploy key** on your config and service repos. `list` prints the current public key.
+
+```bash
+ownbasectl ssh-key mybase add --host github.com    # generate + print the deploy key
+ownbasectl ssh-key mybase list                     # show the current public key
+```
+
+### `config setup <name> --repo <url> [--ref <branch>] [--init]`
+
+Point the Base at its external config repo. Persists the URL/ref to the local profile and tells the Base to clone it read-only and reconcile. With `--init`, seeds an **empty** existing remote with a default `ownbase.yaml` (client-side clone → seed → push); it never creates the remote itself.
+
+```bash
+ownbasectl config setup mybase --repo git@github.com:org/ownbase-config.git
+ownbasectl config setup mybase --repo git@github.com:org/ownbase-config.git --init  # seed an empty repo
+```
 
 ### `config get|set <name>`
 
-Read or atomically replace `ownbase.yaml` — the agent-first way to script config changes without an editor.
+Read `ownbase.yaml` (from the Base's checkout) or atomically replace it (client-side commit to the config repo).
 
 ```bash
-ownbasectl config get mybase                       # print the current ownbase.yaml
+ownbasectl config get mybase                       # print the current ownbase.yaml (reads the Base checkout)
 ownbasectl config get mybase --json                # same, decoded to JSON
 
-ownbasectl config set mybase --file ./ownbase.yaml # validate locally, then push
+ownbasectl config set mybase --file ./ownbase.yaml # validate locally, commit + push to the config repo
 cat ownbase.yaml | ownbasectl config set mybase    # or read from stdin
 ```
 
-`set` validates the whole document locally before sending it, then pushes it through the daemon's front-door `/config` endpoint — the same commit path a manual `git push` to `/opt/ownbase/repo` takes. Exit code is non-zero on validation failure or transport error, so this is safe to call unattended from a script or an AI agent.
+`set` validates the whole document locally before committing, then clones the config repo, writes `ownbase.yaml`, commits, pushes, and triggers a reconcile. Exit code is non-zero on validation failure or transport error, so this is safe to call unattended from a script or an AI agent.
+
+### `deploy <name> <service> [--ref <sha|tag|branch>]`
+
+The single, explicit way to move a service to new code. Resolves `--ref` to a concrete commit SHA against the service's `repo:` (via `git ls-remote`), commits that SHA to the config repo, and triggers a reconcile. Defaults to the service's current `ref:` (else `HEAD`) when `--ref` is omitted.
+
+```bash
+ownbasectl deploy mybase crm --ref v2.3.0
+ownbasectl deploy mybase crm --ref main            # pins main's current tip SHA
+```
 
 ### `service add|remove|update <name> <service> ...`
 
-Structured, non-interactive edits to the `services:` map — a thin, scriptable layer over `config get`/`config set`.
+Structured, non-interactive edits to the `services:` map — a thin, scriptable layer over the same client-side commit path.
 
 ```bash
-ownbasectl service add mybase crm --mirror https://github.com/org/crm --ref main --port 3000 --domain crm.example.com
-ownbasectl service update mybase crm --ref v2.3.0        # bump the pinned ref
+ownbasectl service add mybase crm --repo git@github.com:org/crm.git --port 3000 --domain crm.example.com
 ownbasectl service update mybase crm --port 4000 --domain crm.example.com
 ownbasectl service update mybase crm --domains crm.example.com,crm.example.org  # serve two hostnames
-ownbasectl service add mybase hello --mirror https://github.com/traefik/whoami --ref master --port 80 --domain hello.example.com --add-capabilities NET_BIND_SERVICE
+ownbasectl service add mybase hello --repo https://github.com/traefik/whoami --port 80 --domain hello.example.com --add-capabilities NET_BIND_SERVICE
 ownbasectl service remove mybase crm
 ```
 
-`add` requires exactly one of `--source`/`--mirror`. `update` only touches the fields whose flags were explicitly passed — every other field of the service keeps its current value. `--env` merges into the existing list (new values win on a duplicate key); `--requires`, `--domains`, and `--add-capabilities` replace their respective lists entirely when passed. `--domain` (singular) still works and is combined with `--domains`, deduplicated. All three subcommands accept `--json` for structured output.
+`add` requires `--repo` (the external git URL). To pin or move the service to a specific ref, run `ownbasectl deploy` afterwards. `update` only touches the fields whose flags were explicitly passed — every other field of the service keeps its current value. `--env` merges into the existing list (new values win on a duplicate key); `--requires`, `--domains`, and `--add-capabilities` replace their respective lists entirely when passed. `--domain` (singular) still works and is combined with `--domains`, deduplicated. All subcommands accept `--json` for structured output.
 
 `--add-capabilities` restores Linux capabilities after the compiler's default `DropCapability=ALL` — every container starts with none. Only needed by the minority of images that bind directly to a port below 1024 (e.g. `traefik/whoami` on port 80), which requires `NET_BIND_SERVICE`; most images listen on an unprivileged port (3000, 8080, ...) and never need this.
 
@@ -232,15 +260,15 @@ ownbasectl: generating local HTTPS certificate for 1 hostname(s) ...
 Tunneling:
   https://myapp.example.com.localhost:8443
 
-No code-sync — push to the service's bare repo and update ref: to deploy changes.
+No code-sync — push to your git host and deploy a ref to roll out changes.
 Press Ctrl+C to stop.
 ```
 
-**There is no code-sync mechanism.** `ownbasectl tunnel` only tunnels and proxies traffic to whatever is currently deployed — no bind mount, file watcher, or hot-reload. To iterate on a service's code, use the same git-push-to-deploy flow as production:
+**There is no code-sync mechanism.** `ownbasectl tunnel` only tunnels and proxies traffic to whatever is currently deployed — no bind mount, file watcher, or hot-reload. To iterate on a service's code, use the same push-then-deploy flow as production:
 
 ```bash
-git push ssh://<ssh-user>@<host>/opt/ownbase/repos/<service> my-branch:my-branch
-ownbasectl service update mybase <service> --ref my-branch
+git push origin my-branch                       # push to the service's repo: on your git host
+ownbasectl deploy mybase <service> --ref my-branch
 ```
 
 The daemon fetches/builds/restarts the service exactly as it would for any other `ref:` change; the tunnel, if still running, picks up the new container transparently since it tunnels to the service's port, not to a specific container instance.

@@ -98,13 +98,8 @@ func gatherServices(cfg *schema.OwnbaseConfig, running map[string]bool) []Servic
 		if len(domains) > 0 {
 			svc.Domain = domains[0]
 		}
-		if decl.Source != "" {
-			svc.Source = decl.Source
-			svc.Ref = decl.Ref
-		} else if decl.Mirror != "" {
-			svc.Mirror = decl.Mirror
-			svc.Ref = decl.Ref
-		}
+		svc.Repo = decl.Repo
+		svc.Ref = decl.Ref
 		result = append(result, svc)
 	}
 	sort.Slice(result, func(i, j int) bool {

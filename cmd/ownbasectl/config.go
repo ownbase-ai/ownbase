@@ -20,19 +20,114 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/ownbase/ownbase/internal/schema"
+	"github.com/ownbase/ownbase/internal/serverconfig"
 )
 
 func newConfigCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
-		Short: "Read or replace a Base's ownbase.yaml (agent-first, non-interactive)",
-		Long: `config get/set read and atomically replace the config repo's
-ownbase.yaml over the Base's SSH tunnel. There is no interactive editor:
-every invocation is a single command that succeeds or fails with a
-non-zero exit code, safe to script or run from an AI agent unattended.`,
+		Short: "Set up, read, or replace a Base's ownbase.yaml (agent-first, non-interactive)",
+		Long: `config setup points the Base at an external git config repo;
+config get reads the current ownbase.yaml; config set replaces it. set edits
+the external config repo client-side (with your own git credentials), pushes,
+and asks the Base to reconcile. Every invocation is a single non-interactive
+command, safe to script or run from an AI agent.`,
 	}
-	cmd.AddCommand(newConfigGetCmd(), newConfigSetCmd())
+	cmd.AddCommand(newConfigSetupCmd(), newConfigGetCmd(), newConfigSetCmd())
 	return cmd
+}
+
+// defaultOwnbaseYAML is the minimal config seeded into an empty config repo by
+// `config setup --init`.
+const defaultOwnbaseYAML = `schema_version: v1
+
+# OwnBase configuration — the single source of truth for this Base.
+# Edit via ownbasectl (config set / service add / deploy), which commits here.
+
+core:
+  caddy:
+    # email: you@example.com  # for automatic TLS certificates
+
+services: {}
+`
+
+func newConfigSetupCmd() *cobra.Command {
+	var repo, ref string
+	var doInit bool
+	cmd := &cobra.Command{
+		Use:   "setup <name> --repo <git-url>",
+		Short: "Point a Base at its external config repo (optionally seeding it)",
+		Long: `setup records the external git repo that holds this Base's
+ownbase.yaml, both in the local profile and on the Base (which then clones it
+read-only and reconciles). With --init, an empty config repo is seeded with a
+default ownbase.yaml (committed with your git credentials).
+
+The Base needs READ access to the repo — add its deploy key first with
+'ownbasectl ssh-key add <name>'.`,
+		Example: `  ownbasectl config setup mybase --repo git@github.com:org/ownbase-config.git --init`,
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runConfigSetup(args[0], repo, ref, doInit)
+		},
+	}
+	cmd.Flags().StringVar(&repo, "repo", "", "git URL of the config repo (required)")
+	cmd.Flags().StringVar(&ref, "ref", "", "branch/ref of the config repo to track (default: main)")
+	cmd.Flags().BoolVar(&doInit, "init", false, "seed a default ownbase.yaml into an empty config repo")
+	return cmd
+}
+
+func runConfigSetup(base, repo, ref string, doInit bool) error {
+	if repo == "" {
+		return fmt.Errorf("--repo is required, e.g. --repo git@github.com:org/ownbase-config.git")
+	}
+	if ref == "" {
+		ref = serverconfig.DefaultConfigRef
+	}
+
+	// Persist to the local profile so subsequent mutations know where to commit.
+	if err := saveProfile(base, func(p *serverconfig.ServerProfile) {
+		p.ConfigRepoURL = repo
+		p.ConfigRef = ref
+	}); err != nil {
+		return fmt.Errorf("save config repo to profile: %w", err)
+	}
+
+	if doInit {
+		profile, err := loadProfile(base)
+		if err != nil {
+			return err
+		}
+		cr, err := cloneConfigRepo(profile)
+		if err != nil {
+			return err
+		}
+		defer cr.close()
+		current, err := cr.readOwnbaseYAML()
+		if err != nil {
+			return err
+		}
+		if current == "" {
+			if err := cr.writeCommitPush(defaultOwnbaseYAML, "init: seed ownbase.yaml"); err != nil && err != errNoConfigChange {
+				return fmt.Errorf("seed config repo: %w", err)
+			}
+			fmt.Println("Seeded default ownbase.yaml into the config repo.")
+		} else {
+			fmt.Println("Config repo already has an ownbase.yaml — leaving it untouched.")
+		}
+	}
+
+	// Tell the Base to adopt the config source (clone + reconcile).
+	conn, err := connectToServer(base)
+	if err != nil {
+		return err
+	}
+	defer conn.close()
+	payload, _ := json.Marshal(map[string]string{"repo_url": repo, "ref": ref})
+	if _, err := apiCall(conn, http.MethodPost, "/config/source", payload); err != nil {
+		return fmt.Errorf("set config source on Base: %w", err)
+	}
+	fmt.Printf("Config source set to %s (%s) for %q — the Base will pull and reconcile.\n", repo, ref, base)
+	return nil
 }
 
 func newConfigGetCmd() *cobra.Command {
@@ -84,9 +179,8 @@ func newConfigSetCmd() *cobra.Command {
 		Use:   "set <name>",
 		Short: "Atomically replace the Base's ownbase.yaml",
 		Long: `Reads a complete new ownbase.yaml from --file (or stdin when --file is
-omitted or "-"), validates it locally, then pushes it through the daemon's
-front-door commit path — exactly like a git push to the config repo. The
-post-receive hook fires and the daemon reconciles immediately.
+omitted or "-"), validates it locally, commits it to the external config repo
+(with your own git credentials), pushes, and asks the Base to reconcile.
 
 Exit code is non-zero on validation failure or transport error, so this is
 safe to call unattended from a script or an AI agent.`,
@@ -110,14 +204,18 @@ func runConfigSet(base, file, message string) error {
 	if _, err := schema.ParseConfig(bytes.NewReader(content)); err != nil {
 		return fmt.Errorf("new ownbase.yaml is invalid: %w", err)
 	}
-
-	conn, err := connectToServer(base)
-	if err != nil {
-		return err
+	if message == "" {
+		message = "chore(config): update ownbase.yaml via ownbasectl"
 	}
-	defer conn.close()
 
-	if err := pushConfig(conn, string(content), message); err != nil {
+	err = mutateConfig(base, func(_ string) (string, string, error) {
+		return string(content), message, nil
+	})
+	if err == errNoConfigChange {
+		fmt.Printf("Config on %q is already up to date — nothing to do.\n", base)
+		return nil
+	}
+	if err != nil {
 		return err
 	}
 	fmt.Printf("Config updated on %q — reconcile triggered.\n", base)
@@ -139,20 +237,4 @@ func readConfigInput(file string) ([]byte, error) {
 		return nil, fmt.Errorf("read %s: %w", file, err)
 	}
 	return data, nil
-}
-
-// pushConfig POSTs a complete new ownbase.yaml document to the daemon's
-// front-door /config endpoint. Shared by `config set` and every
-// `service add/remove/update` command (which read-modify-write the whole
-// document rather than calling a per-field API).
-func pushConfig(conn *connection, content, message string) error {
-	payload, err := json.Marshal(map[string]string{
-		"content": content,
-		"message": message,
-	})
-	if err != nil {
-		return fmt.Errorf("encode request: %w", err)
-	}
-	_, err = apiCall(conn, http.MethodPost, "/config", payload)
-	return err
 }

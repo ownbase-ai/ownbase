@@ -1,4 +1,4 @@
 schema_version: v99
 services:
   auth:
-    source: services/auth
+    repo: https://github.com/example/auth.git

@@ -45,7 +45,8 @@ import (
 	"time"
 
 	"github.com/ownbase/ownbase/internal/authz"
-	"github.com/ownbase/ownbase/internal/githost"
+	"github.com/ownbase/ownbase/internal/configsource"
+	"github.com/ownbase/ownbase/internal/gitssh"
 	"github.com/ownbase/ownbase/internal/repos"
 	"github.com/ownbase/ownbase/internal/schema"
 )
@@ -111,16 +112,19 @@ type Config struct {
 const DefaultDataDir = "/opt/ownbase/data"
 
 // DefaultPaths is the set of directories included in every restic snapshot.
-// These cover service data, the config repo and all service bare repos
-// (with Forgejo gone, these local repos are the only copy of source code
-// OwnBase controls — see internal/githost and internal/repos), age-encrypted
-// secrets files, and the age private key.
+// These cover service data, the local bare clones of every service repo (the
+// only copy of source code OwnBase controls without reaching the external git
+// host — see internal/repos), the config-source pointer, the managed SSH
+// identity used to reach external git (see internal/gitssh), age-encrypted
+// secrets files, and the age private key. The config repo itself is external
+// and reproducible from git, so it is not backed up here.
 var DefaultPaths = []string{
-	DefaultDataDir,          // /opt/ownbase/data
-	githost.DefaultRepoPath, // config bare repo (ownbase.yaml)
-	repos.DefaultReposDir,   // one bare repo per service (source: and mirror:)
-	"/opt/ownbase/secrets",  // age-encrypted secrets files (one per service)
-	"/opt/ownbase/age",      // age private key
+	DefaultDataDir,                // /opt/ownbase/data
+	repos.DefaultReposDir,         // one bare repo per service
+	configsource.DefaultStatePath, // config-source pointer (repo_url + ref)
+	gitssh.DefaultDir,             // managed SSH identity (keys + known_hosts)
+	"/opt/ownbase/secrets",        // age-encrypted secrets files (one per service)
+	"/opt/ownbase/age",            // age private key
 }
 
 func (c *Config) withDefaults() Config {

@@ -1,15 +1,14 @@
 // Package fsowner grants the on-Base admin SSH user (the same account
 // ownbasectl and the operator log in as — root on most remote servers,
-// ubuntu on a local Multipass VM) write access to bare git repos the
-// daemon creates as root.
+// ubuntu on a local Multipass VM) access to the local bare service clones
+// the daemon creates as root.
 //
-// Without this, a plain `git push` over SSH as the admin user fails with
-// a permission error even though the repo exists and the docs describe
-// pushing directly to it: the daemon creates /opt/ownbase/repo and
-// /opt/ownbase/repos/<name> while running as root (see install.sh's
-// systemd unit), and a root-owned, non-group-writable tree is untouchable
-// by any other account, including one with full sudo rights (sudo affects
-// command execution, not an existing SSH session's file permissions).
+// The daemon fetches each service's repo: into a bare clone under
+// /opt/ownbase/repos/<name> while running as root (see install.sh's systemd
+// unit). A root-owned, non-group-writable tree is untouchable by any other
+// account, including one with full sudo rights (sudo affects command
+// execution, not an existing SSH session's file permissions); chowning it to
+// the admin user keeps those trees inspectable over the normal SSH login.
 package fsowner
 
 import (

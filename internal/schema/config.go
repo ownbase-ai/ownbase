@@ -21,12 +21,11 @@ type RepoMode string
 
 // OwnbaseConfig is the parsed, validated form of ownbase.yaml.
 //
-// All user services must be built from a local bare git repo under
-// /opt/ownbase/repos/ — either a source: repo that the user pushes into
-// directly over SSH, or a mirror: of an external git URL that OwnBase
-// clones and keeps locally. Registry images are never a valid service
-// source; the core Caddy package is managed by the installer and
-// configured via the core: block.
+// Every user service is built from an external git repo (repo:) that OwnBase
+// clones into a local bare repo under /opt/ownbase/repos/ and builds from the
+// pinned ref:. Registry images are never a valid service source; the core
+// Caddy package is managed by the installer and configured via the core:
+// block.
 type OwnbaseConfig struct {
 	SchemaVersion string                 `yaml:"schema_version"`
 	Core          CoreConfig             `yaml:"core,omitempty"`
@@ -111,37 +110,28 @@ type CaddyCoreConfig struct {
 // ServiceDecl is one service instance entry in the services map.
 // The map key is the instance name (e.g. "crm", "crm-staging", "worker").
 //
-// Exactly one of Source or Mirror must be set:
-//   - source-built: Source names a local bare repo under
-//     /opt/ownbase/repos/ that the user pushes into directly over SSH
-//     (exactly like the config repo). OwnBase never creates or populates
-//     this repo's contents — only the empty bare repo, on first sight.
-//   - mirror-built: Mirror is an external git URL; OwnBase clones it into a
-//     local bare repo under /opt/ownbase/repos/ and builds from it.
-//
-// Registry images (image:) are never a valid user service source. The core
-// Caddy package is installed by the OwnBase installer and configured via
-// the top-level core: block.
+// Repo is an external git URL that OwnBase clones into a local bare repo
+// under /opt/ownbase/repos/ and builds from at the pinned Ref. Registry
+// images (image:) are never a valid user service source. The core Caddy
+// package is installed by the OwnBase installer and configured via the
+// top-level core: block.
 type ServiceDecl struct {
-	// Source names a local bare repo under /opt/ownbase/repos/, e.g.
-	// "services/auth" or "org/crm". Never a URL. Use mirror: for external
-	// repos that OwnBase should clone and track itself.
-	Source string `yaml:"source,omitempty"`
-
-	// Mirror is an external git URL to clone into a local bare repo, e.g.
-	// "https://github.com/docker-library/postgres". The agent creates and
-	// maintains the local bare mirror automatically. The derived local repo
-	// name is mirrors-<basename-of-url>. Mutually exclusive with Source.
-	Mirror string `yaml:"mirror,omitempty"`
+	// Repo is the external git URL to clone and build from, e.g.
+	// "git@github.com:org/app.git" or
+	// "https://github.com/docker-library/postgres". OwnBase maintains a
+	// read-only local bare clone automatically at
+	// /opt/ownbase/repos/<service-name>.
+	Repo string `yaml:"repo,omitempty"`
 
 	// Mode is deprecated and has no behavioral effect. It is kept here so that
 	// existing ownbase.yaml files that declare mode: managed or mode: pinned
 	// continue to parse without error. Remove it from your config.
 	Mode RepoMode `yaml:"mode,omitempty"`
 
-	// Ref is the branch, tag, or commit SHA to build from.
-	// When empty, the agent resolves the default-branch HEAD commit SHA and
-	// commits it back to ownbase.yaml automatically (update.pin_ref action).
+	// Ref is the branch, tag, or commit SHA to build from. It is set
+	// explicitly by `ownbasectl deploy`, which resolves the requested ref to
+	// a concrete commit SHA and commits it here. When empty, the build falls
+	// back to the repo's default-branch HEAD (no automatic pinning).
 	Ref string `yaml:"ref,omitempty"`
 
 	// Dockerfile is the path to the Dockerfile within the repo, relative to
@@ -386,7 +376,7 @@ func (c *OwnbaseConfig) Warnings() []string {
 	for name, svc := range c.Services {
 		if strings.TrimSpace(svc.Ref) == "" {
 			warns = append(warns, fmt.Sprintf(
-				"service %q has no ref: — the agent will auto-pin to the default-branch HEAD commit", name))
+				"service %q has no ref: — the build falls back to the repo's default HEAD; run `ownbasectl deploy` to pin a specific ref", name))
 		}
 		if svc.Mode != "" {
 			warns = append(warns, fmt.Sprintf(
@@ -397,21 +387,11 @@ func (c *OwnbaseConfig) Warnings() []string {
 }
 
 func (s ServiceDecl) validate(name string, allServices map[string]ServiceDecl) error {
-	hasSource := strings.TrimSpace(s.Source) != ""
-	hasMirror := strings.TrimSpace(s.Mirror) != ""
-
-	if !hasSource && !hasMirror {
-		return fmt.Errorf("service %q: either source or mirror is required", name)
+	if strings.TrimSpace(s.Repo) == "" {
+		return fmt.Errorf("service %q: repo is required", name)
 	}
-	if hasSource && hasMirror {
-		return fmt.Errorf("service %q: source and mirror are mutually exclusive", name)
-	}
-	if hasSource && (strings.HasPrefix(s.Source, "http://") || strings.HasPrefix(s.Source, "https://")) {
-		return fmt.Errorf("service %q: source must be a repo-relative path (e.g. \"services/auth\"), not a URL — "+
-			"use mirror: for external repos instead", name)
-	}
-	if hasMirror && !isGitURL(s.Mirror) {
-		return fmt.Errorf("service %q: mirror must be a git URL (e.g. \"https://github.com/org/repo\")", name)
+	if !isGitURL(s.Repo) {
+		return fmt.Errorf("service %q: repo must be a git URL (e.g. \"git@github.com:org/app.git\" or \"https://github.com/org/repo\")", name)
 	}
 	if s.Port < 0 || s.Port > 65535 {
 		return fmt.Errorf("service %q: port %d is out of range", name, s.Port)

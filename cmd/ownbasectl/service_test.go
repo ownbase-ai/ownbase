@@ -16,7 +16,7 @@ import (
 func TestServiceAdd_AddCapabilitiesFlag(t *testing.T) {
 	cmd := newServiceAddCmd()
 	if err := cmd.Flags().Parse([]string{
-		"--mirror", "https://github.com/traefik/whoami",
+		"--repo", "https://github.com/traefik/whoami",
 		"--add-capabilities", "NET_BIND_SERVICE,SYS_TIME",
 	}); err != nil {
 		t.Fatalf("parse flags: %v", err)

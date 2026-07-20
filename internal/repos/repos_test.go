@@ -16,37 +16,91 @@ func TestRepoPath(t *testing.T) {
 	}
 }
 
-func TestEnsureRepoAt_SourceCreatesEmptyBareRepo(t *testing.T) {
+func TestEnsureRepoAt_EmptyURLIsError(t *testing.T) {
 	root := t.TempDir()
-	repoPath := filepath.Join(root, "services/auth")
+	repoPath := filepath.Join(root, "auth")
 
-	if err := ensureRepoAt(repoPath, ""); err != nil {
-		t.Fatalf("ensureRepoAt: %v", err)
+	// Every service must declare repo: — there is no push-to-Base source
+	// path anymore, so an empty URL must fail rather than create an empty
+	// bare repo.
+	if err := ensureRepoAt(repoPath, ""); err == nil {
+		t.Fatal("expected an error for an empty repo URL")
 	}
-	if !isBareRepo(repoPath) {
-		t.Fatalf("expected bare repo at %s", repoPath)
-	}
-
-	// Idempotent: calling again is a no-op, not an error.
-	if err := ensureRepoAt(repoPath, ""); err != nil {
-		t.Fatalf("ensureRepoAt (second call): %v", err)
+	if isBareRepo(repoPath) {
+		t.Fatalf("no repo should have been created at %s", repoPath)
 	}
 }
 
-func TestEnsureRepoAt_MirrorClonesFromExternalURL(t *testing.T) {
+func TestEnsureRepoAt_ClonesFromExternalURL(t *testing.T) {
 	root := t.TempDir()
 	external := filepath.Join(root, "external")
 	initRepoWithCommit(t, external)
 
-	repoPath := filepath.Join(root, "repos", "mirrors-external")
+	repoPath := filepath.Join(root, "repos", "external")
 	if err := ensureRepoAt(repoPath, external); err != nil {
 		t.Fatalf("ensureRepoAt: %v", err)
 	}
 	if !isBareRepo(repoPath) {
-		t.Fatalf("expected bare mirror at %s", repoPath)
+		t.Fatalf("expected bare clone at %s", repoPath)
 	}
 	if !hasRefAt(repoPath, "main") {
-		t.Fatalf("expected mirrored repo to have ref 'main'")
+		t.Fatalf("expected cloned repo to have ref 'main'")
+	}
+}
+
+func TestEnsureRepoAt_ReclonesWhenExternalURLChanges(t *testing.T) {
+	// Simulates `service update --repo` (or forking + repointing): an existing
+	// clone of repo A must be replaced by repo B, not keep serving A's refs.
+	root := t.TempDir()
+	extA := filepath.Join(root, "extA")
+	extB := filepath.Join(root, "extB")
+	initRepoWithCommit(t, extA)
+	initRepoWithCommit(t, extB)
+	runGit(t, extA, "branch", "only-in-a")
+	runGit(t, extB, "branch", "only-in-b")
+
+	repoPath := filepath.Join(root, "repos", "svc")
+	if err := ensureRepoAt(repoPath, extA); err != nil {
+		t.Fatalf("ensureRepoAt(A): %v", err)
+	}
+	if !hasRefAt(repoPath, "only-in-a") {
+		t.Fatal("expected repo A's branch after first clone")
+	}
+
+	// Repoint at repo B — the stale clone must be discarded and re-cloned.
+	if err := ensureRepoAt(repoPath, extB); err != nil {
+		t.Fatalf("ensureRepoAt(B): %v", err)
+	}
+	if !hasRefAt(repoPath, "only-in-b") {
+		t.Fatal("expected repo B's branch after re-clone")
+	}
+	if hasRefAt(repoPath, "only-in-a") {
+		t.Fatal("repo A's branch should be gone after repointing to repo B")
+	}
+	if got := originURLAt(repoPath); got != extB {
+		t.Errorf("origin url = %q, want %q", got, extB)
+	}
+}
+
+func TestEnsureRepoAt_ReusesCloneWhenURLUnchanged(t *testing.T) {
+	root := t.TempDir()
+	external := filepath.Join(root, "external")
+	initRepoWithCommit(t, external)
+
+	repoPath := filepath.Join(root, "repos", "svc")
+	if err := ensureRepoAt(repoPath, external); err != nil {
+		t.Fatalf("ensureRepoAt: %v", err)
+	}
+	// Mark the clone so we can tell whether it was re-created.
+	marker := filepath.Join(repoPath, "reuse-marker")
+	if err := os.WriteFile(marker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureRepoAt(repoPath, external); err != nil {
+		t.Fatalf("ensureRepoAt (second call): %v", err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Error("clone was re-created even though the URL was unchanged")
 	}
 }
 
@@ -93,9 +147,11 @@ func TestEnsureRepoAtWithOwner_ChownsToAdminUser(t *testing.T) {
 	}
 
 	root := t.TempDir()
-	repoPath := filepath.Join(root, "services/auth")
+	external := filepath.Join(root, "external")
+	initRepoWithCommit(t, external)
+	repoPath := filepath.Join(root, "auth")
 
-	if err := ensureRepoAtWithOwner(repoPath, "", current.Username); err != nil {
+	if err := ensureRepoAtWithOwner(repoPath, external, current.Username); err != nil {
 		t.Fatalf("ensureRepoAtWithOwner: %v", err)
 	}
 	if !isBareRepo(repoPath) {
@@ -104,25 +160,29 @@ func TestEnsureRepoAtWithOwner_ChownsToAdminUser(t *testing.T) {
 
 	// Idempotent: calling again (repo already exists) still succeeds and
 	// re-applies the chown.
-	if err := ensureRepoAtWithOwner(repoPath, "", current.Username); err != nil {
+	if err := ensureRepoAtWithOwner(repoPath, external, current.Username); err != nil {
 		t.Fatalf("ensureRepoAtWithOwner (second call): %v", err)
 	}
 }
 
 func TestEnsureRepoAtWithOwner_EmptyAdminUserSkipsChown(t *testing.T) {
 	root := t.TempDir()
-	repoPath := filepath.Join(root, "services/auth")
+	external := filepath.Join(root, "external")
+	initRepoWithCommit(t, external)
+	repoPath := filepath.Join(root, "auth")
 
-	if err := ensureRepoAtWithOwner(repoPath, "", ""); err != nil {
+	if err := ensureRepoAtWithOwner(repoPath, external, ""); err != nil {
 		t.Fatalf("ensureRepoAtWithOwner with empty adminUser should succeed, got %v", err)
 	}
 }
 
 func TestEnsureRepoAtWithOwner_UnknownAdminUserReturnsError(t *testing.T) {
 	root := t.TempDir()
-	repoPath := filepath.Join(root, "services/auth")
+	external := filepath.Join(root, "external")
+	initRepoWithCommit(t, external)
+	repoPath := filepath.Join(root, "auth")
 
-	if err := ensureRepoAtWithOwner(repoPath, "", "no-such-user-should-exist-anywhere"); err == nil {
+	if err := ensureRepoAtWithOwner(repoPath, external, "no-such-user-should-exist-anywhere"); err == nil {
 		t.Fatal("expected an error for an unknown admin user")
 	}
 }
@@ -136,11 +196,13 @@ func TestHasRefAt_FalseWhenRepoMissing(t *testing.T) {
 
 func TestHasRefAt_EmptyRefReflectsRepoExistence(t *testing.T) {
 	root := t.TempDir()
+	external := filepath.Join(root, "external")
+	initRepoWithCommit(t, external)
 	repoPath := filepath.Join(root, "svc")
 	if hasRefAt(repoPath, "") {
 		t.Fatalf("expected false before the repo is created")
 	}
-	if err := ensureRepoAt(repoPath, ""); err != nil {
+	if err := ensureRepoAt(repoPath, external); err != nil {
 		t.Fatalf("ensureRepoAt: %v", err)
 	}
 	if !hasRefAt(repoPath, "") {

@@ -109,79 +109,23 @@ func TestAPI_ConfigGet_501WhenNotConfigured(t *testing.T) {
 	}
 }
 
-func TestAPI_ConfigSet_CallsSetConfig(t *testing.T) {
-	var gotContent, gotMsg string
+func TestAPI_ConfigSet_405_WriteRemoved(t *testing.T) {
+	// POST /config is no longer a write path — config mutations are made
+	// client-side and applied via POST /reconcile. GET is the only method.
 	srv := explain.NewStatusServer()
 	mux := http.NewServeMux()
 	mux.Handle("/status", srv.Handler("test-api-token"))
 	explain.MountAPI(mux, explain.APIConfig{
 		StatusSrv: srv,
-		SetConfig: func(content, msg string) error {
-			gotContent = content
-			gotMsg = msg
-			return nil
-		},
+		GetConfig: func() (string, error) { return "schema_version: v1\n", nil },
 	})
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
-
-	resp := authedPost(t, ts, "/config", `{"content":"schema_version: v1\nservices: {}\n","message":"test commit"}`)
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("status = %d: %s", resp.StatusCode, body)
-	}
-	if gotContent != "schema_version: v1\nservices: {}\n" {
-		t.Errorf("content = %q", gotContent)
-	}
-	if gotMsg != "test commit" {
-		t.Errorf("message = %q", gotMsg)
-	}
-}
-
-func TestAPI_ConfigSet_400OnEmptyContent(t *testing.T) {
-	srv := explain.NewStatusServer()
-	mux := http.NewServeMux()
-	mux.Handle("/status", srv.Handler("test-api-token"))
-	explain.MountAPI(mux, explain.APIConfig{
-		StatusSrv: srv,
-		SetConfig: func(string, string) error { return nil },
-	})
-	ts := httptest.NewServer(mux)
-	t.Cleanup(ts.Close)
-
-	resp := authedPost(t, ts, "/config", `{"content":""}`)
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400", resp.StatusCode)
-	}
-}
-
-func TestAPI_ConfigSet_400OnSetConfigError(t *testing.T) {
-	srv := explain.NewStatusServer()
-	mux := http.NewServeMux()
-	mux.Handle("/status", srv.Handler("test-api-token"))
-	explain.MountAPI(mux, explain.APIConfig{
-		StatusSrv: srv,
-		SetConfig: func(string, string) error { return fmt.Errorf("invalid config") },
-	})
-	ts := httptest.NewServer(mux)
-	t.Cleanup(ts.Close)
-
-	resp := authedPost(t, ts, "/config", `{"content":"bad"}`)
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400", resp.StatusCode)
-	}
-}
-
-func TestAPI_ConfigSet_501WhenNotConfigured(t *testing.T) {
-	_, ts := buildAPIServer(t, "", "", "")
 
 	resp := authedPost(t, ts, "/config", `{"content":"x"}`)
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusNotImplemented {
-		t.Errorf("status = %d, want 501", resp.StatusCode)
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want 405 (POST /config removed)", resp.StatusCode)
 	}
 }
 
@@ -195,6 +139,181 @@ func TestAPI_Config_401WithoutToken(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", resp.StatusCode)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// /reconcile
+// ---------------------------------------------------------------------------
+
+func TestAPI_Reconcile_CallsReconcile(t *testing.T) {
+	called := false
+	srv := explain.NewStatusServer()
+	mux := http.NewServeMux()
+	mux.Handle("/status", srv.Handler("test-api-token"))
+	explain.MountAPI(mux, explain.APIConfig{
+		StatusSrv: srv,
+		Reconcile: func() error { called = true; return nil },
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	resp := authedPost(t, ts, "/reconcile", "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d: %s", resp.StatusCode, body)
+	}
+	if !called {
+		t.Error("Reconcile closure was not invoked")
+	}
+}
+
+func TestAPI_Reconcile_500OnError(t *testing.T) {
+	srv := explain.NewStatusServer()
+	mux := http.NewServeMux()
+	mux.Handle("/status", srv.Handler("test-api-token"))
+	explain.MountAPI(mux, explain.APIConfig{
+		StatusSrv: srv,
+		Reconcile: func() error { return fmt.Errorf("fetch failed") },
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	resp := authedPost(t, ts, "/reconcile", "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", resp.StatusCode)
+	}
+}
+
+func TestAPI_Reconcile_501WhenNotConfigured(t *testing.T) {
+	_, ts := buildAPIServer(t, "", "", "")
+
+	resp := authedPost(t, ts, "/reconcile", "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotImplemented {
+		t.Errorf("status = %d, want 501", resp.StatusCode)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// /config/source
+// ---------------------------------------------------------------------------
+
+func TestAPI_ConfigSource_RecordsRepoAndRef(t *testing.T) {
+	var gotURL, gotRef string
+	srv := explain.NewStatusServer()
+	mux := http.NewServeMux()
+	mux.Handle("/status", srv.Handler("test-api-token"))
+	explain.MountAPI(mux, explain.APIConfig{
+		StatusSrv: srv,
+		SetConfigSource: func(repoURL, ref string) error {
+			gotURL, gotRef = repoURL, ref
+			return nil
+		},
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	resp := authedPost(t, ts, "/config/source", `{"repo_url":"git@github.com:org/config.git","ref":"main"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d: %s", resp.StatusCode, body)
+	}
+	if gotURL != "git@github.com:org/config.git" {
+		t.Errorf("repo_url = %q", gotURL)
+	}
+	if gotRef != "main" {
+		t.Errorf("ref = %q", gotRef)
+	}
+}
+
+func TestAPI_ConfigSource_400OnEmptyURL(t *testing.T) {
+	srv := explain.NewStatusServer()
+	mux := http.NewServeMux()
+	mux.Handle("/status", srv.Handler("test-api-token"))
+	explain.MountAPI(mux, explain.APIConfig{
+		StatusSrv:       srv,
+		SetConfigSource: func(string, string) error { return nil },
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	resp := authedPost(t, ts, "/config/source", `{"repo_url":""}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// /ssh-key
+// ---------------------------------------------------------------------------
+
+func TestAPI_SSHKey_GetReturnsPublicKey(t *testing.T) {
+	srv := explain.NewStatusServer()
+	mux := http.NewServeMux()
+	mux.Handle("/status", srv.Handler("test-api-token"))
+	explain.MountAPI(mux, explain.APIConfig{
+		StatusSrv: srv,
+		GetSSHKey: func() (string, error) { return "ssh-ed25519 AAAA...", nil },
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	resp := authedGet(t, ts, "/ssh-key")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d: %s", resp.StatusCode, body)
+	}
+	var got map[string]string
+	_ = json.NewDecoder(resp.Body).Decode(&got)
+	if got["public_key"] != "ssh-ed25519 AAAA..." {
+		t.Errorf("public_key = %q", got["public_key"])
+	}
+}
+
+func TestAPI_SSHKey_PostEnsuresKeyAndReturnsPublicKey(t *testing.T) {
+	var gotHost string
+	srv := explain.NewStatusServer()
+	mux := http.NewServeMux()
+	mux.Handle("/status", srv.Handler("test-api-token"))
+	explain.MountAPI(mux, explain.APIConfig{
+		StatusSrv: srv,
+		EnsureSSHKey: func(host string) (string, error) {
+			gotHost = host
+			return "ssh-ed25519 BBBB...", nil
+		},
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	resp := authedPost(t, ts, "/ssh-key", `{"host":"github.com"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d: %s", resp.StatusCode, body)
+	}
+	if gotHost != "github.com" {
+		t.Errorf("host = %q, want github.com", gotHost)
+	}
+	var got map[string]string
+	_ = json.NewDecoder(resp.Body).Decode(&got)
+	if got["public_key"] != "ssh-ed25519 BBBB..." {
+		t.Errorf("public_key = %q", got["public_key"])
+	}
+}
+
+func TestAPI_SSHKey_501WhenNotConfigured(t *testing.T) {
+	_, ts := buildAPIServer(t, "", "", "")
+
+	resp := authedGet(t, ts, "/ssh-key")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotImplemented {
+		t.Errorf("status = %d, want 501", resp.StatusCode)
 	}
 }
 

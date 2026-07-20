@@ -4,22 +4,21 @@
 
 ---
 
-## The unit of integration: a local repo, built locally
+## The unit of integration: an external repo, built locally
 
-A service is added as a **local bare git repo built locally to a `localhost/ownbase-<name>` image**. Nothing is pulled from a registry to deploy an application service.
+A service is added as an **external git repo built locally to a `localhost/ownbase-<name>` image**. Nothing is pulled from a registry to deploy an application service.
 
-There are two ways to declare a service in `ownbase.yaml`:
+A service is declared in `ownbase.yaml` with a single field:
 
-1. **`source:`** — an empty bare repo under `/opt/ownbase/repos/` that the user (or an agent, via `ownbasectl`) pushes into directly over SSH — exactly like the config repo.
-2. **`mirror:`** — an external git URL (GitHub, any public host); OwnBase clones it into a local bare mirror named `mirrors-<basename>` and builds from it. Declarative: the operator only specifies the URL; the daemon manages the mirror, fetching new refs on demand.
+- **`repo:`** — an external git URL (GitHub, any git host). OwnBase keeps a read-only `git clone --bare --mirror` of it under `/opt/ownbase/repos/<service-name>` and builds from it at the pinned `ref:`. Declarative: the operator only specifies the URL and ref; the daemon fetches a new ref on demand. Private repos are read using the Base's managed SSH deploy key (see [cli.md](cli.md), `ssh-key`). There is no push-to-Base path — the Base never hosts service code.
 
 **The no-registry rule:** `image:` and `digest:` are not valid user service fields. The core package (Caddy) is the only bootstrap exception and is managed by the installer, not by `ownbase.yaml`.
 
 ```text
-upstream repo (GitHub, any git host) — mirror: declaration in ownbase.yaml
-        │  OwnBase clones a local bare mirror (mirrors-<basename>)
+external repo (GitHub, any git host) — repo: declaration in ownbase.yaml
+        │  OwnBase keeps a read-only bare clone (/opt/ownbase/repos/<name>)
         ▼
-local bare repo (/opt/ownbase/repos/<name>)  @  pinned ref:
+local bare clone  @  pinned ref: (a concrete SHA written by `ownbasectl deploy`)
         │  daemon clones + builds at ref:
         ▼
 localhost/ownbase-<name>:local   (on-Base image cache only)
@@ -39,8 +38,8 @@ Added to the Base's `ownbase.yaml` by the operator:
 ```yaml
 services:
   auth:                              # service instance name
-    source: services/auth            # local bare repo path (or use mirror: for external repos)
-    ref: v1.0.0                      # pinned branch, tag, or commit SHA (omit to auto-pin to latest)
+    repo: https://github.com/example/auth.git  # external git URL
+    ref: 1a2b3c...                   # concrete commit SHA (set by `ownbasectl deploy`)
     port: 8080                       # container port; all public traffic routes here
     domain: auth.example.com         # optional: public hostname (Caddy provisions TLS)
     data_path: /data                 # mount path for the persistent data volume
@@ -50,7 +49,7 @@ services:
       http: /health                  # optional: GET path; 2xx = healthy
 ```
 
-`source:` is **always a local bare repo path** — never a URL. To track an external repo, add a `mirror:` entry and let the daemon create the local mirror automatically. Either way, the entry above can be added, changed, or removed non-interactively with `ownbasectl service add/update/remove` — see [cli.md](cli.md).
+`repo:` is **always an external git URL** — the daemon only ever reads it. The entry above can be added, changed, or removed non-interactively with `ownbasectl service add/update/remove`, and a service is moved to a new version with `ownbasectl deploy` — see [cli.md](cli.md).
 
 `ref:` is the single pinning mechanism: `repo @ ref:` → same Dockerfile → same build → same image.
 
@@ -95,8 +94,8 @@ The standard OwnBase lifecycle applies to every service:
 Build          daemon clones the repo at ref:; runs podman build -t localhost/ownbase-<name>:local
 Start          systemctl start ownbase-<name>.service (Quadlet unit)
 Health-gate    daemon probes health_probe.http until 2xx
-Reconcile      on every git push or timer tick
-Update         user edits ref: in ownbase.yaml and commits; ownbasectl updates shows drift
+Reconcile      on every explicit ownbasectl mutation (POST /reconcile) or timer backstop
+Update         `ownbasectl deploy <base> <name> --ref <ref>` resolves + commits a new SHA; ownbasectl updates shows drift
 Backup         data volume included in the restic snapshot on every backup interval
 Restore        verified restore drill confirms data is recoverable
 Explain        service appears in the status API (ownbasectl status)
@@ -109,7 +108,7 @@ Explain        service appears in the status API (ownbasectl status)
 Every service must satisfy all five rules of the [Service Constitution](foundation/service-constitution.md):
 
 1. **Removable** — removing from `ownbase.yaml` stops and tears down the service
-2. **Forkable** — source is in a local bare repo the user owns and can modify (push directly, or fork the `mirror:` URL and repoint it)
+2. **Forkable** — source lives in an external repo the user owns and can modify (fork the `repo:` URL and repoint it)
 3. **Replaceable** — services depend on the capability name (`requires:` key), not the specific provider
 4. **Data accessible** — data is in a standard Podman volume the user can access
 5. **Works standalone** — image is built locally; nothing to reach outside the Base at runtime
@@ -120,4 +119,4 @@ Every service must satisfy all five rules of the [Service Constitution](foundati
 
 Caddy (the reverse proxy) cannot be built from a local repo at bootstrap time — the Base needs it to exist before it can route to anything. It is the single narrow exception to the no-registry rule: it is installed from a digest-pinned public image embedded in the OwnBase binary (`internal/core`), never declared in `ownbase.yaml`, and updated only via `ownbasectl upgrade`.
 
-This exception does not apply to any other service. Everything declared under `services:` is a local bare repo built locally.
+This exception does not apply to any other service. Everything declared under `services:` is an external repo built locally.

@@ -17,7 +17,7 @@ Key claims are deliberately repeated across documents so each is self-contained 
 | The hard constraints (six) | [MISSION.md](../../MISSION.md) | README, AGENTS.md |
 | `reconstructable = (repo, secrets, backups)`; four ops, one reconcile | [reconstruction-model.md](reconstruction-model.md) | README, architecture-principles §1, this file |
 | Secrets model (age-encrypted, key never leaves, injected at start) | [ownbase-yaml.md](../ownbase-yaml.md) "Secrets" | decisions, api, cli, reconstruction-model, architecture-principles §13 |
-| `ref:` update model + blank-ref auto-pin | [ownbase-yaml.md](../ownbase-yaml.md) "Updates" | architecture-principles §9, decisions, cli, operating |
+| `ref:` update model + explicit `ownbasectl deploy` | [ownbase-yaml.md](../ownbase-yaml.md) "Updates" | architecture-principles §9, decisions, cli, operating |
 | Verified restore ("restorable" is measured, not claimed) | [reconstruction-model.md](reconstruction-model.md) | README, architecture-principles §12, decisions, cli, lexicon |
 | The five service rules (removable, forkable, replaceable, data accessible, standalone) | [service-constitution.md](service-constitution.md) | integration-contract, lexicon, MISSION.md |
 | No-registry rule + core-package exception | [ownbase-yaml.md](../ownbase-yaml.md) "The no-registry rule" | integration-contract, decisions, architecture-principles §6 |

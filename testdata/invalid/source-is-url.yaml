@@ -1,4 +1,0 @@
-schema_version: v1
-services:
-  minio:
-    source: https://github.com/minio/minio

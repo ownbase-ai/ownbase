@@ -5,7 +5,7 @@
 //
 // Separation of concerns:
 //
-//   - User services (source: / mirror: in ownbase.yaml) are compiled and
+//   - User services (declared with repo: in ownbase.yaml) are compiled and
 //     reconciled by the agent's normal path.
 //   - The core package is always present; the installer brings it up from a
 //     pinned image digest; the core package manifest is embedded in the binary.

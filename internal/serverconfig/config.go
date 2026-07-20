@@ -55,6 +55,15 @@ type ServerProfile struct {
 	// Token is the Bearer token cached after first connect. Empty means the
 	// profile has not been authenticated yet.
 	Token string `yaml:"token,omitempty"`
+	// ConfigRepoURL is the external git repo that holds this Base's
+	// ownbase.yaml. Every config mutation (deploy, config set, service *,
+	// backup setup) is committed here client-side and pushed with the
+	// operator's own git credentials; the Base only reads it. Set by
+	// `ownbasectl config setup`.
+	ConfigRepoURL string `yaml:"config_repo_url,omitempty"`
+	// ConfigRef is the branch/ref of the config repo to commit to.
+	// Defaults to "main".
+	ConfigRef string `yaml:"config_ref,omitempty"`
 	// LocalVM marks a profile as backed by a local Multipass VM (created by
 	// `create` with no --remote), as opposed to a remote server
 	// (`--remote`). Used by `delete`/`list` to decide whether it is safe to
@@ -117,6 +126,17 @@ func (p ServerProfile) EffectiveSSHPort() int {
 		return p.SSHPort
 	}
 	return 22
+}
+
+// DefaultConfigRef is the config-repo branch used when ConfigRef is unset.
+const DefaultConfigRef = "main"
+
+// EffectiveConfigRef returns the config-repo ref, applying the default.
+func (p ServerProfile) EffectiveConfigRef() string {
+	if p.ConfigRef != "" {
+		return p.ConfigRef
+	}
+	return DefaultConfigRef
 }
 
 // Config is the top-level ownbasectl configuration.

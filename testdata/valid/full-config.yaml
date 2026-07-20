@@ -6,32 +6,32 @@ core:
 
 services:
   auth:
-    source: services/auth
+    repo: https://github.com/example/auth.git
     mode: managed
     ref: v2.1.0
     port: 8080
 
   jobs:
-    source: services/jobs
+    repo: https://github.com/example/jobs.git
     mode: pinned
     ref: v1.4.2
     port: 3000
     dockerfile: Dockerfile.prod
 
   storage:
-    source: services/storage
+    repo: https://github.com/example/storage.git
     mode: pinned
     ref: RELEASE.2024-01-01T00-00-00Z
     port: 9000
 
   postgres:
-    mirror: https://github.com/docker-library/postgres
+    repo: https://github.com/docker-library/postgres
     mode: managed
     context: "17/alpine"
     port: 5432
 
   crm:
-    source: apps/crm
+    repo: https://github.com/example/crm.git
     domain: crm.example.ownbase.ai
     port: 8080
     database: crm_db
@@ -41,7 +41,7 @@ services:
       - postgres
 
   dashboard:
-    source: apps/dashboard
+    repo: https://github.com/example/dashboard.git
     domain: dashboard.example.ownbase.ai
     port: 3000
     requires:

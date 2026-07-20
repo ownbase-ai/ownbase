@@ -55,7 +55,7 @@ Schema (`schema_version: v3`):
       "name": "auth",
       "running": true,
       "healthy": true,
-      "source": "services/auth",
+      "repo": "git@github.com:org/auth.git",
       "ref": "v1.0.0",
       "requires": ["postgres"]
     }
@@ -139,39 +139,49 @@ Behind `ownbasectl security fix`. Runs `apt-get update` + `apt-get upgrade -y` o
 
 ## Config
 
+The config repo is **external** (e.g. on GitHub). The daemon has read-only access and never writes to it — all mutations are committed client-side by `ownbasectl` (which pushes with the operator's git credentials) and applied on the Base via `POST /reconcile`. There is no `POST /config` write endpoint.
+
 ### `GET /config` — read the current ownbase.yaml
 
-Behind `ownbasectl config get`. Returns the raw YAML document from the checkout as `text/x-yaml`, not JSON.
+Behind `ownbasectl config get`. Returns the raw YAML document from the read-only checkout as `text/x-yaml`, not JSON. `POST /config` returns `405` (write path removed).
 
-### `POST /config` — atomically replace ownbase.yaml
+### `POST /reconcile` — pull the config repo and reconcile
 
-Behind `ownbasectl config set` and `ownbasectl service add/remove/update` (which `GET /config`, edit the document locally, and `POST` the whole thing back — there is no partial-update endpoint). Validates the new document as well-formed `ownbase.yaml`, then commits it through the daemon's front-door commit path — exactly like a manual `git push` to `/opt/ownbase/repo` — and wakes the reconcile loop immediately.
+Behind every client-side mutation (`config set`, `service *`, `deploy`, `backup setup`). Fetches the external config repo into `/opt/ownbase/checkout` (hard-reset to the tracked ref) and wakes the reconcile loop immediately.
+
+Response: `{"status": "reconciling"}`. Returns `500` if the fetch fails, `501` if the daemon has no reconcile capability wired.
+
+### `POST /config/source` — point the Base at its config repo
+
+Behind `ownbasectl config setup`. Records the external config repo (`repo_url` + optional `ref`) in `/opt/ownbase/config-source.yaml`, (re)clones it read-only, and reconciles.
 
 Request:
 
 ```json
-{"content": "schema_version: v1\nservices: {}\n", "message": "feat(service): add crm"}
+{"repo_url": "git@github.com:org/ownbase-config.git", "ref": "main"}
 ```
 
-`message` is optional (defaults to a generic ownbasectl message). Response: `{"status": "applied"}`. Returns `400` when `content` is empty or fails validation.
+`ref` is optional (defaults to `main`). Response: `{"status": "configured", "repo_url": "…"}`. Returns `400` when `repo_url` is empty.
+
+### `GET /ssh-key` / `POST /ssh-key` — manage the Base's git deploy identity
+
+Behind `ownbasectl ssh-key`. `GET` returns the Base's managed SSH public key (`{"public_key": "…"}`, empty when none exists). `POST` ensures the managed ed25519 key exists under `/opt/ownbase/ssh`, optionally records a host's SSH host keys, and returns the public key to register as a read-only deploy key.
+
+Request (POST, body optional):
+
+```json
+{"host": "github.com"}
+```
+
+Response: `{"public_key": "ssh-ed25519 …"}`.
 
 ---
 
 ## Backups
 
-### `POST /backup/configure` — commit backup config to ownbase.yaml
+Backup configuration (`core.backup.repo` + cadences) is committed to `ownbase.yaml` **client-side** by `ownbasectl backup setup` (the same commit path as `config set`) and applied via `POST /reconcile`; the backup scheduler picks it up within a minute — no restart. There is no `POST /backup/configure` endpoint.
 
-Behind `ownbasectl backup setup`. Commits `core.backup.repo` (and optional cadences) to `ownbase.yaml` through the daemon's front-door commit path; the backup scheduler picks it up within a minute — no restart.
-
-Request:
-
-```json
-{"repo": "s3:s3.amazonaws.com/my-bucket/ownbase", "interval": "1h", "verify_interval": "24h"}
-```
-
-`interval`/`verify_interval` are optional. Response: `{"status": "configured", "repo": "…"}`.
-
-Credentials are **not** part of this call — they are stored via the secrets API under the conventional service name `backup` (`POST /secrets/backup` with `RESTIC_PASSWORD`, `AWS_ACCESS_KEY_ID`, …).
+Credentials are stored via the secrets API under the conventional service name `backup` (`POST /secrets/backup` with `RESTIC_PASSWORD`, `AWS_ACCESS_KEY_ID`, …).
 
 ### `POST /backup/run` — snapshot now
 

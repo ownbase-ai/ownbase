@@ -40,7 +40,7 @@ The user (often via their AI) creates a service. The AI reads the config repo �
 
 - **Driven by:** user + AI.
 - **Daemon job:** explain (expose capabilities the AI can build against).
-- **CLI:** `ownbasectl config set` / `ownbasectl service add` — or edit `ownbase.yaml` by hand and push directly to the Base's config bare repo over SSH.
+- **CLI:** `ownbasectl config set` / `ownbasectl service add` — or edit `ownbase.yaml` by hand in the external config repo, commit, and push, then `ownbasectl deploy` (or any mutating command) to trigger a reconcile.
 
 ### 4. Deploy
 

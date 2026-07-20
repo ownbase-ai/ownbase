@@ -251,7 +251,7 @@ func TestCompile_MultiDomain_OneRoutePerDomain(t *testing.T) {
 			SchemaVersion: "v1",
 			Services: map[string]schema.ServiceDecl{
 				"app": {
-					Source:  "apps/app",
+					Repo:    "apps/app",
 					Port:    3000,
 					Domain:  "app.example.com",
 					Domains: []string{"app.example.org", "app.example.com"}, // duplicate must be deduped
@@ -310,7 +310,7 @@ func TestCompile_TunnelPort_DistinctFromContainerPort(t *testing.T) {
 			SchemaVersion: "v1",
 			Services: map[string]schema.ServiceDecl{
 				"hello": {
-					Source: "apps/hello",
+					Repo:   "apps/hello",
 					Domain: "hello.example.com",
 					Port:   80,
 				},
@@ -344,8 +344,8 @@ func TestCompile_TunnelPort_NoDomainStillPublishes(t *testing.T) {
 			SchemaVersion: "v1",
 			Services: map[string]schema.ServiceDecl{
 				"worker": {
-					Source: "apps/worker",
-					Port:   8080,
+					Repo: "apps/worker",
+					Port: 8080,
 				},
 			},
 		},
@@ -370,7 +370,7 @@ func TestCompile_TunnelPort_NoPortNoDomainNoPublish(t *testing.T) {
 			SchemaVersion: "v1",
 			Services: map[string]schema.ServiceDecl{
 				"worker": {
-					Source: "apps/worker",
+					Repo: "apps/worker",
 				},
 			},
 		},
@@ -394,8 +394,8 @@ func TestCompile_TunnelPort_MultipleServicesGetDistinctPorts(t *testing.T) {
 		Config: &schema.OwnbaseConfig{
 			SchemaVersion: "v1",
 			Services: map[string]schema.ServiceDecl{
-				"alpha": {Source: "apps/alpha", Domain: "alpha.example.com", Port: 3000},
-				"beta":  {Source: "apps/beta", Domain: "beta.example.com", Port: 3000},
+				"alpha": {Repo: "apps/alpha", Domain: "alpha.example.com", Port: 3000},
+				"beta":  {Repo: "apps/beta", Domain: "beta.example.com", Port: 3000},
 			},
 		},
 	}
@@ -472,124 +472,102 @@ func TestCompile_SecretBindingsDeterministic(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Mirror services (source built from external git URL via local bare mirror)
+// Repo services (built from an external git URL via a local bare clone)
 // ---------------------------------------------------------------------------
 
-func testInputMirror(t *testing.T) compiler.Input {
+func testInputRepo(t *testing.T) compiler.Input {
 	t.Helper()
-	cfg, err := schema.ParseConfigFile("../../testdata/mirror/ownbase.yaml")
+	cfg, err := schema.ParseConfigFile("../../testdata/repo/ownbase.yaml")
 	if err != nil {
-		t.Fatalf("parse mirror config: %v", err)
+		t.Fatalf("parse repo config: %v", err)
 	}
 	return compiler.Input{Config: cfg}
 }
 
-// TestCompile_MirrorService_BuildSourceFromURL verifies that a mirror: service
-// resolves to mirrors-<basename> as the local bare-repo name (flat name, no
-// nested directories) in the Quadlet unit.
-func TestCompile_MirrorService_BuildSourceFromURL(t *testing.T) {
-	out := compiler.Compile(testInputMirror(t))
+// TestCompile_RepoService_BuildSourceIsServiceName verifies that a repo:
+// service's local bare-clone directory (BuildSource) is keyed by the service
+// name — collision-free even when two services share an upstream URL.
+func TestCompile_RepoService_BuildSourceIsServiceName(t *testing.T) {
+	out := compiler.Compile(testInputRepo(t))
 
 	unit, ok := out.QuadletUnits["ownbase-postgres.container"]
 	if !ok {
 		t.Fatal("ownbase-postgres.container not found in output")
 	}
-	if !strings.Contains(unit, "# BuildSource=mirrors-postgres") {
-		t.Errorf("mirror unit must have BuildSource=mirrors/postgres\nunit:\n%s", unit)
+	if !strings.Contains(unit, "# BuildSource=postgres") {
+		t.Errorf("repo unit must have BuildSource=postgres\nunit:\n%s", unit)
 	}
 }
 
-// TestCompile_MirrorService_UsesLocalhostImage verifies that mirror services
+// TestCompile_RepoService_UsesLocalhostImage verifies that repo services
 // build locally (not pulled from a registry).
-func TestCompile_MirrorService_UsesLocalhostImage(t *testing.T) {
-	out := compiler.Compile(testInputMirror(t))
+func TestCompile_RepoService_UsesLocalhostImage(t *testing.T) {
+	out := compiler.Compile(testInputRepo(t))
 
 	unit, ok := out.QuadletUnits["ownbase-postgres.container"]
 	if !ok {
 		t.Fatal("ownbase-postgres.container not found in output")
 	}
 	if !strings.Contains(unit, "Image=localhost/ownbase-postgres:local") {
-		t.Errorf("mirror unit must use a localhost image\nunit:\n%s", unit)
+		t.Errorf("repo unit must use a localhost image\nunit:\n%s", unit)
 	}
 	if strings.Contains(unit, "Image=") && strings.Contains(unit, "github.com") {
-		t.Errorf("mirror unit must not reference an external registry\nunit:\n%s", unit)
+		t.Errorf("repo unit must not reference an external registry\nunit:\n%s", unit)
 	}
 }
 
-// TestCompile_MirrorService_HasBuildContext verifies that context: appears as
+// TestCompile_RepoService_HasBuildContext verifies that context: appears as
 // a BuildContext annotation (for versioned directories like docker-library/postgres).
-func TestCompile_MirrorService_HasBuildContext(t *testing.T) {
-	out := compiler.Compile(testInputMirror(t))
+func TestCompile_RepoService_HasBuildContext(t *testing.T) {
+	out := compiler.Compile(testInputRepo(t))
 	unit := out.QuadletUnits["ownbase-postgres.container"]
 
 	if !strings.Contains(unit, "# BuildContext=17/alpine") {
-		t.Errorf("mirror unit missing BuildContext annotation\nunit:\n%s", unit)
+		t.Errorf("repo unit missing BuildContext annotation\nunit:\n%s", unit)
 	}
 }
 
-// TestCompile_MirrorService_HasVolume verifies the data volume is mounted.
-func TestCompile_MirrorService_HasVolume(t *testing.T) {
-	out := compiler.Compile(testInputMirror(t))
+// TestCompile_RepoService_HasVolume verifies the data volume is mounted.
+func TestCompile_RepoService_HasVolume(t *testing.T) {
+	out := compiler.Compile(testInputRepo(t))
 	unit := out.QuadletUnits["ownbase-postgres.container"]
 
 	if !strings.Contains(unit, "Volume=ownbase-postgres-data:/data") {
-		t.Errorf("mirror unit missing volume mount\nunit:\n%s", unit)
+		t.Errorf("repo unit missing volume mount\nunit:\n%s", unit)
 	}
 }
 
-// TestCompile_MirrorService_HasHealthProbe verifies health_probe.http is emitted.
-func TestCompile_MirrorService_HasHealthProbe(t *testing.T) {
-	out := compiler.Compile(testInputMirror(t))
+// TestCompile_RepoService_HasHealthProbe verifies health_probe.http is emitted.
+func TestCompile_RepoService_HasHealthProbe(t *testing.T) {
+	out := compiler.Compile(testInputRepo(t))
 	unit := out.QuadletUnits["ownbase-postgres.container"]
 
 	if !strings.Contains(unit, "# HealthProbeHTTP=/health") {
-		t.Errorf("mirror unit missing health probe comment\nunit:\n%s", unit)
+		t.Errorf("repo unit missing health probe comment\nunit:\n%s", unit)
 	}
 }
 
-// TestCompile_MirrorService_SourceBuiltTimeout verifies that mirror services
-// get the same 30s timeout as source-built services (not the 120s for core
+// TestCompile_RepoService_SourceBuiltTimeout verifies that repo services
+// get the 30s timeout for source-built services (not the 120s for core
 // packages).
-func TestCompile_MirrorService_SourceBuiltTimeout(t *testing.T) {
-	out := compiler.Compile(testInputMirror(t))
+func TestCompile_RepoService_SourceBuiltTimeout(t *testing.T) {
+	out := compiler.Compile(testInputRepo(t))
 	unit := out.QuadletUnits["ownbase-postgres.container"]
 
 	if !strings.Contains(unit, "TimeoutStartSec=30") {
-		t.Errorf("mirror unit should have TimeoutStartSec=30\nunit:\n%s", unit)
+		t.Errorf("repo unit should have TimeoutStartSec=30\nunit:\n%s", unit)
 	}
 }
 
-// TestCompile_MirrorService_Deterministic verifies byte-identical output.
-func TestCompile_MirrorService_Deterministic(t *testing.T) {
-	in := testInputMirror(t)
+// TestCompile_RepoService_Deterministic verifies byte-identical output.
+func TestCompile_RepoService_Deterministic(t *testing.T) {
+	in := testInputRepo(t)
 	out1 := compiler.Compile(in)
 	out2 := compiler.Compile(in)
 	for name := range out1.QuadletUnits {
 		if out1.QuadletUnits[name] != out2.QuadletUnits[name] {
 			t.Errorf("unit %q not deterministic", name)
 		}
-	}
-}
-
-// TestCompile_MirrorRepoName verifies the URL → local bare-repo name derivation.
-func TestCompile_MirrorRepoName(t *testing.T) {
-	cases := []struct {
-		url  string
-		want string
-	}{
-		{"https://github.com/docker-library/postgres", "mirrors-postgres"},
-		{"https://github.com/org/crm.git", "mirrors-crm"},
-		{"http://github.com/org/auth", "mirrors-auth"},
-		{"git@github.com:org/myapp.git", "mirrors-myapp"},
-		{"git://github.com/org/tool", "mirrors-tool"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.url, func(t *testing.T) {
-			got := compiler.MirrorRepoName(tc.url)
-			if got != tc.want {
-				t.Errorf("MirrorRepoName(%q) = %q, want %q", tc.url, got, tc.want)
-			}
-		})
 	}
 }
 
@@ -607,7 +585,7 @@ func TestCompile_MultiVolume_VolumeMounts(t *testing.T) {
 			SchemaVersion: "v1",
 			Services: map[string]schema.ServiceDecl{
 				"jellyfin": {
-					Source: "local/jellyfin",
+					Repo: "local/jellyfin",
 					Volumes: []schema.VolumeDecl{
 						{Name: "config", Mount: "/config", Backup: []string{"."}},
 						{Name: "media", Mount: "/media"},
@@ -649,7 +627,7 @@ func TestCompile_MultiVolume_VolumeModels(t *testing.T) {
 			SchemaVersion: "v1",
 			Services: map[string]schema.ServiceDecl{
 				"svc": {
-					Source: "local/svc",
+					Repo: "local/svc",
 					Volumes: []schema.VolumeDecl{
 						{Name: "data", Mount: "/data", Backup: []string{"."}},
 						{Name: "tmp", Mount: "/tmp"},
@@ -683,7 +661,7 @@ func TestCompile_DataPathBackwardCompat(t *testing.T) {
 			SchemaVersion: "v1",
 			Services: map[string]schema.ServiceDecl{
 				"myapp": {
-					Source:   "local/myapp",
+					Repo:     "local/myapp",
 					DataPath: "/app/storage",
 				},
 			},
@@ -756,7 +734,7 @@ func TestCompile_InternalService_NoCaddyRoute(t *testing.T) {
 			SchemaVersion: "v1",
 			Services: map[string]schema.ServiceDecl{
 				"admin": {
-					Source:   "services/admin",
+					Repo:     "services/admin",
 					Domain:   "admin.example.com",
 					Port:     3000,
 					Internal: true,
@@ -790,13 +768,13 @@ func TestCompile_InternalService_MixedWithPublic(t *testing.T) {
 			SchemaVersion: "v1",
 			Services: map[string]schema.ServiceDecl{
 				"admin": {
-					Source:   "services/admin",
+					Repo:     "services/admin",
 					Domain:   "admin.example.com",
 					Port:     3000,
 					Internal: true,
 				},
 				"web": {
-					Source: "services/web",
+					Repo:   "services/web",
 					Domain: "web.example.com",
 					Port:   8080,
 				},
