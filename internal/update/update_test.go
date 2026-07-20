@@ -291,6 +291,17 @@ func runGit(t *testing.T, dir string, args ...string) {
 	}
 }
 
+// gitRevParse resolves rev (e.g. "HEAD", "HEAD~5") to a full commit SHA in the
+// git repo at dir.
+func gitRevParse(t *testing.T, dir, rev string) string {
+	t.Helper()
+	out, err := exec.Command("git", "-C", dir, "rev-parse", rev).Output()
+	if err != nil {
+		t.Fatalf("git rev-parse %s in %s: %v", rev, dir, err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
 func TestComputeDrift_UpToDate(t *testing.T) {
 	reposDir := t.TempDir()
 	newLocalDriftRepo(t, reposDir, "auth", 0, nil)
@@ -373,19 +384,19 @@ func TestComputeDrift_SkipsBlankRef(t *testing.T) {
 	}
 }
 
-func TestComputeDrift_CommitSHAAlwaysUpToDate(t *testing.T) {
-	// A full 40-char commit SHA is already maximally pinned. Even though a
-	// newer semver tag exists locally (which would never equal a raw SHA),
-	// the service must not be reported as out of date.
+func TestComputeDrift_CommitSHAAtTipIsUpToDate(t *testing.T) {
+	// A full SHA pinned to the current branch tip is up to date — and must not
+	// be falsely flagged just because a newer semver tag exists (a raw SHA
+	// never equals a tag name).
 	reposDir := t.TempDir()
 	newLocalDriftRepo(t, reposDir, "auth", 5, []string{"v1.1.0"})
-	sha := strings.Repeat("a", 40)
+	tipSHA := gitRevParse(t, filepath.Join(reposDir, "auth"), "HEAD")
 
 	cfg := update.Config{ReposDir: reposDir}
 	services := update.ServicesFromConfig(&schema.OwnbaseConfig{
 		SchemaVersion: "v1",
 		Services: map[string]schema.ServiceDecl{
-			"auth": {Repo: "https://github.com/example/auth.git", Ref: sha},
+			"auth": {Repo: "https://github.com/example/auth.git", Ref: tipSHA},
 		},
 	})
 
@@ -394,14 +405,40 @@ func TestComputeDrift_CommitSHAAlwaysUpToDate(t *testing.T) {
 		t.Fatalf("want 1 drift entry, got %d", len(drift))
 	}
 	d := drift[0]
-	if d.Ref != sha {
-		t.Errorf("Ref = %q, want %q", d.Ref, sha)
+	if d.CommitsBehind != 0 {
+		t.Errorf("CommitsBehind = %d, want 0 for a SHA at the tip", d.CommitsBehind)
 	}
 	if !d.UpToDate {
-		t.Error("UpToDate should be true for a commit-SHA ref, regardless of newer tags")
+		t.Error("UpToDate should be true for a SHA at the tip, despite a newer tag")
 	}
-	if d.CommitsBehind != 0 {
-		t.Errorf("CommitsBehind = %d, want 0 for a commit-SHA ref", d.CommitsBehind)
+}
+
+func TestComputeDrift_CommitSHABehindShowsDrift(t *testing.T) {
+	// A SHA pinned to an older commit must report how far behind the branch
+	// tip it is — `ownbasectl deploy` always pins a SHA, so this is the normal
+	// way `ownbasectl updates` surfaces drift.
+	reposDir := t.TempDir()
+	newLocalDriftRepo(t, reposDir, "auth", 5, nil)
+	oldSHA := gitRevParse(t, filepath.Join(reposDir, "auth"), "HEAD~5")
+
+	cfg := update.Config{ReposDir: reposDir}
+	services := update.ServicesFromConfig(&schema.OwnbaseConfig{
+		SchemaVersion: "v1",
+		Services: map[string]schema.ServiceDecl{
+			"auth": {Repo: "https://github.com/example/auth.git", Ref: oldSHA},
+		},
+	})
+
+	drift := update.ComputeDrift(t.Context(), cfg, services)
+	if len(drift) != 1 {
+		t.Fatalf("want 1 drift entry, got %d", len(drift))
+	}
+	d := drift[0]
+	if d.CommitsBehind != 5 {
+		t.Errorf("CommitsBehind = %d, want 5 for a SHA 5 commits behind", d.CommitsBehind)
+	}
+	if d.UpToDate {
+		t.Error("UpToDate should be false for a SHA behind the tip")
 	}
 }
 

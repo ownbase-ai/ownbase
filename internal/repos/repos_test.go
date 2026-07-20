@@ -48,6 +48,62 @@ func TestEnsureRepoAt_ClonesFromExternalURL(t *testing.T) {
 	}
 }
 
+func TestEnsureRepoAt_ReclonesWhenExternalURLChanges(t *testing.T) {
+	// Simulates `service update --repo` (or forking + repointing): an existing
+	// clone of repo A must be replaced by repo B, not keep serving A's refs.
+	root := t.TempDir()
+	extA := filepath.Join(root, "extA")
+	extB := filepath.Join(root, "extB")
+	initRepoWithCommit(t, extA)
+	initRepoWithCommit(t, extB)
+	runGit(t, extA, "branch", "only-in-a")
+	runGit(t, extB, "branch", "only-in-b")
+
+	repoPath := filepath.Join(root, "repos", "svc")
+	if err := ensureRepoAt(repoPath, extA); err != nil {
+		t.Fatalf("ensureRepoAt(A): %v", err)
+	}
+	if !hasRefAt(repoPath, "only-in-a") {
+		t.Fatal("expected repo A's branch after first clone")
+	}
+
+	// Repoint at repo B — the stale clone must be discarded and re-cloned.
+	if err := ensureRepoAt(repoPath, extB); err != nil {
+		t.Fatalf("ensureRepoAt(B): %v", err)
+	}
+	if !hasRefAt(repoPath, "only-in-b") {
+		t.Fatal("expected repo B's branch after re-clone")
+	}
+	if hasRefAt(repoPath, "only-in-a") {
+		t.Fatal("repo A's branch should be gone after repointing to repo B")
+	}
+	if got := originURLAt(repoPath); got != extB {
+		t.Errorf("origin url = %q, want %q", got, extB)
+	}
+}
+
+func TestEnsureRepoAt_ReusesCloneWhenURLUnchanged(t *testing.T) {
+	root := t.TempDir()
+	external := filepath.Join(root, "external")
+	initRepoWithCommit(t, external)
+
+	repoPath := filepath.Join(root, "repos", "svc")
+	if err := ensureRepoAt(repoPath, external); err != nil {
+		t.Fatalf("ensureRepoAt: %v", err)
+	}
+	// Mark the clone so we can tell whether it was re-created.
+	marker := filepath.Join(repoPath, "reuse-marker")
+	if err := os.WriteFile(marker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureRepoAt(repoPath, external); err != nil {
+		t.Fatalf("ensureRepoAt (second call): %v", err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Error("clone was re-created even though the URL was unchanged")
+	}
+}
+
 func TestFetchRefAt_FetchesNewRefOnDemand(t *testing.T) {
 	root := t.TempDir()
 	external := filepath.Join(root, "external")

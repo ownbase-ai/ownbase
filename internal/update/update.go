@@ -109,20 +109,6 @@ func ComputeDrift(ctx context.Context, cfg Config, services map[string]ServiceRe
 			continue
 		}
 
-		// A full commit SHA is already maximally pinned — there is no
-		// newer version of "this exact commit" to be behind, and comparing
-		// it against the newest semver tag would produce a false positive
-		// (a raw SHA essentially never matches a tag name). Skip the
-		// tag-based drift comparison and report it as up to date.
-		if isCommitSHA(svc.Ref) {
-			result = append(result, ServiceDrift{
-				Service:  name,
-				Ref:      svc.Ref,
-				UpToDate: true,
-			})
-			continue
-		}
-
 		branch, headSHA, err := resolveDefaultBranchHead(ctx, cfg, svc.Source)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "update: drift %s (%s): resolve head: %v\n", name, svc.Source, err)
@@ -142,7 +128,16 @@ func ComputeDrift(ctx context.Context, cfg Config, services map[string]ServiceRe
 			fmt.Fprintf(os.Stderr, "update: drift %s (%s): newest tag: %v\n", name, svc.Source, err)
 		}
 
-		upToDate := behind == 0 && (newestTag == "" || newestTag == svc.Ref)
+		// In the explicit-deploy model, `ownbasectl deploy` always pins a full
+		// commit SHA, so drift for a SHA is "how many commits behind the branch
+		// tip is this commit" (behind == 0 means it is the tip). A SHA never
+		// equals a tag name, so the tag comparison only applies to
+		// tag/branch-named refs — otherwise every deployed service would be
+		// reported as drifted.
+		upToDate := behind == 0
+		if !isCommitSHA(svc.Ref) {
+			upToDate = upToDate && (newestTag == "" || newestTag == svc.Ref)
+		}
 
 		result = append(result, ServiceDrift{
 			Service:       name,

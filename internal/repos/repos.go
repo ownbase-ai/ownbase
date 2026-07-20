@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/ownbase/ownbase/internal/fsowner"
 	"github.com/ownbase/ownbase/internal/gitssh"
@@ -128,11 +129,20 @@ func hasRefAt(repoPath, ref string) bool {
 }
 
 func ensureRepoAt(repoPath, externalURL string) error {
-	if isBareRepo(repoPath) {
-		return nil
-	}
 	if externalURL == "" {
 		return fmt.Errorf("ensure repo %s: no repo URL — every service must declare repo:", repoPath)
+	}
+	if isBareRepo(repoPath) {
+		// Reuse the existing clone only when its origin still matches repo:.
+		// After `service update --repo` (or forking + repointing) the URL
+		// changes; a stale clone would keep serving the previous upstream's
+		// refs, so re-clone from scratch on mismatch.
+		if originURLAt(repoPath) == externalURL {
+			return nil
+		}
+		if err := os.RemoveAll(repoPath); err != nil {
+			return fmt.Errorf("remove stale clone %s: %w", repoPath, err)
+		}
 	}
 	if err := os.MkdirAll(filepath.Dir(repoPath), 0o755); err != nil {
 		return fmt.Errorf("mkdir parent of %s: %w", repoPath, err)
@@ -145,6 +155,18 @@ func ensureRepoAt(repoPath, externalURL string) error {
 		return fmt.Errorf("git clone --bare --mirror %s -> %s: %w\n%s", externalURL, repoPath, err, out)
 	}
 	return nil
+}
+
+// originURLAt returns the configured origin remote URL of the bare repo at
+// repoPath, or "" when it has no origin (e.g. an old push-to-Base source repo
+// created with `git init --bare`). Used to detect when a local clone must be
+// re-created because the service's repo: URL changed.
+func originURLAt(repoPath string) string {
+	out, err := exec.Command("git", "-C", repoPath, "remote", "get-url", "origin").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // ensureRepoAtWithOwner is ensureRepoAt plus a chown of the repo to
