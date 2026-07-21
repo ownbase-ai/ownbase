@@ -1228,7 +1228,13 @@ func annotateSecretsFingerprints(units map[string]string, secretsDir string) {
 		service := strings.TrimSuffix(strings.TrimPrefix(filename, "ownbase-"), ".container")
 		sources := []string{service}
 		if jobService := parseJobServiceComment(content); jobService != "" {
-			sources = []string{jobService, service}
+			// service (derived by trimming only "ownbase-") is "job-<name>"
+			// for a job unit, which is never the actual secrets-file key —
+			// jobs' own secrets are set via `ownbasectl secrets set <base>
+			// <job-name>`, i.e. <job-name>.yaml.age with no "job-" prefix.
+			// Trim the full job unit prefix to recover the bare job name.
+			jobName := strings.TrimSuffix(strings.TrimPrefix(filename, "ownbase-job-"), ".container")
+			sources = []string{jobService, jobName}
 		}
 		var fps []string
 		for _, src := range sources {

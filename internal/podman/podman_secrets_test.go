@@ -188,7 +188,10 @@ func TestInjectSecrets_JobMergesServiceAndOwnSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encrypt job secrets: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "job-nightly-ingest.yaml.age"), jobCiphertext, 0o600); err != nil {
+	// Job secrets are keyed by the bare job name ("nightly-ingest"), the
+	// same way `ownbasectl secrets set <base> nightly-ingest ...` would
+	// write them — never "job-nightly-ingest".
+	if err := os.WriteFile(filepath.Join(dir, "nightly-ingest.yaml.age"), jobCiphertext, 0o600); err != nil {
 		t.Fatalf("write job secrets file: %v", err)
 	}
 
@@ -249,7 +252,7 @@ func TestInjectSecrets_JobFallsBackToOwnSecretsOnly_WhenServiceHasNone(t *testin
 	if err != nil {
 		t.Fatalf("encrypt job secrets: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "job-nightly-ingest.yaml.age"), jobCiphertext, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "nightly-ingest.yaml.age"), jobCiphertext, 0o600); err != nil {
 		t.Fatalf("write job secrets file: %v", err)
 	}
 	// Deliberately no api.yaml.age file.

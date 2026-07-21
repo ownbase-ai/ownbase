@@ -283,6 +283,20 @@ func TestJobDecl_Validate_UnknownService(t *testing.T) {
 	}
 }
 
+func TestValidate_ServiceNameWithJobPrefix_Rejected(t *testing.T) {
+	cfg := &schema.OwnbaseConfig{
+		SchemaVersion: "v1",
+		Services: map[string]schema.ServiceDecl{
+			"job-runner": {Repo: "https://github.com/example/api.git"},
+		},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for service name starting with \"job-\", got nil")
+	} else if !strings.Contains(err.Error(), `service names may not start with "job-"`) {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
 func TestJobDecl_EffectivePersistent_DefaultsTrue(t *testing.T) {
 	j := schema.JobDecl{}
 	if !j.EffectivePersistent() {

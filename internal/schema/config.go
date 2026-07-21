@@ -410,6 +410,15 @@ func (c *OwnbaseConfig) Validate() error {
 		return err
 	}
 	for name, svc := range c.Services {
+		// Job containers compile to "ownbase-job-<job-name>" (see
+		// internal/compiler) so reconcile can tell them apart from
+		// long-running service containers ("ownbase-<service-name>") by name
+		// prefix alone. A service named "job-*" would compile to that same
+		// "ownbase-job-*" prefix, get misclassified as a scheduled job, and
+		// never be started by reconcile.
+		if strings.HasPrefix(name, "job-") {
+			return fmt.Errorf("service %q: service names may not start with %q (reserved for scheduled jobs)", name, "job-")
+		}
 		if err := svc.validate(name, c.Services); err != nil {
 			return err
 		}

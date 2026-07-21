@@ -141,3 +141,40 @@ func TestAnnotateSecretsFingerprints(t *testing.T) {
 		t.Error("fingerprint must change after the secrets file changes")
 	}
 }
+
+// TestAnnotateSecretsFingerprints_Job verifies a job container's fingerprint
+// covers both the referenced service's secrets file and the job's own — keyed
+// by the bare job name ("nightly-ingest.yaml.age"), matching what
+// `ownbasectl secrets set <base> nightly-ingest ...` actually writes, never
+// "job-nightly-ingest.yaml.age" (the literal name-minus-"ownbase-" prefix).
+func TestAnnotateSecretsFingerprints_Job(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "api.yaml.age"), []byte("api-v1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "nightly-ingest.yaml.age"), []byte("job-v1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	jobUnit := "[Container]\nImage=x\n# JobService=api\n"
+	units := map[string]string{"ownbase-job-nightly-ingest.container": jobUnit}
+	annotateSecretsFingerprints(units, dir)
+
+	first := units["ownbase-job-nightly-ingest.container"]
+	if !strings.Contains(first, secretsFingerprintPrefix) {
+		t.Fatalf("job unit missing secrets fingerprint:\n%s", first)
+	}
+
+	// Changing only the job's own secrets file (not the service's) must
+	// still change the fingerprint — this is the exact bug the "job-"
+	// prefix mixup masked, since it read a nonexistent file and silently
+	// contributed nothing to the hash.
+	if err := os.WriteFile(filepath.Join(dir, "nightly-ingest.yaml.age"), []byte("job-v2"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	units2 := map[string]string{"ownbase-job-nightly-ingest.container": jobUnit}
+	annotateSecretsFingerprints(units2, dir)
+	if units2["ownbase-job-nightly-ingest.container"] == first {
+		t.Error("fingerprint must change after the job's own secrets file changes")
+	}
+}

@@ -344,7 +344,13 @@ func (p *Applier) injectSecrets(containerName, unitFilename, unitContent string)
 
 	sources := []string{service}
 	if jobService := parseQuadletComment("JobService", unitContent); jobService != "" {
-		sources = []string{jobService, service}
+		// service (derived by trimming only "ownbase-") is "job-<name>" for a
+		// job container, which is never the actual secrets-file key — jobs'
+		// own secrets are set via `ownbasectl secrets set <base> <job-name>`,
+		// i.e. <job-name>.yaml.age with no "job-" prefix. Trim the full job
+		// unit prefix to recover the bare job name instead.
+		jobName := strings.TrimPrefix(containerName, jobUnitPrefix)
+		sources = []string{jobService, jobName}
 	}
 
 	merged := make(map[string]string)
