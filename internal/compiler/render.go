@@ -35,6 +35,11 @@ func render(model RuntimeModel) RuntimeOutput {
 		out.QuadletUnits[filename] = renderVolume(vol)
 	}
 
+	for _, t := range model.Timers {
+		filename := fmt.Sprintf("%s.timer", t.Name)
+		out.QuadletUnits[filename] = renderTimer(t)
+	}
+
 	out.Caddyfile = renderCaddyfile(model.Routes, model.ACMEEmail)
 	out.ComposeFile = renderCompose(model)
 
@@ -65,6 +70,12 @@ func renderContainer(c ContainerModel) string {
 	// Named volume mounts.
 	for _, vm := range c.VolumeMounts {
 		fmt.Fprintf(&b, "Volume=%s:%s\n", vm.VolumeName, vm.MountPath)
+	}
+
+	// Command override (job containers only) — Quadlet's Exec= replaces the
+	// image's default entrypoint/cmd for this unit.
+	if len(c.Command) > 0 {
+		fmt.Fprintf(&b, "Exec=%s\n", strings.Join(quoteExecArgs(c.Command), " "))
 	}
 
 	// Direct-to-container loopback publish. Two independent things dial
@@ -104,6 +115,13 @@ func renderContainer(c ContainerModel) string {
 		fmt.Fprintf(&b, "# Requires=%s\n", strings.Join(c.Requires, ","))
 	}
 
+	// Job provenance — the applier reads this to also decrypt and inject the
+	// referenced service's secrets file alongside the job's own, so a job
+	// reuses the service's DB/API credentials without redeclaring them.
+	if c.JobService != "" {
+		fmt.Fprintf(&b, "# JobService=%s\n", c.JobService)
+	}
+
 	// Build provenance — the agent reads these to know where to build from.
 	// Omitted for image-bundled core packages (no build step).
 	if !c.IsImageBundled {
@@ -138,19 +156,51 @@ func renderContainer(c ContainerModel) string {
 	}
 
 	b.WriteString("\n[Service]\n")
-	b.WriteString("Restart=always\n")
-	// Core packages (image-bundled, large pulls) get a longer start timeout.
-	// User services build from localhost and start quickly.
-	if c.IsImageBundled {
-		b.WriteString("TimeoutStartSec=120\n")
+	if c.IsJob {
+		// A job runs once per timer activation and must exit cleanly — the
+		// opposite of a long-running service. Restart=always here would
+		// crash-loop the job forever the instant it exits 0; Type=oneshot
+		// tells systemd (and Quadlet's generated ExecStart) that a clean
+		// exit is success, not a crash to recover from. No TimeoutStartSec:
+		// a feed ingest can legitimately run far longer than a service's
+		// 30s startup budget.
+		b.WriteString("Type=oneshot\n")
+		b.WriteString("Restart=no\n")
 	} else {
-		b.WriteString("TimeoutStartSec=30\n")
+		b.WriteString("Restart=always\n")
+		// Core packages (image-bundled, large pulls) get a longer start timeout.
+		// User services build from localhost and start quickly.
+		if c.IsImageBundled {
+			b.WriteString("TimeoutStartSec=120\n")
+		} else {
+			b.WriteString("TimeoutStartSec=30\n")
+		}
 	}
 
-	b.WriteString("\n[Install]\n")
-	b.WriteString("WantedBy=default.target\n")
+	// Jobs are never enabled into default.target — they must only ever run
+	// when their companion .timer fires (or on a manual `systemctl start`),
+	// never automatically at boot the way a long-running service should be.
+	if !c.IsJob {
+		b.WriteString("\n[Install]\n")
+		b.WriteString("WantedBy=default.target\n")
+	}
 
 	return b.String()
+}
+
+// quoteExecArgs double-quotes any argument containing whitespace so
+// systemd's Exec= parser (which, like Environment=, splits on unquoted
+// whitespace) treats it as a single argument instead of splitting it.
+func quoteExecArgs(args []string) []string {
+	out := make([]string, len(args))
+	for i, a := range args {
+		if strings.ContainsAny(a, " \t") {
+			out[i] = fmt.Sprintf("%q", a)
+		} else {
+			out[i] = a
+		}
+	}
+	return out
 }
 
 func renderNetwork(net NetworkModel) string {
@@ -168,6 +218,32 @@ func renderVolume(vol VolumeModel) string {
 	b.WriteString(generatedHeader)
 	b.WriteString("\n[Volume]\n")
 	fmt.Fprintf(&b, "# OwnBase data volume: %s\n", vol.Name)
+	return b.String()
+}
+
+// renderTimer produces a native systemd .timer unit (not a Quadlet type —
+// Quadlet only generates .service units from .container/.network/.volume; a
+// timer that activates one of those generated services must be hand-authored
+// text, installed directly into the systemd unit directory rather than the
+// Quadlet directory — see internal/podman's installedTimerDir).
+func renderTimer(t TimerModel) string {
+	var b strings.Builder
+	b.WriteString(generatedHeader)
+
+	b.WriteString("\n[Unit]\n")
+	fmt.Fprintf(&b, "Description=OwnBase job timer: %s\n", t.Name)
+
+	b.WriteString("\n[Timer]\n")
+	fmt.Fprintf(&b, "OnCalendar=%s\n", t.OnCalendar)
+	fmt.Fprintf(&b, "Persistent=%t\n", t.Persistent)
+	// Quadlet names the generated service after the .container basename
+	// verbatim (foo.container → foo.service), so the timer's implicit
+	// "Unit=" target (systemd defaults to "<timer-basename>.service") already
+	// matches without an explicit Unit= line.
+
+	b.WriteString("\n[Install]\n")
+	b.WriteString("WantedBy=timers.target\n")
+
 	return b.String()
 }
 

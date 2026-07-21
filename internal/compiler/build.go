@@ -43,6 +43,29 @@ func build(in Input) RuntimeModel {
 		}
 	}
 
+	// Jobs reuse an existing service's image/networks/env — they never get
+	// their own capability network or volume, so they are built after the
+	// services loop above (which already created the referenced service's
+	// network) and appended directly to Containers/Timers without touching
+	// Networks/Volumes.
+	jobNames := sortedKeys(in.Config.Jobs)
+	for _, name := range jobNames {
+		job := in.Config.Jobs[name]
+		svc, ok := in.Config.Services[job.Service]
+		if !ok {
+			// schema.Validate already guarantees job.Service matches a
+			// services: key, so this is unreachable outside of tests that
+			// build a RuntimeModel directly from an unvalidated config.
+			continue
+		}
+		model.Containers = append(model.Containers, buildJobContainer(name, job, svc))
+		model.Timers = append(model.Timers, TimerModel{
+			Name:       fmt.Sprintf("ownbase-job-%s", name),
+			OnCalendar: job.Schedule,
+			Persistent: job.EffectivePersistent(),
+		})
+	}
+
 	// All containers also join the shared internal management network.
 	// Ensure the corresponding .network Quadlet file is generated.
 	if len(model.Containers) > 0 && !hasNetwork(model.Networks, "ownbase-internal") {
@@ -170,6 +193,50 @@ func buildContainer(name string, svc schema.ServiceDecl) ContainerModel {
 		c.SecurityOpts = make([]string, len(svc.SecurityOpt))
 		copy(c.SecurityOpts, svc.SecurityOpt)
 	}
+
+	return c
+}
+
+// buildJobContainer compiles one jobs: entry into a ContainerModel. It reuses
+// buildContainer for the referenced service to inherit the exact same image
+// reference, networks, and hardening (user/capabilities/security-opt) the
+// service itself gets, then overrides the pieces that make it a job: a
+// distinct "ownbase-job-<name>" container name, no build step of its own (the
+// service's own build produces the image), no Caddy route/tunnel port/health
+// probe (jobs are not servers), no volume mounts (v1 jobs are ephemeral —
+// see JobDecl doc comment), and job env layered after the service's own env:.
+func buildJobContainer(name string, job schema.JobDecl, svc schema.ServiceDecl) ContainerModel {
+	c := buildContainer(job.Service, svc)
+	c.Name = fmt.Sprintf("ownbase-job-%s", name)
+	c.IsJob = true
+	c.JobService = job.Service
+	c.Command = job.Command
+
+	env := make([]string, 0, len(svc.Env)+len(job.Env))
+	env = append(env, svc.Env...)
+	env = append(env, job.Env...)
+	c.Env = env
+
+	// A job's image comes entirely from its service's own build, so the job
+	// unit itself carries no build provenance.
+	c.BuildSource = ""
+	c.BuildRef = ""
+	c.BuildDockerfile = ""
+	c.BuildContext = ""
+
+	// Jobs are never servers: no Caddy route, no tunnel/loopback publish, no
+	// health probe (waitForContainer would otherwise wait for a HTTP 2xx that
+	// a batch script never serves). TunnelPort is left at its zero value —
+	// build() only assigns one to services in schema.TunnelPorts(), which
+	// jobs are not part of.
+	c.PublicDomains = nil
+	c.PublicPort = 0
+	c.HealthProbe = nil
+
+	// v1 jobs don't get volume mounts — reusing the service's own data volume
+	// here would mount it into a second container unexpectedly. Add
+	// volumes: support to JobDecl if a job later needs durable storage.
+	c.VolumeMounts = nil
 
 	return c
 }

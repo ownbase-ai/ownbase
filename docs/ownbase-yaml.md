@@ -59,6 +59,15 @@ services:
     user: "1000" # UID/username to run as; empty = image default
     add_capabilities: # caps to restore after DropCapability=ALL
       - NET_BIND_SERVICE # only set when the service genuinely needs them
+
+jobs:
+  <name>:
+    service: <services-key> # required; reuses that service's image, networks, secrets
+    command: ["python", "scripts/nightly_ingest.py"] # required; overrides the image's entrypoint/cmd
+    schedule: "*-*-* 08:00:00 UTC" # required; systemd OnCalendar expression, e.g. "daily"
+    env: # optional; appended after the referenced service's own env:
+      - EXTRA_FLAG=1
+    # persistent: true  # optional, default true — run once on boot if a scheduled run was missed
 ```
 
 ## The no-registry rule
@@ -157,6 +166,34 @@ ownbasectl secrets get mybase myapp DB_URL
 ```
 
 The age private key (`/opt/ownbase/age/key.age`) never leaves the Base; plaintext values travel only inside the SSH tunnel between `ownbasectl` and the daemon. There is one age recipient per Base — no multi-key sharing, no external KMS. This is a deliberate simplicity choice over formats like `sops`: the file is opaque as a whole (no per-field structure to inspect), which is sufficient because the daemon is the only consumer and rotation just re-encrypts the (small) file.
+
+## Scheduled jobs: `jobs:`
+
+A job runs a command on a recurring schedule — a nightly feed import, a periodic cleanup script — by reusing an existing service's already-built image rather than declaring (and building) anything of its own:
+
+```yaml
+services:
+  api:
+    repo: git@github.com:org/api.git
+    port: 8000
+    domain: api.example.com
+
+jobs:
+  nightly-ingest:
+    service: api # must match a services: key
+    command: ["python", "scripts/nightly_ingest.py", "--region", "mx"]
+    schedule: "*-*-* 08:00:00 UTC" # systemd OnCalendar — see systemd.time(7)
+    env:
+      - REVOLVE_FEED_URL_MX=https://example.com/feed.csv
+```
+
+- **Image, networks, and hardening come from `service:`.** The job runs `localhost/ownbase-<service>:local` — the exact image the service itself runs — on the same capability networks, so it can reach the service's own dependencies (e.g. Postgres) by hostname. It never triggers a build of its own.
+- **`command:` replaces the image's entrypoint/cmd** for this run only; the service container itself is unaffected.
+- **`env:` is appended after the service's own `env:`,** and a job's own secrets (`ownbasectl secrets set <base> <job-name> ...`) are merged on top of the referenced service's secrets, so a job automatically inherits the service's DB/API credentials and can override any individual one without redeclaring the rest.
+- **`schedule:` is a systemd `OnCalendar` expression** (`daily`, `"*-*-* 08:00:00 UTC"`, `"Mon..Fri *-*-* 09:00:00"`, ...). The compiler renders it into a native systemd `.timer` unit — installed to the host's systemd unit directory, not the Quadlet directory, since a timer isn't a Quadlet type — that activates the job's oneshot container on that schedule.
+- **Jobs are never started by reconcile itself.** A job container compiles with `Type=oneshot`, `Restart=no`, and no `[Install]` section, and reconcile only ever (re)installs the unit file — the timer (or a manual `systemctl start ownbase-job-<name>.service` on the Base) is the only thing that actually runs it. This is deliberate: unlike a long-running service, "not currently running" is a job's normal resting state between activations, not a failure to correct.
+- **v1 jobs get no volume mounts.** A job is expected to be a stateless batch/script; if it needs durable storage, mount it on the referenced service instead.
+- **Status:** `ownbasectl status <base>` shows each job's schedule, whether its timer is enabled, and the last run's outcome (`ownbase_status.jobs[]` in the JSON API).
 
 ## Integrating a new service (the black-box contract)
 

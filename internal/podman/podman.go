@@ -50,6 +50,12 @@ type Applier struct {
 	// Defaults to ~/.config/containers/systemd.
 	QuadletDir string
 
+	// TimerDir is the directory where native systemd .timer unit files for
+	// scheduled jobs are installed. Defaults to /etc/systemd/system (root) or
+	// ~/.config/systemd/user (rootless) — deliberately distinct from
+	// QuadletDir; see SystemTimerDir's doc comment for why.
+	TimerDir string
+
 	// RuntimeDir is the checkout's runtime/ tracking directory. When set,
 	// applied unit files and the Caddyfile are mirrored here so the drift
 	// detector sees them on the next reconcile tick.
@@ -76,6 +82,14 @@ func (p *Applier) quadletDir() string {
 	}
 	home, _ := os.UserHomeDir()
 	return quadletDirFor(isRoot(), home)
+}
+
+func (p *Applier) timerDir() string {
+	if p.TimerDir != "" {
+		return p.TimerDir
+	}
+	home, _ := os.UserHomeDir()
+	return timerDirFor(isRoot(), home)
 }
 
 // isRoot reports whether the agent is running as root. When root, Quadlet
@@ -128,6 +142,10 @@ func (p *Applier) start(a reconcile.PlannedAction) error {
 	}
 	if a.UnitContent == "" {
 		return fmt.Errorf("start %q: no unit content in planned action", a.Action.Target)
+	}
+
+	if strings.HasSuffix(a.UnitFilename, ".timer") {
+		return p.startTimer(a)
 	}
 
 	// For source-built containers, build the image from the local bare repo
@@ -183,12 +201,67 @@ func (p *Applier) start(a reconcile.PlannedAction) error {
 		return nil
 	}
 
+	if strings.HasPrefix(a.UnitFilename, jobUnitPrefix) {
+		// Job containers are never started by reconcile itself — only their
+		// companion .timer (installed by startTimer) or a manual
+		// `systemctl start` invokes them. Installing the unit + reloading
+		// systemd above is the entire job; there is nothing further to do
+		// (and no "running" state to wait for — waitForContainer would just
+		// time out waiting for a container that, by design, isn't started).
+		return nil
+	}
+
 	svc := unitToService(a.UnitFilename)
 	if err := systemctl("start", svc); err != nil {
 		return fmt.Errorf("start %s: %w", svc, err)
 	}
 
 	return waitForContainer(a.Action.Target, a.UnitContent, 90*time.Second)
+}
+
+// startTimer installs a native systemd .timer unit and enables it — the
+// timer's own [Install] WantedBy=timers.target line is what makes `enable`
+// meaningful here, in contrast to .container/.network/.volume Quadlet units,
+// which are never `enable`d (see the package doc comment on start()).
+// "--now" both enables (persists across reboots) and starts the timer in one
+// step, matching the "immediately effective" semantics every other action in
+// this Applier has.
+func (p *Applier) startTimer(a reconcile.PlannedAction) error {
+	if err := p.writeTimerUnit(a.UnitFilename, a.UnitContent); err != nil {
+		return err
+	}
+	if err := reloadSystemd(); err != nil {
+		return fmt.Errorf("daemon-reload after installing %s: %w", a.UnitFilename, err)
+	}
+	if err := systemctl("enable", "--now", a.UnitFilename); err != nil {
+		return fmt.Errorf("enable --now %s: %w", a.UnitFilename, err)
+	}
+	return nil
+}
+
+// writeTimerUnit installs a .timer file into the native systemd unit
+// directory (timerDir, NOT quadletDir — see SystemTimerDir's doc comment)
+// and mirrors it into RuntimeDir for drift tracking, exactly like writeUnit
+// does for Quadlet units.
+func (p *Applier) writeTimerUnit(unitFilename, content string) error {
+	dst := filepath.Join(p.timerDir(), unitFilename)
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return fmt.Errorf("mkdir timer dir: %w", err)
+	}
+	if err := os.WriteFile(dst, []byte(content), 0o644); err != nil {
+		return fmt.Errorf("write timer unit %s: %w", dst, err)
+	}
+
+	if p.RuntimeDir != "" {
+		rtDst := filepath.Join(p.RuntimeDir, unitFilename)
+		if err := os.MkdirAll(p.RuntimeDir, 0o755); err != nil {
+			return fmt.Errorf("mkdir runtime dir: %w", err)
+		}
+		if err := os.WriteFile(rtDst, []byte(content), 0o644); err != nil {
+			return fmt.Errorf("write runtime mirror %s: %w", rtDst, err)
+		}
+	}
+	return nil
 }
 
 // writeUnit installs the unit file into the live Quadlet directory and mirrors
@@ -246,6 +319,18 @@ func (p *Applier) writeUnit(unitFilename, diskContent, mirrorContent string) err
 //
 // When no secrets file exists (the common case) the unit content is returned
 // unchanged, so services without secrets are entirely unaffected.
+// injectSecrets normally loads exactly one secrets file, named after the
+// container's own service. Job containers (see the # JobService= provenance
+// comment emitted by internal/compiler's renderContainer) additionally
+// inherit the referenced service's secrets — e.g. DB/API credentials — so a
+// job doesn't need its credentials redeclared. Sources are loaded in
+// [referenced service, job's own name] order and merged key-by-key, so the
+// job's own secrets file (same <name>.yaml.age convention as any service,
+// set via `ownbasectl secrets set <base> <job-name> ...`) can override a
+// specific credential without duplicating the rest. All merged secrets are
+// registered as Podman secrets namespaced under the job's own name, keeping
+// them isolated from the service's own Podman secrets even though the
+// plaintext values may be identical.
 func (p *Applier) injectSecrets(containerName, unitFilename, unitContent string) (string, error) {
 	if !strings.HasSuffix(unitFilename, ".container") {
 		return unitContent, nil
@@ -256,32 +341,50 @@ func (p *Applier) injectSecrets(containerName, unitFilename, unitContent string)
 	if secretsDir == "" {
 		secretsDir = "/opt/ownbase/secrets"
 	}
-	secretsFile := filepath.Join(secretsDir, service+".yaml.age")
-	if _, err := os.Stat(secretsFile); err != nil {
-		if os.IsNotExist(err) {
-			return unitContent, nil
-		}
-		return "", fmt.Errorf("stat secrets file %s: %w", secretsFile, err)
+
+	sources := []string{service}
+	if jobService := parseQuadletComment("JobService", unitContent); jobService != "" {
+		// service (derived by trimming only "ownbase-") is "job-<name>" for a
+		// job container, which is never the actual secrets-file key — jobs'
+		// own secrets are set via `ownbasectl secrets set <base> <job-name>`,
+		// i.e. <job-name>.yaml.age with no "job-" prefix. Trim the full job
+		// unit prefix to recover the bare job name instead.
+		jobName := strings.TrimPrefix(containerName, jobUnitPrefix)
+		sources = []string{jobService, jobName}
 	}
 
-	values, err := secrets.IssueMap(secrets.FileKeyCustody{Path: p.AgeKeyPath}, secretsFile)
-	if err != nil {
-		return "", fmt.Errorf("decrypt secrets for %s: %w", service, err)
+	merged := make(map[string]string)
+	for _, src := range sources {
+		secretsFile := filepath.Join(secretsDir, src+".yaml.age")
+		if _, err := os.Stat(secretsFile); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return "", fmt.Errorf("stat secrets file %s: %w", secretsFile, err)
+		}
+
+		values, err := secrets.IssueMap(secrets.FileKeyCustody{Path: p.AgeKeyPath}, secretsFile)
+		if err != nil {
+			return "", fmt.Errorf("decrypt secrets for %s: %w", src, err)
+		}
+		for k, v := range values {
+			merged[k] = v
+		}
 	}
-	if len(values) == 0 {
+	if len(merged) == 0 {
 		return unitContent, nil
 	}
 
 	// Register each value as a Podman secret (sorted for deterministic output)
 	// and reference it from the unit. The plaintext is passed to Podman over
 	// stdin — it is never written to disk by ownbase.
-	keys := make([]string, 0, len(values))
-	for k := range values {
+	keys := make([]string, 0, len(merged))
+	for k := range merged {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		if err := createPodmanSecret(podmanSecretName(service, k), values[k]); err != nil {
+		if err := createPodmanSecret(podmanSecretName(service, k), merged[k]); err != nil {
 			return "", err
 		}
 	}
@@ -349,6 +452,20 @@ func (p *Applier) stopAndRemoveUnit(unitFilename string) error {
 		return nil
 	}
 
+	if strings.HasSuffix(unitFilename, ".timer") {
+		_ = systemctl("disable", "--now", unitFilename) // best-effort; ignore "unit not found"
+
+		dst := filepath.Join(p.timerDir(), unitFilename)
+		if err := os.Remove(dst); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove timer unit %s: %w", dst, err)
+		}
+		if p.RuntimeDir != "" {
+			rtDst := filepath.Join(p.RuntimeDir, unitFilename)
+			_ = os.Remove(rtDst) // best-effort; file may not exist
+		}
+		return reloadSystemd()
+	}
+
 	if strings.HasSuffix(unitFilename, ".container") {
 		svc := unitToService(unitFilename)
 		_ = systemctl("stop", svc) // best-effort; ignore "unit not found"
@@ -393,6 +510,10 @@ func (p *Applier) restart(a reconcile.PlannedAction) error {
 		return fmt.Errorf("restart %q: no unit content in planned action", a.Action.Target)
 	}
 
+	if strings.HasSuffix(a.UnitFilename, ".timer") {
+		return p.restartTimer(a)
+	}
+
 	// Rebuild the image if this is a source-built container. Unlike start,
 	// restart is triggered by unit content changes (env vars, ref updates) so
 	// we must rebuild to pick up any ref change before restarting.
@@ -420,12 +541,36 @@ func (p *Applier) restart(a reconcile.PlannedAction) error {
 		return fmt.Errorf("daemon-reload before restart of %s: %w", a.UnitFilename, err)
 	}
 
+	if strings.HasPrefix(a.UnitFilename, jobUnitPrefix) {
+		// Same reasoning as start(): a job container's unit content changing
+		// (e.g. a new command: or env:) just needs reinstalling on disk; it
+		// must not be run outside of its schedule just because reconcile
+		// happened to notice the change.
+		return nil
+	}
+
 	svc := unitToService(a.UnitFilename)
 	if err := systemctl("restart", svc); err != nil {
 		return fmt.Errorf("restart %s: %w", svc, err)
 	}
 
 	return waitForContainer(a.Action.Target, a.UnitContent, 90*time.Second)
+}
+
+// restartTimer reinstalls a .timer unit whose schedule/content changed and
+// restarts it so the new OnCalendar takes effect immediately, rather than
+// waiting for the timer's next natural elapse to notice the unit file moved.
+func (p *Applier) restartTimer(a reconcile.PlannedAction) error {
+	if err := p.writeTimerUnit(a.UnitFilename, a.UnitContent); err != nil {
+		return err
+	}
+	if err := reloadSystemd(); err != nil {
+		return fmt.Errorf("daemon-reload before restart of %s: %w", a.UnitFilename, err)
+	}
+	if err := systemctl("restart", a.UnitFilename); err != nil {
+		return fmt.Errorf("restart %s: %w", a.UnitFilename, err)
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------

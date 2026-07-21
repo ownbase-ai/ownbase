@@ -7,6 +7,10 @@ type RuntimeModel struct {
 	Networks   []NetworkModel
 	Volumes    []VolumeModel
 	Routes     []RouteModel
+	// Timers holds one entry per scheduled job (jobs: in ownbase.yaml). Each
+	// timer activates the Quadlet-generated .service for the job container of
+	// the same name in Containers.
+	Timers []TimerModel
 	// ACMEEmail is propagated from core.caddy.email when a public domain is
 	// configured. When non-empty, renderCaddyfile emits a global Caddy block
 	// with the email so Let's Encrypt can provision TLS certificates.
@@ -116,6 +120,26 @@ type ContainerModel struct {
 	// Example: ["apparmor=unconfined"] for postgres which needs inter-process
 	// signaling between its child daemons (checkpointer, bgwriter, etc.).
 	SecurityOpts []string
+
+	// IsJob marks a container compiled from a jobs: entry rather than a
+	// services: entry. Job containers render with [Service] Type=oneshot,
+	// Restart=no, no PublishPort, no health probe, and no [Install] section
+	// — they are activated solely by a companion TimerModel/.timer unit, and
+	// reconcile.Diff never plans a start/restart for them based on
+	// "container not running" (see isJobContainer), since a oneshot job is
+	// expected to be not-running almost all the time.
+	IsJob bool
+
+	// JobService is the schema.JobDecl.Service this job reuses the image,
+	// networks, and secrets of. Empty for non-job containers. Emitted as a
+	// "# JobService=" provenance comment so the applier knows which
+	// service's secrets file to merge in alongside the job's own (see
+	// internal/podman's injectSecrets).
+	JobService string
+
+	// Command overrides the image's default entrypoint/cmd via Quadlet's
+	// Exec=. Only set (and only meaningful) for job containers.
+	Command []string
 }
 
 // VolumeMount binds a named Podman volume to a path inside a container.
@@ -147,4 +171,26 @@ type VolumeModel struct {
 type RouteModel struct {
 	Host     string
 	Upstream string
+}
+
+// TimerModel represents one companion systemd .timer unit that periodically
+// activates a job container's Quadlet-generated .service. Unlike .container/
+// .network/.volume, a .timer is a native systemd unit type, not a Quadlet
+// type — it is installed to the systemd unit directory
+// (/etc/systemd/system or ~/.config/systemd/user), not the Quadlet
+// directory. See internal/podman's installedTimerDir / applier timer
+// handling.
+type TimerModel struct {
+	// Name matches the job container's name, e.g. "ownbase-job-nightly-ingest".
+	// The rendered file is "<Name>.timer" and (once installed) activates the
+	// Quadlet-generated "<Name>.service".
+	Name string
+
+	// OnCalendar is the systemd calendar expression (schema.JobDecl.Schedule),
+	// e.g. "daily" or "*-*-* 08:00:00 UTC".
+	OnCalendar string
+
+	// Persistent mirrors schema.JobDecl.EffectivePersistent(): when true, a
+	// run missed while the Base was powered off fires once on the next boot.
+	Persistent bool
 }

@@ -1,0 +1,11 @@
+schema_version: v1
+
+services:
+  api:
+    repo: https://github.com/example/api.git
+    port: 8000
+
+jobs:
+  nightly-ingest:
+    service: api
+    command: ["python", "scripts/nightly_ingest.py"]

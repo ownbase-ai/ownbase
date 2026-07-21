@@ -191,6 +191,69 @@ func TestParsePublishPort_Absent(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// timerDirFor — root-aware native systemd timer install directory
+// ---------------------------------------------------------------------------
+
+func TestTimerDirFor_Root(t *testing.T) {
+	got := timerDirFor(true, "/root")
+	if got != SystemTimerDir {
+		t.Errorf("timerDirFor(root) = %q, want %q", got, SystemTimerDir)
+	}
+	// Home is irrelevant when root.
+	if got := timerDirFor(true, "/home/ownbase"); got != SystemTimerDir {
+		t.Errorf("timerDirFor(root, home) = %q, want %q (home must be ignored)", got, SystemTimerDir)
+	}
+}
+
+func TestTimerDirFor_NonRoot(t *testing.T) {
+	got := timerDirFor(false, "/home/ownbase")
+	want := "/home/ownbase/" + TimerUserDir
+	if got != want {
+		t.Errorf("timerDirFor(non-root) = %q, want %q", got, want)
+	}
+}
+
+func TestTimerDirFor_NonRootEmptyHome(t *testing.T) {
+	got := timerDirFor(false, "")
+	want := "/root/" + TimerUserDir
+	if got != want {
+		t.Errorf("timerDirFor(non-root, empty home) = %q, want %q", got, want)
+	}
+}
+
+func TestTimerDirFor_DistinctFromQuadletDir(t *testing.T) {
+	// SystemTimerDir/TimerUserDir must never collide with
+	// SystemQuadletDir/QuadletUserDir — a .timer is not a Quadlet type and
+	// must not be written into the Quadlet directory.
+	if timerDirFor(true, "/root") == quadletDirFor(true, "/root") {
+		t.Error("timerDirFor(root) must differ from quadletDirFor(root)")
+	}
+	if timerDirFor(false, "/home/ownbase") == quadletDirFor(false, "/home/ownbase") {
+		t.Error("timerDirFor(non-root) must differ from quadletDirFor(non-root)")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// isOwnbaseTimerFile — scopes the shared systemd unit dir to ownbase's own files
+// ---------------------------------------------------------------------------
+
+func TestIsOwnbaseTimerFile(t *testing.T) {
+	cases := map[string]bool{
+		"ownbase-job-nightly-ingest.timer":   true,
+		"ownbase-job-cleanup.timer":          true,
+		"apt-daily.timer":                    false,
+		"fstrim.timer":                       false,
+		"ownbase-api.container":              false,
+		"ownbase-job-nightly-ingest.service": false,
+	}
+	for name, want := range cases {
+		if got := isOwnbaseTimerFile(name); got != want {
+			t.Errorf("isOwnbaseTimerFile(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
 // TestParsePublishPort_DifferingHostAndContainerPorts is a regression test
 // for the normal case since the dev-bridge port decoupling: the host
 // (loopback) port and the container port are no longer required to match.

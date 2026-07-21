@@ -96,6 +96,42 @@ func printStatusSummary(base string, body []byte) error {
 		}
 	}
 
+	if jobs, ok := s["jobs"].([]any); ok && len(jobs) > 0 {
+		fmt.Println()
+		fmt.Println("  Jobs:")
+		for _, raw := range jobs {
+			job, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			name, _ := job["name"].(string)
+			service, _ := job["service"].(string)
+			schedule, _ := job["schedule"].(string)
+			timerEnabled, _ := job["timer_enabled"].(bool)
+			lastResult, _ := job["last_result"].(string)
+			nextRun, _ := job["next_run"].(string)
+			lastRun, _ := job["last_run"].(string)
+
+			status := "✗ timer not enabled"
+			if timerEnabled {
+				status = "✓ scheduled"
+			}
+			line := fmt.Sprintf("    %-20s  %s  (%s, reuses %s)", name, status, schedule, service)
+			fmt.Println(line)
+
+			if lastRun != "" {
+				result := lastResult
+				if result == "" {
+					result = "unknown"
+				}
+				fmt.Printf("    %20s    last run: %s (%s)\n", "", shortTime(lastRun), result)
+			}
+			if nextRun != "" {
+				fmt.Printf("    %20s    next run: %s\n", "", shortTime(nextRun))
+			}
+		}
+	}
+
 	fmt.Println()
 	fmt.Println("  Security:")
 	if sec, ok := s["security"].(map[string]any); ok {

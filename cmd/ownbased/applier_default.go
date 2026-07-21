@@ -53,3 +53,7 @@ func applierMode(_ reconcile.Applier) string {
 // The reconcile loop treats an empty string as "no quadlet dir available"
 // and skips the on-disk installed-units check.
 func installedQuadletDir() string { return "" }
+
+// installedTimerDir mirrors installedQuadletDir for the native systemd timer
+// directory in noop/dev builds.
+func installedTimerDir() string { return "" }

@@ -18,6 +18,7 @@ func TestParseConfig_ValidFixtures(t *testing.T) {
 	fixtures := []string{
 		"../../testdata/minimal/ownbase.yaml",
 		"../../testdata/valid/full-config.yaml",
+		"../../testdata/valid/jobs.yaml",
 	}
 	for _, path := range fixtures {
 		t.Run(filepath.Base(filepath.Dir(path)), func(t *testing.T) {
@@ -48,6 +49,9 @@ func TestParseConfig_InvalidFixtures(t *testing.T) {
 		{"repo-not-url.yaml", "repo must be a git URL"},
 		{"missing-capability-provider.yaml", "capability"},
 		{"unknown-field.yaml", "unexpected_field"},
+		{"job-unknown-service.yaml", `service "does-not-exist" does not match any service key`},
+		{"job-missing-command.yaml", "command is required"},
+		{"job-missing-schedule.yaml", "schedule is required"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.file, func(t *testing.T) {
@@ -201,6 +205,127 @@ func TestParseConfig_RepoRequired(t *testing.T) {
 		t.Error("expected error for service with no repo")
 	} else if !strings.Contains(err.Error(), "repo is required") {
 		t.Errorf("error %q does not mention 'repo is required'", err.Error())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Jobs (scheduled)
+// ---------------------------------------------------------------------------
+
+func TestParseConfig_Jobs_ParsesFromFixture(t *testing.T) {
+	cfg, err := schema.ParseConfigFile("../../testdata/valid/jobs.yaml")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	job, ok := cfg.Jobs["nightly-ingest"]
+	if !ok {
+		t.Fatal("expected a \"nightly-ingest\" job")
+	}
+	if job.Service != "api" {
+		t.Errorf("Service = %q, want %q", job.Service, "api")
+	}
+	if job.Schedule != "*-*-* 08:00:00 UTC" {
+		t.Errorf("Schedule = %q", job.Schedule)
+	}
+	want := []string{"python", "scripts/nightly_ingest.py", "--region", "mx"}
+	if len(job.Command) != len(want) {
+		t.Fatalf("Command = %v, want %v", job.Command, want)
+	}
+	for i := range want {
+		if job.Command[i] != want[i] {
+			t.Errorf("Command[%d] = %q, want %q", i, job.Command[i], want[i])
+		}
+	}
+	if !job.EffectivePersistent() {
+		t.Error("expected EffectivePersistent() to default true when persistent: is unset")
+	}
+
+	cleanup, ok := cfg.Jobs["cleanup"]
+	if !ok {
+		t.Fatal("expected a \"cleanup\" job")
+	}
+	if cleanup.EffectivePersistent() {
+		t.Error("expected EffectivePersistent() to be false when persistent: false is set")
+	}
+}
+
+func TestJobDecl_Validate_ServiceRequired(t *testing.T) {
+	cfg := &schema.OwnbaseConfig{
+		SchemaVersion: "v1",
+		Services: map[string]schema.ServiceDecl{
+			"api": {Repo: "https://github.com/example/api.git"},
+		},
+		Jobs: map[string]schema.JobDecl{
+			"nightly": {Command: []string{"true"}, Schedule: "daily"},
+		},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for job with no service:, got nil")
+	} else if !strings.Contains(err.Error(), "service is required") {
+		t.Errorf("error %q does not mention 'service is required'", err.Error())
+	}
+}
+
+func TestJobDecl_Validate_NameCollidesWithService(t *testing.T) {
+	cfg := &schema.OwnbaseConfig{
+		SchemaVersion: "v1",
+		Services: map[string]schema.ServiceDecl{
+			"api": {Repo: "https://github.com/example/api.git"},
+		},
+		Jobs: map[string]schema.JobDecl{
+			"api": {Service: "api", Command: []string{"true"}, Schedule: "daily"},
+		},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for job name colliding with a service name, got nil")
+	} else if !strings.Contains(err.Error(), "collides with a service") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestJobDecl_Validate_UnknownService(t *testing.T) {
+	cfg := &schema.OwnbaseConfig{
+		SchemaVersion: "v1",
+		Services: map[string]schema.ServiceDecl{
+			"api": {Repo: "https://github.com/example/api.git"},
+		},
+		Jobs: map[string]schema.JobDecl{
+			"nightly": {Service: "ghost", Command: []string{"true"}, Schedule: "daily"},
+		},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for job referencing unknown service, got nil")
+	} else if !strings.Contains(err.Error(), `service "ghost" does not match any service key`) {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_ServiceNameWithJobPrefix_Rejected(t *testing.T) {
+	cfg := &schema.OwnbaseConfig{
+		SchemaVersion: "v1",
+		Services: map[string]schema.ServiceDecl{
+			"job-runner": {Repo: "https://github.com/example/api.git"},
+		},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for service name starting with \"job-\", got nil")
+	} else if !strings.Contains(err.Error(), `service names may not start with "job-"`) {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestJobDecl_EffectivePersistent_DefaultsTrue(t *testing.T) {
+	j := schema.JobDecl{}
+	if !j.EffectivePersistent() {
+		t.Error("expected EffectivePersistent() to default to true")
+	}
+}
+
+func TestJobDecl_EffectivePersistent_ExplicitFalse(t *testing.T) {
+	f := false
+	j := schema.JobDecl{Persistent: &f}
+	if j.EffectivePersistent() {
+		t.Error("expected EffectivePersistent() to honor an explicit false")
 	}
 }
 
