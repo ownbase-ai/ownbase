@@ -158,8 +158,14 @@ func QueryJobTimer(name string) JobTimerInfo {
 		info.Active = props["ActiveState"] == "active"
 		info.NextRun = parseSystemdTimestamp(props["NextElapseUSecRealtime"])
 	}
-	if props, err := systemctlShow(serviceUnit, "ActiveExitTimestamp", "Result"); err == nil {
-		info.LastRun = parseSystemdTimestamp(props["ActiveExitTimestamp"])
+	// ExecMainExitTimestamp (when the job's process exited), not
+	// ActiveExitTimestamp: a Type=oneshot unit with no RemainAfterExit=
+	// (job containers never set it — see compiler.renderContainer) goes
+	// activating→dead the instant its process exits, without ever entering
+	// the "active" state, so ActiveEnterTimestamp/ActiveExitTimestamp stay
+	// empty forever. Confirmed against a live run on the production Base.
+	if props, err := systemctlShow(serviceUnit, "ExecMainExitTimestamp", "Result"); err == nil {
+		info.LastRun = parseSystemdTimestamp(props["ExecMainExitTimestamp"])
 		// systemd defaults Result= to "success" for a loaded-but-never-run
 		// unit, so only report it once we know the job has actually run —
 		// otherwise a never-run job would misleadingly report LastResult
