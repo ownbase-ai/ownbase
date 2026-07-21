@@ -266,6 +266,23 @@ func TestJobDecl_Validate_ServiceRequired(t *testing.T) {
 	}
 }
 
+func TestJobDecl_Validate_NameCollidesWithService(t *testing.T) {
+	cfg := &schema.OwnbaseConfig{
+		SchemaVersion: "v1",
+		Services: map[string]schema.ServiceDecl{
+			"api": {Repo: "https://github.com/example/api.git"},
+		},
+		Jobs: map[string]schema.JobDecl{
+			"api": {Service: "api", Command: []string{"true"}, Schedule: "daily"},
+		},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for job name colliding with a service name, got nil")
+	} else if !strings.Contains(err.Error(), "collides with a service") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
 func TestJobDecl_Validate_UnknownService(t *testing.T) {
 	cfg := &schema.OwnbaseConfig{
 		SchemaVersion: "v1",

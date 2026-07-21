@@ -14,6 +14,7 @@ import (
 	"github.com/ownbase/ownbase/internal/backup"
 	"github.com/ownbase/ownbase/internal/explain"
 	"github.com/ownbase/ownbase/internal/reconcile"
+	"github.com/ownbase/ownbase/internal/runtime"
 	"github.com/ownbase/ownbase/internal/schema"
 )
 
@@ -108,6 +109,63 @@ func TestGather_Services_NotRunningWhenAbsent(t *testing.T) {
 	s := explain.Gather(explain.GatherInput{Config: cfg})
 	if s.Services[0].Running {
 		t.Error("service should be stopped when not in RunningContainers")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Gather — JobStatus
+// ---------------------------------------------------------------------------
+
+func TestGather_Jobs_NeverRun_OmitsLastResult(t *testing.T) {
+	cfg := &schema.OwnbaseConfig{
+		SchemaVersion: "v1",
+		Services: map[string]schema.ServiceDecl{
+			"api": {Repo: "https://github.com/example/api.git"},
+		},
+		Jobs: map[string]schema.JobDecl{
+			"nightly-ingest": {Service: "api", Command: []string{"true"}, Schedule: "daily"},
+		},
+	}
+	// A loaded-but-never-run timer/service: systemd would report
+	// Result="success" here even though the job has never run — Gather
+	// must not surface that misleading LastResult without a LastRun.
+	timers := map[string]runtime.JobTimerInfo{
+		"nightly-ingest": {Enabled: true, Active: true, LastResult: "success"},
+	}
+	s := explain.Gather(explain.GatherInput{Config: cfg, JobTimers: timers})
+	if len(s.Jobs) != 1 {
+		t.Fatalf("want 1 job, got %d", len(s.Jobs))
+	}
+	job := s.Jobs[0]
+	if job.LastRun != nil {
+		t.Errorf("LastRun = %v, want nil for a never-run job", job.LastRun)
+	}
+	if job.LastResult != "" {
+		t.Errorf("LastResult = %q, want empty for a never-run job", job.LastResult)
+	}
+}
+
+func TestGather_Jobs_HasRun_ReportsLastResult(t *testing.T) {
+	cfg := &schema.OwnbaseConfig{
+		SchemaVersion: "v1",
+		Services: map[string]schema.ServiceDecl{
+			"api": {Repo: "https://github.com/example/api.git"},
+		},
+		Jobs: map[string]schema.JobDecl{
+			"nightly-ingest": {Service: "api", Command: []string{"true"}, Schedule: "daily"},
+		},
+	}
+	ran := time.Date(2026, 7, 20, 8, 0, 0, 0, time.UTC)
+	timers := map[string]runtime.JobTimerInfo{
+		"nightly-ingest": {Enabled: true, LastRun: ran, LastResult: "success"},
+	}
+	s := explain.Gather(explain.GatherInput{Config: cfg, JobTimers: timers})
+	job := s.Jobs[0]
+	if job.LastRun == nil || !job.LastRun.Equal(ran) {
+		t.Errorf("LastRun = %v, want %v", job.LastRun, ran)
+	}
+	if job.LastResult != "success" {
+		t.Errorf("LastResult = %q, want %q", job.LastResult, "success")
 	}
 }
 

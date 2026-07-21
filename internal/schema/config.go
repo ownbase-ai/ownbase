@@ -480,6 +480,14 @@ func (s ServiceDecl) validate(name string, allServices map[string]ServiceDecl) e
 }
 
 func (j JobDecl) validate(name string, allServices map[string]ServiceDecl) error {
+	// Job secrets are stored at the same <name>.yaml.age path convention as
+	// service secrets (see internal/podman's injectSecrets). A job sharing a
+	// name with a service would silently read/overwrite that service's
+	// secrets file via `ownbasectl secrets set`, so the two namespaces must
+	// stay disjoint.
+	if _, ok := allServices[name]; ok {
+		return fmt.Errorf("job %q: name collides with a service of the same name (jobs and services share the secrets-file namespace)", name)
+	}
 	if strings.TrimSpace(j.Service) == "" {
 		return fmt.Errorf("job %q: service is required", name)
 	}

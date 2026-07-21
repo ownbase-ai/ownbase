@@ -160,7 +160,13 @@ func QueryJobTimer(name string) JobTimerInfo {
 	}
 	if props, err := systemctlShow(serviceUnit, "ActiveExitTimestamp", "Result"); err == nil {
 		info.LastRun = parseSystemdTimestamp(props["ActiveExitTimestamp"])
-		info.LastResult = props["Result"]
+		// systemd defaults Result= to "success" for a loaded-but-never-run
+		// unit, so only report it once we know the job has actually run —
+		// otherwise a never-run job would misleadingly report LastResult
+		// "success" alongside a zero LastRun.
+		if !info.LastRun.IsZero() {
+			info.LastResult = props["Result"]
+		}
 	}
 	return info
 }

@@ -135,8 +135,14 @@ func gatherJobs(cfg *schema.OwnbaseConfig, timers map[string]runtime.JobTimerInf
 			if !info.LastRun.IsZero() {
 				t := info.LastRun
 				js.LastRun = &t
+				// Defensive: only surface LastResult alongside a known
+				// LastRun. systemd defaults Result= to "success" for a
+				// loaded-but-never-run unit, so reporting it without a
+				// LastRun would contradict "empty LastResult means never
+				// run" even if a future JobTimerInfo producer forgot the
+				// same guard runtime.QueryJobTimer applies.
+				js.LastResult = info.LastResult
 			}
-			js.LastResult = info.LastResult
 		}
 		result = append(result, js)
 	}
