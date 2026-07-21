@@ -587,6 +587,18 @@ func run(cfg agentConfig) error {
 		}
 
 		backupStatus, _ := backup.LoadStatus(backup.DefaultStatusPath)
+
+		// One systemctl query per scheduled job — cheap (a handful of jobs at
+		// most) and, like runtime.QueryCurrentState, a no-op returning zero
+		// values when systemctl isn't present (dev/CI).
+		var jobTimers map[string]runtime.JobTimerInfo
+		if state.Config != nil && len(state.Config.Jobs) > 0 {
+			jobTimers = make(map[string]runtime.JobTimerInfo, len(state.Config.Jobs))
+			for name := range state.Config.Jobs {
+				jobTimers[name] = runtime.QueryJobTimer(name)
+			}
+		}
+
 		status := explain.Gather(explain.GatherInput{
 			Config:            state.Config,
 			RunningContainers: state.Current.RunningContainers,
@@ -596,6 +608,7 @@ func run(cfg agentConfig) error {
 			Exposure:          lastExposure,
 			Access:            lastAccess,
 			Vulns:             lastVulnStatus,
+			JobTimers:         jobTimers,
 		})
 		statusSrv.Update(status)
 	}
@@ -1038,6 +1051,20 @@ func reconcileLoop(
 		// Also include any network/volume units not yet in currentUnits
 		// (readRuntimeUnits only reads ownbase-prefixed files, which is correct).
 	}
+	if currentUnits == nil {
+		currentUnits = make(map[string]string)
+	}
+	// Scheduled-job timers live in the native systemd unit directory, not the
+	// Quadlet directory (see podman.SystemTimerDir), so they need their own
+	// read merged into currentUnits. readTimerUnits filters to ownbase's own
+	// "ownbase-job-*.timer" files — that directory is shared with every other
+	// timer on the host, unlike the Quadlet directory which ownbase owns
+	// exclusively.
+	if td := installedTimerDir(); td != "" {
+		for filename, content := range readTimerUnits(td) {
+			currentUnits[filename] = content
+		}
+	}
 
 	// 7. Query actual running state.
 	current, err := runtime.QueryCurrentState()
@@ -1132,11 +1159,43 @@ func readRuntimeUnits(runtimeDir string) map[string]string {
 		switch {
 		case strings.HasSuffix(name, ".container"),
 			strings.HasSuffix(name, ".network"),
-			strings.HasSuffix(name, ".volume"):
+			strings.HasSuffix(name, ".volume"),
+			strings.HasSuffix(name, ".timer"):
 			data, err := os.ReadFile(filepath.Join(runtimeDir, name))
 			if err == nil {
 				units[name] = string(data)
 			}
+		}
+	}
+	return units
+}
+
+// readTimerUnits reads only ownbase's own scheduled-job timer files
+// ("ownbase-job-*.timer") from dir. Unlike readRuntimeUnits' target
+// directories (the checkout's runtime/ mirror, and the Quadlet directory —
+// both exclusively ownbase-owned), dir here is the native systemd unit
+// directory (/etc/systemd/system or ~/.config/systemd/user), which is shared
+// with every other timer on the host (apt-daily.timer, fstrim.timer, ...).
+// The prefix+suffix filter is what makes it safe to fold this map's keys
+// into currentUnits and, from there, into reconcile.Diff's removed-timer
+// cleanup — never widen or drop this filter.
+func readTimerUnits(dir string) map[string]string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	units := make(map[string]string)
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasPrefix(name, "ownbase-job-") || !strings.HasSuffix(name, ".timer") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err == nil {
+			units[name] = string(data)
 		}
 	}
 	return units
@@ -1154,18 +1213,49 @@ const secretsFingerprintPrefix = "# ownbase:secrets-fingerprint="
 // that file changes the unit's desired content and triggers a restart (see the
 // call site). Units without a secrets file are left untouched, so services with
 // no secrets never restart spuriously.
+//
+// A job container (see the # JobService= provenance comment) also inherits
+// the referenced service's secrets at apply time (internal/podman's
+// injectSecrets), so its fingerprint hashes both files — otherwise rotating
+// the service's own secrets (e.g. a DB password) would silently leave the
+// job running with the stale injected value until some unrelated change
+// happened to touch the job's desired content.
 func annotateSecretsFingerprints(units map[string]string, secretsDir string) {
 	for filename, content := range units {
 		if !strings.HasSuffix(filename, ".container") {
 			continue
 		}
 		service := strings.TrimSuffix(strings.TrimPrefix(filename, "ownbase-"), ".container")
-		fp := secretsFileFingerprint(filepath.Join(secretsDir, service+".yaml.age"))
-		if fp == "" {
+		sources := []string{service}
+		if jobService := parseJobServiceComment(content); jobService != "" {
+			sources = []string{jobService, service}
+		}
+		var fps []string
+		for _, src := range sources {
+			fp := secretsFileFingerprint(filepath.Join(secretsDir, src+".yaml.age"))
+			if fp != "" {
+				fps = append(fps, fp)
+			}
+		}
+		if len(fps) == 0 {
 			continue
 		}
-		units[filename] = content + secretsFingerprintPrefix + fp + "\n"
+		units[filename] = content + secretsFingerprintPrefix + strings.Join(fps, ",") + "\n"
 	}
+}
+
+// parseJobServiceComment extracts the value of the "# JobService=<service>"
+// provenance comment that internal/compiler's renderContainer emits for job
+// containers. Returns "" for a non-job container (the comment is absent).
+func parseJobServiceComment(unitContent string) string {
+	const prefix = "# JobService="
+	for _, line := range strings.Split(unitContent, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimPrefix(line, prefix)
+		}
+	}
+	return ""
 }
 
 // secretsFileFingerprint returns a hex SHA-256 of the encrypted secrets file at

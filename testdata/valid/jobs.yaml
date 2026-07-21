@@ -1,0 +1,24 @@
+schema_version: v1
+
+services:
+  api:
+    repo: https://github.com/example/api.git
+    ref: v1.0.0
+    port: 8000
+    domain: api.example.com
+    env:
+      - SHARED_FLAG=1
+
+jobs:
+  nightly-ingest:
+    service: api
+    command: ["python", "scripts/nightly_ingest.py", "--region", "mx"]
+    schedule: "*-*-* 08:00:00 UTC"
+    env:
+      - REVOLVE_FEED_URL_MX=https://example.com/feed.csv
+
+  cleanup:
+    service: api
+    command: ["python", "scripts/cleanup.py"]
+    schedule: daily
+    persistent: false

@@ -30,6 +30,7 @@ type OwnbaseConfig struct {
 	SchemaVersion string                 `yaml:"schema_version"`
 	Core          CoreConfig             `yaml:"core,omitempty"`
 	Services      map[string]ServiceDecl `yaml:"services,omitempty"`
+	Jobs          map[string]JobDecl     `yaml:"jobs,omitempty"`
 }
 
 // CoreConfig holds configuration (not versions) for OwnBase core packages.
@@ -252,6 +253,52 @@ type HealthProbeDecl struct {
 	HTTP string `yaml:"http,omitempty"`
 }
 
+// JobDecl is one scheduled job entry in the jobs map. The map key is the
+// job's instance name (e.g. "nightly-ingest").
+//
+// A job runs Command on a systemd timer, reusing the image, networks, and
+// hardening of an existing service (Service) rather than building anything
+// of its own. It compiles to a oneshot Quadlet container plus a companion
+// native systemd .timer — see internal/compiler.build's job handling. Unlike
+// services, jobs are never started/stopped by the reconcile start/stop
+// lifecycle; the timer alone drives execution (internal/reconcile.Diff
+// treats a job's container specially — see isJobContainer).
+type JobDecl struct {
+	// Service is the key of an existing entry in the services map whose
+	// built image, networks, env, and injected secrets this job reuses.
+	// Required; must match a services: key.
+	Service string `yaml:"service"`
+
+	// Command overrides the image's default entrypoint/cmd, e.g.
+	// ["python", "scripts/nightly_ingest.py", "--region", "mx"]. Required.
+	Command []string `yaml:"command"`
+
+	// Schedule is a systemd OnCalendar expression, e.g. "daily" or
+	// "*-*-* 08:00:00 UTC". Required. See systemd.time(7) for the grammar.
+	Schedule string `yaml:"schedule"`
+
+	// Env is a list of additional static KEY=VALUE environment variables,
+	// appended after the referenced service's own env: list (a key set in
+	// both wins with the job's value, since Environment= directives are
+	// applied in order and systemd/Podman take the last occurrence).
+	Env []string `yaml:"env,omitempty"`
+
+	// Persistent mirrors the timer's Persistent= setting: when true (the
+	// default), a run that was missed while the Base was powered off fires
+	// once on the next boot instead of being skipped until the next
+	// scheduled time. nil means true; set false to disable catch-up runs.
+	Persistent *bool `yaml:"persistent,omitempty"`
+}
+
+// EffectivePersistent returns the job's Persistent setting, defaulting to
+// true when unset.
+func (j JobDecl) EffectivePersistent() bool {
+	if j.Persistent == nil {
+		return true
+	}
+	return *j.Persistent
+}
+
 // EffectiveDomains returns the deduplicated, order-preserving union of the
 // older singular Domain field and Domains — every public hostname this
 // service should be reachable at. Domain (if set) comes first, followed by
@@ -367,6 +414,11 @@ func (c *OwnbaseConfig) Validate() error {
 			return err
 		}
 	}
+	for name, job := range c.Jobs {
+		if err := job.validate(name, c.Services); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -414,6 +466,22 @@ func (s ServiceDecl) validate(name string, allServices map[string]ServiceDecl) e
 			return fmt.Errorf("service %q: duplicate volume name %q", name, v.Name)
 		}
 		seenVolNames[v.Name] = true
+	}
+	return nil
+}
+
+func (j JobDecl) validate(name string, allServices map[string]ServiceDecl) error {
+	if strings.TrimSpace(j.Service) == "" {
+		return fmt.Errorf("job %q: service is required", name)
+	}
+	if _, ok := allServices[j.Service]; !ok {
+		return fmt.Errorf("job %q: service %q does not match any service key", name, j.Service)
+	}
+	if len(j.Command) == 0 {
+		return fmt.Errorf("job %q: command is required", name)
+	}
+	if strings.TrimSpace(j.Schedule) == "" {
+		return fmt.Errorf("job %q: schedule is required", name)
 	}
 	return nil
 }

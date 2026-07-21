@@ -3,8 +3,10 @@ package runtime
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // OwnbasePrefix is the name prefix applied to every OwnBase-managed Podman
@@ -108,4 +110,103 @@ func toSet(names []string) map[string]bool {
 		m[n] = true
 	}
 	return m
+}
+
+// JobTimerInfo captures the live systemd state of one scheduled job's timer
+// and the most recent activation of the job's container, used by
+// internal/explain to surface job status without any package becoming a
+// full systemd status client.
+type JobTimerInfo struct {
+	// Enabled is true when the timer is enabled (persists across reboots).
+	// False also covers "not yet installed".
+	Enabled bool
+	// Active is true when the timer unit itself is active (waiting for its
+	// next elapse) — distinct from whether the job it activates is currently
+	// running.
+	Active bool
+	// NextRun is when the timer will next fire. Zero means unknown (e.g.
+	// systemctl not present, or the timer has never been installed).
+	NextRun time.Time
+	// LastRun is when the job's generated .service last exited.
+	// Zero means it has never run.
+	LastRun time.Time
+	// LastResult is systemd's Result= for the last run (e.g. "success",
+	// "exit-code"). Empty means unknown/never run.
+	LastResult string
+}
+
+// QueryJobTimer asks systemd for the live state of one scheduled job's timer
+// and the most recent activation of its generated service. name is the
+// job's ownbase.yaml key (e.g. "nightly-ingest") — the timer and service
+// unit names are derived as "ownbase-job-<name>.timer"/".service", mirroring
+// the naming compiler.buildJobContainer and renderTimer produce.
+//
+// Returns the zero JobTimerInfo (not an error) when systemctl is not present
+// (e.g. dev Mac), mirroring QueryCurrentState's Podman-absent behavior.
+func QueryJobTimer(name string) JobTimerInfo {
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		return JobTimerInfo{}
+	}
+	timerUnit := "ownbase-job-" + name + ".timer"
+	serviceUnit := "ownbase-job-" + name + ".service"
+
+	var info JobTimerInfo
+	if out, err := exec.Command("systemctl", systemctlModeArgs("is-enabled", timerUnit)...).Output(); err == nil {
+		info.Enabled = strings.TrimSpace(string(out)) == "enabled"
+	}
+	if props, err := systemctlShow(timerUnit, "ActiveState", "NextElapseUSecRealtime"); err == nil {
+		info.Active = props["ActiveState"] == "active"
+		info.NextRun = parseSystemdTimestamp(props["NextElapseUSecRealtime"])
+	}
+	if props, err := systemctlShow(serviceUnit, "ActiveExitTimestamp", "Result"); err == nil {
+		info.LastRun = parseSystemdTimestamp(props["ActiveExitTimestamp"])
+		info.LastResult = props["Result"]
+	}
+	return info
+}
+
+// systemctlModeArgs targets the correct service manager: the system manager
+// when root, the per-user manager (--user) otherwise — mirroring the
+// root/non-root split internal/podman uses for the same reason (root has no
+// user D-Bus session in a non-login service context).
+func systemctlModeArgs(args ...string) []string {
+	if os.Getuid() == 0 {
+		return args
+	}
+	return append([]string{"--user"}, args...)
+}
+
+// systemctlShow runs `systemctl show <unit> --property=...` and returns the
+// requested properties as a map. Returns an error only when the systemctl
+// invocation itself fails (e.g. the unit doesn't exist yet); an
+// unrecognized property simply comes back absent from the map.
+func systemctlShow(unit string, properties ...string) (map[string]string, error) {
+	args := append(systemctlModeArgs("show", unit), "--property="+strings.Join(properties, ","))
+	out, err := exec.Command("systemctl", args...).Output()
+	if err != nil {
+		return nil, fmt.Errorf("systemctl show %s: %w", unit, err)
+	}
+	result := make(map[string]string, len(properties))
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if idx := strings.Index(line, "="); idx >= 0 {
+			result[line[:idx]] = line[idx+1:]
+		}
+	}
+	return result, nil
+}
+
+// parseSystemdTimestamp parses a systemd timestamp property (e.g. "Tue
+// 2026-07-21 08:00:00 UTC") as reported by `systemctl show`. Returns the
+// zero time for "n/a" / "0" / unparseable values — systemd's convention for
+// "never" / "unknown".
+func parseSystemdTimestamp(v string) time.Time {
+	v = strings.TrimSpace(v)
+	if v == "" || v == "n/a" || v == "0" {
+		return time.Time{}
+	}
+	t, err := time.Parse("Mon 2006-01-02 15:04:05 MST", v)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
 }

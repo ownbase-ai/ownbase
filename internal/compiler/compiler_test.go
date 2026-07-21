@@ -790,3 +790,230 @@ func TestCompile_InternalService_MixedWithPublic(t *testing.T) {
 		t.Errorf("expected route for web.example.com, got %q", model.Routes[0].Host)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Scheduled jobs (jobs:)
+// ---------------------------------------------------------------------------
+
+func testInputJobs(t *testing.T) compiler.Input {
+	t.Helper()
+	cfg, err := schema.ParseConfigFile("../../testdata/valid/jobs.yaml")
+	if err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	return compiler.Input{Config: cfg}
+}
+
+// TestCompile_Job_ReusesServiceImageAndNetworks verifies that a job
+// container's image and networks are copied verbatim from the referenced
+// service, rather than building anything of its own.
+func TestCompile_Job_ReusesServiceImageAndNetworks(t *testing.T) {
+	model := compiler.CompileToModel(testInputJobs(t))
+
+	var api, job *compiler.ContainerModel
+	for i := range model.Containers {
+		switch model.Containers[i].Name {
+		case "ownbase-api":
+			api = &model.Containers[i]
+		case "ownbase-job-nightly-ingest":
+			job = &model.Containers[i]
+		}
+	}
+	if api == nil {
+		t.Fatal("ownbase-api container not found")
+	}
+	if job == nil {
+		t.Fatal("ownbase-job-nightly-ingest container not found")
+	}
+
+	if job.Image != api.Image {
+		t.Errorf("job image = %q, want service image %q", job.Image, api.Image)
+	}
+	if !job.IsJob {
+		t.Error("expected IsJob to be true for a job container")
+	}
+	if job.JobService != "api" {
+		t.Errorf("JobService = %q, want %q", job.JobService, "api")
+	}
+	if len(job.Networks) != len(api.Networks) {
+		t.Fatalf("job networks = %v, want same as service %v", job.Networks, api.Networks)
+	}
+	for i := range api.Networks {
+		if job.Networks[i] != api.Networks[i] {
+			t.Errorf("job network[%d] = %q, want %q", i, job.Networks[i], api.Networks[i])
+		}
+	}
+	if job.BuildSource != "" {
+		t.Errorf("job container must not carry its own build provenance, got BuildSource=%q", job.BuildSource)
+	}
+}
+
+// TestCompile_Job_EnvAppendedAfterServiceEnv verifies that a job's env: is
+// layered after (not instead of) the referenced service's own env:.
+func TestCompile_Job_EnvAppendedAfterServiceEnv(t *testing.T) {
+	model := compiler.CompileToModel(testInputJobs(t))
+	var job *compiler.ContainerModel
+	for i := range model.Containers {
+		if model.Containers[i].Name == "ownbase-job-nightly-ingest" {
+			job = &model.Containers[i]
+		}
+	}
+	if job == nil {
+		t.Fatal("ownbase-job-nightly-ingest container not found")
+	}
+	want := []string{"SHARED_FLAG=1", "REVOLVE_FEED_URL_MX=https://example.com/feed.csv"}
+	if len(job.Env) != len(want) {
+		t.Fatalf("Env = %v, want %v", job.Env, want)
+	}
+	for i := range want {
+		if job.Env[i] != want[i] {
+			t.Errorf("Env[%d] = %q, want %q", i, job.Env[i], want[i])
+		}
+	}
+}
+
+// TestCompile_Job_NeverPublicOrHealthProbed verifies that a job container
+// never gets a Caddy route, tunnel/loopback publish, or health probe — it
+// is not a server, and waitForContainer must never be asked to poll it.
+func TestCompile_Job_NeverPublicOrHealthProbed(t *testing.T) {
+	model := compiler.CompileToModel(testInputJobs(t))
+	for _, r := range model.Routes {
+		if strings.Contains(r.Upstream, "job") {
+			t.Errorf("job must have no Caddy route, got %+v", r)
+		}
+	}
+	out := compiler.Compile(testInputJobs(t))
+	unit, ok := out.QuadletUnits["ownbase-job-nightly-ingest.container"]
+	if !ok {
+		t.Fatal("ownbase-job-nightly-ingest.container not in output")
+	}
+	if strings.Contains(unit, "PublishPort=") {
+		t.Errorf("job container must not publish any port\nunit:\n%s", unit)
+	}
+	if strings.Contains(unit, "# HealthProbeHTTP=") {
+		t.Errorf("job container must not declare a health probe\nunit:\n%s", unit)
+	}
+}
+
+// TestCompile_Job_OneshotNoRestartNoInstall verifies the systemd semantics
+// that make a job safe to install without reconcile accidentally crash-
+// looping or auto-starting it at boot: Type=oneshot, Restart=no, and no
+// [Install] section (see internal/reconcile.isJobContainer for why "not
+// running" must never be read as "needs a start" for these units).
+func TestCompile_Job_OneshotNoRestartNoInstall(t *testing.T) {
+	out := compiler.Compile(testInputJobs(t))
+	unit, ok := out.QuadletUnits["ownbase-job-nightly-ingest.container"]
+	if !ok {
+		t.Fatal("ownbase-job-nightly-ingest.container not in output")
+	}
+	for _, want := range []string{"Type=oneshot", "Restart=no"} {
+		if !strings.Contains(unit, want) {
+			t.Errorf("job unit missing %q\nunit:\n%s", want, unit)
+		}
+	}
+	if strings.Contains(unit, "Restart=always") {
+		t.Errorf("job unit must not carry Restart=always\nunit:\n%s", unit)
+	}
+	if strings.Contains(unit, "[Install]") {
+		t.Errorf("job unit must not carry an [Install] section\nunit:\n%s", unit)
+	}
+}
+
+// TestCompile_Job_ExecOverridesCommand verifies the command: override is
+// rendered as a Quadlet Exec= line, quoting any argument containing spaces.
+func TestCompile_Job_ExecOverridesCommand(t *testing.T) {
+	out := compiler.Compile(testInputJobs(t))
+	unit, ok := out.QuadletUnits["ownbase-job-nightly-ingest.container"]
+	if !ok {
+		t.Fatal("ownbase-job-nightly-ingest.container not in output")
+	}
+	want := `Exec=python scripts/nightly_ingest.py --region mx`
+	if !strings.Contains(unit, want) {
+		t.Errorf("job unit missing %q\nunit:\n%s", want, unit)
+	}
+}
+
+// TestCompile_Job_JobServiceProvenanceComment verifies the applier-facing
+// "# JobService=" comment used by internal/podman's injectSecrets to merge
+// in the referenced service's secrets.
+func TestCompile_Job_JobServiceProvenanceComment(t *testing.T) {
+	out := compiler.Compile(testInputJobs(t))
+	unit, ok := out.QuadletUnits["ownbase-job-nightly-ingest.container"]
+	if !ok {
+		t.Fatal("ownbase-job-nightly-ingest.container not in output")
+	}
+	if !strings.Contains(unit, "# JobService=api") {
+		t.Errorf("job unit missing \"# JobService=api\"\nunit:\n%s", unit)
+	}
+}
+
+// TestCompile_Job_NoVolumeMounts verifies that v1 jobs get no volume mounts
+// (see JobDecl's doc comment) — a job must not silently start writing into
+// the referenced service's own data volume.
+func TestCompile_Job_NoVolumeMounts(t *testing.T) {
+	model := compiler.CompileToModel(testInputJobs(t))
+	for i := range model.Containers {
+		if model.Containers[i].Name == "ownbase-job-nightly-ingest" {
+			if len(model.Containers[i].VolumeMounts) != 0 {
+				t.Errorf("job container must have no volume mounts, got %v", model.Containers[i].VolumeMounts)
+			}
+			return
+		}
+	}
+	t.Fatal("ownbase-job-nightly-ingest container not found")
+}
+
+// TestCompile_Job_TimerRendersOnCalendarAndPersistent verifies the
+// companion .timer unit carries the job's schedule and persistent: setting.
+func TestCompile_Job_TimerRendersOnCalendarAndPersistent(t *testing.T) {
+	out := compiler.Compile(testInputJobs(t))
+
+	timer, ok := out.QuadletUnits["ownbase-job-nightly-ingest.timer"]
+	if !ok {
+		t.Fatal("ownbase-job-nightly-ingest.timer not in output")
+	}
+	if !strings.Contains(timer, "OnCalendar=*-*-* 08:00:00 UTC") {
+		t.Errorf("timer missing OnCalendar\nunit:\n%s", timer)
+	}
+	if !strings.Contains(timer, "Persistent=true") {
+		t.Errorf("nightly-ingest timer should default persistent: true\nunit:\n%s", timer)
+	}
+	if !strings.Contains(timer, "WantedBy=timers.target") {
+		t.Errorf("timer missing WantedBy=timers.target\nunit:\n%s", timer)
+	}
+
+	cleanupTimer, ok := out.QuadletUnits["ownbase-job-cleanup.timer"]
+	if !ok {
+		t.Fatal("ownbase-job-cleanup.timer not in output")
+	}
+	if !strings.Contains(cleanupTimer, "Persistent=false") {
+		t.Errorf("cleanup timer set persistent: false, want Persistent=false\nunit:\n%s", cleanupTimer)
+	}
+}
+
+// TestCompile_Job_NoExtraNetworkOrVolumeCreated verifies that jobs don't
+// cause the compiler to emit any extra Network/Volume model beyond what the
+// referenced service already needed — a job piggybacks entirely on the
+// service's own capability network.
+func TestCompile_Job_NoExtraNetworkOrVolumeCreated(t *testing.T) {
+	model := compiler.CompileToModel(testInputJobs(t))
+	seen := map[string]bool{}
+	for _, n := range model.Networks {
+		if seen[n.Name] {
+			t.Errorf("network %q appears more than once", n.Name)
+		}
+		seen[n.Name] = true
+	}
+	// jobs.yaml has exactly one service ("api"), so exactly its own
+	// capability network + the shared internal network are expected —
+	// nothing job-specific.
+	want := map[string]bool{"ownbase-api-net": true, "ownbase-internal": true}
+	if len(model.Networks) != len(want) {
+		t.Fatalf("networks = %v, want exactly %v", model.Networks, want)
+	}
+	for _, n := range model.Networks {
+		if !want[n.Name] {
+			t.Errorf("unexpected network %q", n.Name)
+		}
+	}
+}

@@ -18,6 +18,30 @@ const QuadletUserDir = ".config/containers/systemd"
 // context, so units must be managed by the system systemctl manager from here.
 const SystemQuadletDir = "/etc/containers/systemd"
 
+// TimerUserDir is the XDG path for rootless native systemd .timer files,
+// relative to the user home directory. Unlike Quadlet units (.container,
+// .network, .volume), a .timer is a native systemd unit type — Quadlet's
+// generator never produces one — so it is installed directly to the systemd
+// unit search path, not QuadletUserDir.
+const TimerUserDir = ".config/systemd/user"
+
+// SystemTimerDir is the system-level native systemd unit directory used when
+// the agent runs as root. Distinct from SystemQuadletDir: Quadlet units are
+// generated from files under SystemQuadletDir, but a .timer is not a Quadlet
+// type and must be placed directly where systemd's system manager looks for
+// unit files.
+const SystemTimerDir = "/etc/systemd/system"
+
+// jobUnitPrefix names every unit belonging to a scheduled job — both its
+// oneshot "ownbase-job-<name>.container" and its companion
+// "ownbase-job-<name>.timer" — as opposed to a long-running service's
+// "ownbase-<name>.container". It also scopes directory listings of the
+// shared, non-ownbase-exclusive systemd unit directory (SystemTimerDir /
+// TimerUserDir hold every other timer on the host — apt-daily.timer,
+// fstrim.timer, ... — never enumerate or touch a file there that doesn't
+// match this prefix).
+const jobUnitPrefix = "ownbase-job-"
+
 // injectedSecretsMarker is emitted on its own comment line directly above the
 // apply-time Secret= directives that injectSecrets adds. It lets
 // StripInjectedSecrets remove the injected block again so the reconcile diff can
@@ -69,6 +93,29 @@ func quadletDirFor(isRoot bool, home string) string {
 		return filepath.Join("/root", QuadletUserDir)
 	}
 	return filepath.Join(home, QuadletUserDir)
+}
+
+// timerDirFor returns the directory where native systemd .timer unit files
+// belong for the process owner, mirroring quadletDirFor's root/non-root
+// split but pointed at the systemd unit search path instead of the Quadlet
+// source path (see SystemTimerDir/TimerUserDir doc comments for why the two
+// must differ).
+func timerDirFor(isRoot bool, home string) string {
+	if isRoot {
+		return SystemTimerDir
+	}
+	if home == "" {
+		return filepath.Join("/root", TimerUserDir)
+	}
+	return filepath.Join(home, TimerUserDir)
+}
+
+// isOwnbaseTimerFile reports whether filename is a .timer unit ownbase
+// itself would have installed. SystemTimerDir/TimerUserDir are shared,
+// system-wide directories holding every other timer on the host — this
+// guard is what makes it safe to list and compare against their contents.
+func isOwnbaseTimerFile(filename string) bool {
+	return strings.HasPrefix(filename, jobUnitPrefix) && strings.HasSuffix(filename, ".timer")
 }
 
 // systemctlArgs returns the argument list (after the "systemctl" program name)

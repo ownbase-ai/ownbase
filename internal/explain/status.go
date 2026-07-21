@@ -30,6 +30,7 @@ type BaseStatus struct {
 	GeneratedAt   time.Time       `json:"generated_at"`
 	SchemaVersion string          `json:"schema_version"`
 	Services      []ServiceStatus `json:"services"`
+	Jobs          []JobStatus     `json:"jobs,omitempty"`
 	Security      SecurityStatus  `json:"security"`
 	Updates       UpdateStatus    `json:"updates"`
 	Audit         AuditSummary    `json:"audit"`
@@ -61,6 +62,33 @@ type ServiceStatus struct {
 
 	// Requires lists capability names this service depends on.
 	Requires []string `json:"requires,omitempty"`
+}
+
+// JobStatus is the schedule and last-run state of one scheduled job (jobs:
+// in ownbase.yaml). Unlike ServiceStatus, a job has no meaningful
+// Running/Healthy — see JobStatus.TimerActive/LastResult instead, which
+// describe the timer's own state and the outcome of its last activation
+// rather than "is a server currently up".
+type JobStatus struct {
+	Name     string   `json:"name"`
+	Service  string   `json:"service"`
+	Schedule string   `json:"schedule"`
+	Command  []string `json:"command,omitempty"`
+
+	// TimerEnabled is true when the job's systemd timer is enabled (persists
+	// across reboots). False also covers "not yet installed".
+	TimerEnabled bool `json:"timer_enabled"`
+	// TimerActive is true when the timer unit itself is active (waiting for
+	// its next elapse) — distinct from whether the job is currently running.
+	TimerActive bool `json:"timer_active"`
+	// NextRun is when the timer will next fire. Nil means unknown.
+	NextRun *time.Time `json:"next_run,omitempty"`
+	// LastRun is when the job's generated service last exited. Nil means it
+	// has never run.
+	LastRun *time.Time `json:"last_run,omitempty"`
+	// LastResult is systemd's Result= for the last run (e.g. "success",
+	// "exit-code"). Empty means unknown/never run.
+	LastResult string `json:"last_result,omitempty"`
 }
 
 // SecurityStatus is the security posture of the Base in plain outcome language.

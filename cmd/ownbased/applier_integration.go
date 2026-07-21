@@ -20,6 +20,22 @@ func newApplier(cfg agentConfig) reconcile.Applier {
 	}
 }
 
+// installedTimerDir returns the directory where native systemd .timer unit
+// files for scheduled jobs are actually installed on disk — distinct from
+// installedQuadletDir, since a .timer is not a Quadlet type (see
+// podman.SystemTimerDir's doc comment). The reconcile loop reads this
+// directory (scoped to ownbase's own "ownbase-job-*.timer" files only — see
+// podman.isOwnbaseTimerFile) to detect installed/changed/removed timers the
+// same way installedQuadletDir lets it detect installed/changed/removed
+// Quadlet units.
+func installedTimerDir() string {
+	home, _ := os.UserHomeDir()
+	if os.Getuid() == 0 {
+		return podman.SystemTimerDir
+	}
+	return filepath.Join(home, podman.TimerUserDir)
+}
+
 func applierMode(_ reconcile.Applier) string {
 	return "integration (Podman + systemd-quadlet)"
 }

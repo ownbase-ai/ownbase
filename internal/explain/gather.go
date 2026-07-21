@@ -7,6 +7,7 @@ import (
 	"github.com/ownbase/ownbase/internal/authz"
 	"github.com/ownbase/ownbase/internal/backup"
 	"github.com/ownbase/ownbase/internal/reconcile"
+	"github.com/ownbase/ownbase/internal/runtime"
 	"github.com/ownbase/ownbase/internal/schema"
 	"github.com/ownbase/ownbase/internal/secwatch"
 	"github.com/ownbase/ownbase/internal/vulnscan"
@@ -52,6 +53,12 @@ type GatherInput struct {
 	// Vulns is the most recent vulnerability scan result. Zero value
 	// (Available=false) means no scan has run yet.
 	Vulns vulnscan.VulnStatus
+
+	// JobTimers is the live systemd timer state for each scheduled job,
+	// keyed by the job's ownbase.yaml key. From runtime.QueryJobTimer, one
+	// call per cfg.Jobs entry. A missing entry (or nil map) produces a
+	// JobStatus with only the config-derived fields populated.
+	JobTimers map[string]runtime.JobTimerInfo
 }
 
 // Gather assembles a BaseStatus from all available on-Base sources.
@@ -67,6 +74,7 @@ func Gather(in GatherInput) *BaseStatus {
 
 	if in.Config != nil {
 		s.Services = gatherServices(in.Config, in.RunningContainers)
+		s.Jobs = gatherJobs(in.Config, in.JobTimers)
 	}
 
 	s.Security = gatherSecurity(in.BackupStatus, in.DriftEvents, in.Exposure, in.Access, in.Vulns)
@@ -101,6 +109,36 @@ func gatherServices(cfg *schema.OwnbaseConfig, running map[string]bool) []Servic
 		svc.Repo = decl.Repo
 		svc.Ref = decl.Ref
 		result = append(result, svc)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Name < result[j].Name
+	})
+	return result
+}
+
+func gatherJobs(cfg *schema.OwnbaseConfig, timers map[string]runtime.JobTimerInfo) []JobStatus {
+	result := make([]JobStatus, 0, len(cfg.Jobs))
+	for name, decl := range cfg.Jobs {
+		js := JobStatus{
+			Name:     name,
+			Service:  decl.Service,
+			Schedule: decl.Schedule,
+			Command:  decl.Command,
+		}
+		if info, ok := timers[name]; ok {
+			js.TimerEnabled = info.Enabled
+			js.TimerActive = info.Active
+			if !info.NextRun.IsZero() {
+				t := info.NextRun
+				js.NextRun = &t
+			}
+			if !info.LastRun.IsZero() {
+				t := info.LastRun
+				js.LastRun = &t
+			}
+			js.LastResult = info.LastResult
+		}
+		result = append(result, js)
 	}
 	sort.Slice(result, func(i, j int) bool {
 		return result[i].Name < result[j].Name

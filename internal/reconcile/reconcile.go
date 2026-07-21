@@ -44,9 +44,12 @@ type Plan struct {
 // IsEmpty returns true when the plan has no actions (already converged).
 func (p *Plan) IsEmpty() bool { return len(p.Actions) == 0 }
 
-// unitKind classifies a Quadlet unit filename into "container", "network",
-// "volume", or "other". Only containers are started/stopped; networks and
-// volumes are applied as setup steps.
+// unitKind classifies a unit filename into "container", "network", "volume",
+// "timer", or "other". Containers are started/stopped; networks and volumes
+// are applied as setup steps; timers are installed+enabled (see the timer
+// handling in Diff). ".timer" files are native systemd units, not Quadlet
+// units, but they flow through compiler.RuntimeOutput.QuadletUnits and this
+// classifier the same way as everything else.
 func unitKind(filename string) string {
 	switch {
 	case strings.HasSuffix(filename, ".container"):
@@ -55,9 +58,27 @@ func unitKind(filename string) string {
 		return "network"
 	case strings.HasSuffix(filename, ".volume"):
 		return "volume"
+	case strings.HasSuffix(filename, ".timer"):
+		return "timer"
 	default:
 		return "other"
 	}
+}
+
+// jobContainerPrefix names every job container, e.g. "ownbase-job-nightly-
+// ingest" for job "nightly-ingest" (see compiler.buildJobContainer). Used to
+// tell job containers apart from service containers without needing to parse
+// unit content.
+const jobContainerPrefix = "ownbase-job-"
+
+// isJobContainer reports whether containerName belongs to a scheduled job
+// rather than a long-running service. Job containers are oneshot — expected
+// to be not-running almost all the time — so they must never be planned a
+// "start" just because runtime.CurrentState says they aren't currently
+// running; only their companion timer (see the timer handling in Diff)
+// drives execution.
+func isJobContainer(containerName string) bool {
+	return strings.HasPrefix(containerName, jobContainerPrefix)
 }
 
 // DiffOptions carries optional context that makes the diff more precise.
@@ -109,9 +130,9 @@ func Diff(desired compiler.RuntimeOutput, current runtime.CurrentState, opts Dif
 	var actions []PlannedAction
 
 	// Separate units by kind: networks and volumes are setup prerequisites;
-	// containers are the things that start/stop.
+	// containers are the things that start/stop; timers are installed+enabled.
 	desiredContainers := map[string]string{} // containerName → unitFilename
-	var desiredNetworks, desiredVolumes []string
+	var desiredNetworks, desiredVolumes, desiredTimers []string
 
 	for filename := range desired.QuadletUnits {
 		switch unitKind(filename) {
@@ -122,10 +143,13 @@ func Diff(desired compiler.RuntimeOutput, current runtime.CurrentState, opts Dif
 			desiredNetworks = append(desiredNetworks, filename)
 		case "volume":
 			desiredVolumes = append(desiredVolumes, filename)
+		case "timer":
+			desiredTimers = append(desiredTimers, filename)
 		}
 	}
 	sort.Strings(desiredNetworks)
 	sort.Strings(desiredVolumes)
+	sort.Strings(desiredTimers)
 
 	// Networks first (containers depend on them).
 	for _, unitFile := range desiredNetworks {
@@ -188,6 +212,52 @@ func Diff(desired compiler.RuntimeOutput, current runtime.CurrentState, opts Dif
 	for _, containerName := range sortedDesired {
 		unitFile := desiredContainers[containerName]
 		desiredContent := desired.QuadletUnits[unitFile]
+
+		if isJobContainer(containerName) {
+			// Job containers are oneshot — expected to be not-running almost
+			// all the time between timer activations — so "not currently
+			// running" must never be read as "needs a start" the way it is
+			// for a long-running service below; that would plan a
+			// service.start on every single reconcile tick. Instead, only
+			// (re)install the unit when it is missing or its content has
+			// changed; the companion timer (handled further down) is what
+			// actually invokes it. When opts.CurrentUnits is nil (dev/CI
+			// builds with no on-disk context), always (re)install.
+			currentContent, hasCurrent := "", false
+			if opts.CurrentUnits != nil {
+				currentContent, hasCurrent = opts.CurrentUnits[unitFile]
+			}
+			switch {
+			case !hasCurrent:
+				a, err := schema.NewAction(schema.ActionServiceStart, containerName)
+				if err != nil {
+					return Plan{}, fmt.Errorf("build action: %w", err)
+				}
+				actions = append(actions, PlannedAction{
+					Action:       a,
+					Description:  fmt.Sprintf("install job container %q (unit: %s)", containerName, unitFile),
+					Before:       "absent",
+					After:        "installed (idle until timer fires)",
+					UnitFilename: unitFile,
+					UnitContent:  desiredContent,
+				})
+			case currentContent != desiredContent:
+				a, err := schema.NewAction(schema.ActionServiceRestart, containerName)
+				if err != nil {
+					return Plan{}, fmt.Errorf("build action: %w", err)
+				}
+				actions = append(actions, PlannedAction{
+					Action:       a,
+					Description:  fmt.Sprintf("reinstall job container %q (unit content changed)", containerName),
+					Before:       "installed (stale config)",
+					After:        "installed (new config)",
+					UnitFilename: unitFile,
+					UnitContent:  desiredContent,
+				})
+			}
+			continue
+		}
+
 		if !current.RunningContainers[containerName] {
 			a, err := schema.NewAction(schema.ActionServiceStart, containerName)
 			if err != nil {
@@ -219,7 +289,10 @@ func Diff(desired compiler.RuntimeOutput, current runtime.CurrentState, opts Dif
 		}
 	}
 
-	// Containers running but not in desired → stop them.
+	// Containers running but not in desired → stop them. This naturally
+	// catches a job container only if it happens to be mid-run at diff time;
+	// the common case (a removed job sitting idle, not running) is instead
+	// caught by the CurrentUnits-based cleanup immediately below.
 	sortedCurrent := make([]string, 0, len(current.RunningContainers))
 	for cn := range current.RunningContainers {
 		sortedCurrent = append(sortedCurrent, cn)
@@ -238,6 +311,109 @@ func Diff(desired compiler.RuntimeOutput, current runtime.CurrentState, opts Dif
 				Before:       "running",
 				After:        "not running",
 				UnitFilename: containerName + ".container",
+			})
+		}
+	}
+
+	// Job containers removed from ownbase.yaml but still installed on disk.
+	// Unlike a long-running service, a removed job is almost never caught by
+	// the RunningContainers-based stop loop above (it's idle between timer
+	// activations, not "running"), so it needs its own on-disk-based cleanup.
+	if opts.CurrentUnits != nil {
+		var removedJobs []string
+		for filename := range opts.CurrentUnits {
+			if !strings.HasSuffix(filename, ".container") {
+				continue
+			}
+			containerName := strings.TrimSuffix(filename, ".container")
+			if isJobContainer(containerName) {
+				if _, wanted := desiredContainers[containerName]; !wanted {
+					removedJobs = append(removedJobs, containerName)
+				}
+			}
+		}
+		sort.Strings(removedJobs)
+		for _, containerName := range removedJobs {
+			a, err := schema.NewAction(schema.ActionServiceStop, containerName)
+			if err != nil {
+				return Plan{}, fmt.Errorf("build action: %w", err)
+			}
+			actions = append(actions, PlannedAction{
+				Action:       a,
+				Description:  fmt.Sprintf("remove job container %q (not in desired state)", containerName),
+				Before:       "installed",
+				After:        "removed",
+				UnitFilename: containerName + ".container",
+			})
+		}
+	}
+
+	// Timers: install when missing, restart when the schedule/content
+	// changed. Unlike containers, "not currently running" has no meaning for
+	// a timer, so this compares on-disk content only, exactly like
+	// networks/volumes above.
+	for _, unitFile := range desiredTimers {
+		timerName := strings.TrimSuffix(unitFile, ".timer")
+		desiredContent := desired.QuadletUnits[unitFile]
+		currentContent, hasCurrent := "", false
+		if opts.CurrentUnits != nil {
+			currentContent, hasCurrent = opts.CurrentUnits[unitFile]
+		}
+		switch {
+		case !hasCurrent:
+			a, err := schema.NewAction(schema.ActionServiceStart, timerName)
+			if err != nil {
+				return Plan{}, fmt.Errorf("build action: %w", err)
+			}
+			actions = append(actions, PlannedAction{
+				Action:       a,
+				Description:  fmt.Sprintf("install and enable timer %q (unit: %s)", timerName, unitFile),
+				Before:       "absent",
+				After:        "enabled",
+				UnitFilename: unitFile,
+				UnitContent:  desiredContent,
+			})
+		case currentContent != desiredContent:
+			a, err := schema.NewAction(schema.ActionServiceRestart, timerName)
+			if err != nil {
+				return Plan{}, fmt.Errorf("build action: %w", err)
+			}
+			actions = append(actions, PlannedAction{
+				Action:       a,
+				Description:  fmt.Sprintf("restart timer %q (schedule changed)", timerName),
+				Before:       "enabled (stale schedule)",
+				After:        "enabled (new schedule)",
+				UnitFilename: unitFile,
+				UnitContent:  desiredContent,
+			})
+		}
+	}
+
+	// Timers removed from ownbase.yaml but still installed on disk.
+	if opts.CurrentUnits != nil {
+		desiredTimerSet := make(map[string]bool, len(desiredTimers))
+		for _, f := range desiredTimers {
+			desiredTimerSet[f] = true
+		}
+		var removedTimers []string
+		for filename := range opts.CurrentUnits {
+			if strings.HasSuffix(filename, ".timer") && !desiredTimerSet[filename] {
+				removedTimers = append(removedTimers, filename)
+			}
+		}
+		sort.Strings(removedTimers)
+		for _, unitFile := range removedTimers {
+			timerName := strings.TrimSuffix(unitFile, ".timer")
+			a, err := schema.NewAction(schema.ActionServiceStop, timerName)
+			if err != nil {
+				return Plan{}, fmt.Errorf("build action: %w", err)
+			}
+			actions = append(actions, PlannedAction{
+				Action:       a,
+				Description:  fmt.Sprintf("disable and remove timer %q (not in desired state)", timerName),
+				Before:       "enabled",
+				After:        "removed",
+				UnitFilename: unitFile,
 			})
 		}
 	}
