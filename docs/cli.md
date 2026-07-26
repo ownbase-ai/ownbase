@@ -96,9 +96,28 @@ Takes all the provisioning flags of `create`, plus the credential flags of `back
 
 ## Health and backups
 
-### `checkup <name>`
+### `checkup <name> [--verify]`
 
 One aggregated health report: intrusion/access monitoring, network exposure, CVE scan results, service update drift, and backup health — each finding paired with the exact command that fixes it. Run it regularly (weekly is reasonable). `--json` prints the raw status payload.
+
+`--verify` runs the verified-restore drill before reporting: the Base restores its newest snapshot into an isolated directory, checks it, and — when Postgres is in the backup — starts a real database from it and waits for recovery to finish. That takes minutes, so progress streams as it goes and each check's outcome is printed:
+
+```bash
+ownbasectl checkup mybase --verify
+```
+
+```
+Verified-restore drill
+────────────────────────────────────────────────────────────────────
+==> Restoring snapshot 4f2a91c into an isolated directory
+==> Running integrity checks
+    ✓ restic-check                 repository integrity OK
+    ✓ postgres-recovery            recovered to 2026-07-25 18:04:11+00, 214 relations
+
+  ✓ Restore verified — every check passed.
+```
+
+Without `--verify` the report shows the last drill the Base ran on its own `core.backup.verify_interval` schedule, which may be up to a day old. A drill that fails names the check that failed and exits non-zero, and the report still prints.
 
 ### `backup setup|run|status <name>`
 

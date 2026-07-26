@@ -95,7 +95,7 @@ It never left the Base: `sudo cat /opt/ownbase/api-token` (root, 0600). Re-regis
 
 - **"--password is required"** — the restic password is the encryption key for your backup repo. OwnBase cannot recover it. Store it in a password manager the moment you choose it.
 - **First backup fails right after `backup setup`** — the config commit reaches the daemon asynchronously; `setup` retries the "no backup repo configured" race for 30 seconds automatically. A *persistent* failure means bad credentials or an unreachable repo — check the repo URL scheme (`s3:`, `b2:`, `sftp:`) and credentials, then `ownbasectl backup run <name>` to retry.
-- **`backup status` says "not yet verified"** — the verified-restore drill runs on its own cadence (default daily). Right after setup this is normal; if it never flips to "restorable", check `journalctl -u ownbased` for restic errors.
+- **`backup status` says "not yet verified"** — the verified-restore drill runs on its own cadence (default daily), so right after setup this is normal. Rather than waiting, run `ownbasectl checkup <base> --verify` to run the drill now; it streams progress and names any check that fails. If it keeps failing, the named check is the thing to chase — `journalctl -u ownbased` on the Base has the underlying restic or Postgres output.
 - **`restore` refuses to run** — it restores only snapshots that passed a verify drill, unless you pass `--force`. Prefer waiting for a verified snapshot when you have the choice.
 
 ---

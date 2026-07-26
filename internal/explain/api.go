@@ -69,6 +69,12 @@ type APIConfig struct {
 	// RunBackup, when non-nil, runs one backup cycle immediately and returns
 	// the resulting status. Called by POST /backup/run.
 	RunBackup func() (BackupRunStatus, error)
+	// VerifyBackup, when non-nil, runs the verified-restore drill immediately,
+	// streaming progress lines to w, and returns the per-check outcomes.
+	// Called by POST /backup/verify. A non-nil error means the drill could not
+	// run at all, which is distinct from a drill that ran and failed a check
+	// (VerifyDrillResult.Passed == false).
+	VerifyBackup func(w io.Writer) (VerifyDrillResult, error)
 	// CoreStatus, when non-nil, reports the current state of the OwnBase core
 	// package (Caddy): pinned image + digest and whether the
 	// container is running on the Base. Called by GET /core/status — the
@@ -95,6 +101,27 @@ type BackupRunStatus struct {
 	LatestSnapshot string `json:"latest_snapshot,omitempty"`
 	Restorable     bool   `json:"restorable"`
 	LastError      string `json:"last_error,omitempty"`
+}
+
+// VerifyDrillResult is the JSON-friendly outcome of one verified-restore
+// drill, emitted as the ---RESULT--- trailer of POST /backup/verify.
+//
+// The per-check breakdown is the point of it. A drill that collapses to a
+// single boolean tells an operator that their backups are not provably
+// restorable without telling them which part is not — and the answer ("restic
+// is fine, Postgres would not start") decides what they do next.
+type VerifyDrillResult struct {
+	Passed     bool               `json:"passed"`
+	SnapshotID string             `json:"snapshot_id,omitempty"`
+	VerifiedAt string             `json:"verified_at,omitempty"`
+	Checks     []VerifyDrillCheck `json:"checks,omitempty"`
+}
+
+// VerifyDrillCheck is one integrity check's outcome.
+type VerifyDrillCheck struct {
+	Name   string `json:"name"`
+	Passed bool   `json:"passed"`
+	Detail string `json:"detail,omitempty"`
 }
 
 // DefaultSecretsDir is the conventional directory for age-encrypted secrets files.
@@ -436,6 +463,56 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 			return
 		}
 		writeJSON(w, status)
+	})
+
+	// /backup/verify — run the verified-restore drill on demand and stream
+	// progress, rather than making the operator wait for the daemon's
+	// verify_interval to come round. Used by `ownbasectl checkup --verify`.
+	//
+	// Streamed plain text, like /upgrade and /security/fix: the drill restores
+	// a real snapshot and (when Postgres is in it) starts a real database, so
+	// it takes minutes and an operator watching it needs to see where it is.
+	// The response ends with a ---RESULT--- line carrying the per-check
+	// outcomes as JSON, then ---OK--- only when every check passed.
+	mux.HandleFunc("/backup/verify", func(w http.ResponseWriter, r *http.Request) {
+		if !authRequired(w, r, cfg.StatusSrv) {
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if cfg.VerifyBackup == nil {
+			http.Error(w, "backup not configured", http.StatusNotImplemented)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.WriteHeader(http.StatusOK)
+
+		flusher, canFlush := w.(http.Flusher)
+		fw := &flushWriter{w: w, flush: func() {
+			if canFlush {
+				flusher.Flush()
+			}
+		}}
+
+		result, err := cfg.VerifyBackup(fw)
+		if err != nil {
+			fmt.Fprintf(fw, "\nERROR: %v\n", err)
+			return
+		}
+
+		// The trailer is emitted whether or not the drill passed — a failed
+		// drill's per-check detail is exactly what the caller needs.
+		if encoded, err := json.Marshal(result); err == nil {
+			fmt.Fprintf(fw, "---RESULT---%s\n", encoded)
+		}
+		if !result.Passed {
+			return
+		}
+		fmt.Fprintf(fw, "---OK---\n")
 	})
 
 	// /security/scan — trigger an immediate vulnerability scan. Returns quickly;

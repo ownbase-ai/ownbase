@@ -191,6 +191,24 @@ Runs one backup cycle synchronously (the daemon allows up to 10 minutes). Respon
 {"last_backup": "…", "latest_snapshot": "abc123", "restorable": true, "last_error": ""}
 ```
 
+### `POST /backup/verify` — run the verified-restore drill now
+
+Restores the newest snapshot into an isolated directory, runs the integrity checks, and — when the backup contains a pgBackRest repository — recovers a real Postgres from it. Sets `Restorable` only on a full pass. Behind `ownbasectl checkup <base> --verify`.
+
+Streams **plain text**, like `POST /upgrade`, because the drill takes minutes. Two trailers close the stream:
+
+- `---RESULT---{…}` carries the outcome as JSON, and is emitted whether or not the drill passed:
+
+```json
+{"passed": false, "snapshot_id": "4f2a91c", "verified_at": "…", "checks": [{"name": "restic-check", "passed": true, "detail": "repository integrity OK"}, {"name": "postgres-recovery", "passed": false, "detail": "recovery never completed"}]}
+```
+
+- `---OK---` follows it **only when every check passed.** Its absence is how a caller detects failure, since the 200 status was already committed before the drill started.
+
+A drill that ran and failed a check is not an error: the response is still 200 with a full `---RESULT---`, because which check failed is what decides what the operator does next. Only a drill that could not run at all (no repo configured, restic unreachable) reports `ERROR:` with no trailer. `501` when backups are not configured on this Base.
+
+Waits for any in-flight snapshot or scheduled drill to finish first — one restic operation at a time per Base.
+
 ---
 
 ## Secrets

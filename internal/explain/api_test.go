@@ -704,3 +704,167 @@ func TestAPI_SecretsDelete_MissingKey_404(t *testing.T) {
 		t.Errorf("status = %d, want 404", resp.StatusCode)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// /backup/verify
+// ---------------------------------------------------------------------------
+
+// mountVerifyAPI wires a /backup/verify handler around a stub drill.
+func mountVerifyAPI(t *testing.T, verify func(io.Writer) (explain.VerifyDrillResult, error)) *httptest.Server {
+	t.Helper()
+	srv := explain.NewStatusServer()
+	mux := http.NewServeMux()
+	mux.Handle("/status", srv.Handler("test-api-token"))
+	explain.MountAPI(mux, explain.APIConfig{StatusSrv: srv, VerifyBackup: verify})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+func TestAPI_BackupVerify_StreamsProgressThenResultAndOK(t *testing.T) {
+	ts := mountVerifyAPI(t, func(w io.Writer) (explain.VerifyDrillResult, error) {
+		fmt.Fprintln(w, "==> Restoring snapshot abc1234")
+		return explain.VerifyDrillResult{
+			Passed:     true,
+			SnapshotID: "abc1234",
+			Checks: []explain.VerifyDrillCheck{
+				{Name: "restic-check", Passed: true, Detail: "repository integrity OK"},
+			},
+		}, nil
+	})
+
+	resp := authedPost(t, ts, "/backup/verify", "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	got := string(body)
+
+	if !strings.Contains(got, "==> Restoring snapshot abc1234") {
+		t.Errorf("progress line missing from response:\n%s", got)
+	}
+	if !strings.Contains(got, "---OK---") {
+		t.Errorf("passing drill did not emit the ---OK--- sentinel:\n%s", got)
+	}
+
+	result := parseVerifyTrailer(t, got)
+	if !result.Passed {
+		t.Error("trailer says the drill did not pass")
+	}
+	if len(result.Checks) != 1 || result.Checks[0].Name != "restic-check" {
+		t.Errorf("trailer checks = %+v, want the one restic-check", result.Checks)
+	}
+}
+
+// A drill that ran and failed a check is not an HTTP error — the response must
+// still carry the per-check breakdown, because which check failed is what
+// decides what the operator does next. Only the ---OK--- sentinel is withheld.
+func TestAPI_BackupVerify_FailedDrillReturnsChecksWithoutOK(t *testing.T) {
+	ts := mountVerifyAPI(t, func(w io.Writer) (explain.VerifyDrillResult, error) {
+		return explain.VerifyDrillResult{
+			Passed: false,
+			Checks: []explain.VerifyDrillCheck{
+				{Name: "restic-check", Passed: true, Detail: "repository integrity OK"},
+				{Name: "postgres-recovery", Passed: false, Detail: "recovery never completed"},
+			},
+		}, nil
+	})
+
+	resp := authedPost(t, ts, "/backup/verify", "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (a failed check is not a transport error)", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	got := string(body)
+
+	if strings.Contains(got, "---OK---") {
+		t.Errorf("failed drill emitted ---OK---:\n%s", got)
+	}
+	result := parseVerifyTrailer(t, got)
+	if result.Passed {
+		t.Error("trailer claims the drill passed")
+	}
+	var failed []string
+	for _, ch := range result.Checks {
+		if !ch.Passed {
+			failed = append(failed, ch.Name)
+		}
+	}
+	if len(failed) != 1 || failed[0] != "postgres-recovery" {
+		t.Errorf("failed checks = %v, want [postgres-recovery]", failed)
+	}
+}
+
+// An error means the drill could not run at all. There is nothing to report
+// per check, so no trailer and no sentinel — just the reason.
+func TestAPI_BackupVerify_DrillErrorReportsReasonWithoutOK(t *testing.T) {
+	ts := mountVerifyAPI(t, func(w io.Writer) (explain.VerifyDrillResult, error) {
+		return explain.VerifyDrillResult{}, fmt.Errorf("no backup repo configured")
+	})
+
+	resp := authedPost(t, ts, "/backup/verify", "")
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	got := string(body)
+
+	if !strings.Contains(got, "no backup repo configured") {
+		t.Errorf("response does not carry the reason:\n%s", got)
+	}
+	if strings.Contains(got, "---OK---") {
+		t.Errorf("errored drill emitted ---OK---:\n%s", got)
+	}
+}
+
+func TestAPI_BackupVerify_501WhenNotConfigured(t *testing.T) {
+	_, ts := buildAPIServer(t, "", "", "")
+	resp := authedPost(t, ts, "/backup/verify", "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotImplemented {
+		t.Errorf("status = %d, want 501", resp.StatusCode)
+	}
+}
+
+func TestAPI_BackupVerify_405OnGet(t *testing.T) {
+	ts := mountVerifyAPI(t, func(io.Writer) (explain.VerifyDrillResult, error) {
+		t.Error("GET must not run the drill")
+		return explain.VerifyDrillResult{}, nil
+	})
+	resp := authedGet(t, ts, "/backup/verify")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want 405", resp.StatusCode)
+	}
+}
+
+func TestAPI_BackupVerify_401WithoutToken(t *testing.T) {
+	ts := mountVerifyAPI(t, func(io.Writer) (explain.VerifyDrillResult, error) {
+		t.Error("unauthenticated request must not run the drill")
+		return explain.VerifyDrillResult{}, nil
+	})
+	resp, err := http.Post(ts.URL+"/backup/verify", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", resp.StatusCode)
+	}
+}
+
+func parseVerifyTrailer(t *testing.T, body string) explain.VerifyDrillResult {
+	t.Helper()
+	for _, line := range strings.Split(body, "\n") {
+		if !strings.HasPrefix(line, "---RESULT---") {
+			continue
+		}
+		var out explain.VerifyDrillResult
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "---RESULT---")), &out); err != nil {
+			t.Fatalf("decode ---RESULT--- trailer: %v", err)
+		}
+		return out
+	}
+	t.Fatalf("no ---RESULT--- trailer in response:\n%s", body)
+	return explain.VerifyDrillResult{}
+}

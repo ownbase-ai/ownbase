@@ -507,6 +507,39 @@ func run(cfg agentConfig) error {
 				}
 				return out, nil
 			},
+			// VerifyBackup runs the verified-restore drill immediately
+			// (ownbasectl checkup --verify) rather than waiting for the
+			// scheduler's verify_interval to come round.
+			VerifyBackup: func(w io.Writer) (explain.VerifyDrillResult, error) {
+				// The drill restores a full snapshot and, when Postgres is in
+				// it, starts a real database — generously longer than a
+				// snapshot's 10 minutes.
+				runCtx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
+				defer cancel()
+				result, err := verifyBackupNow(runCtx, cfg, auditLog, w)
+				// Refresh the cached /status payload either way, so the
+				// Restorable flag the drill just set is what a following
+				// `checkup` reports.
+				signalReconcile(reconcileSig)
+				if err != nil {
+					return explain.VerifyDrillResult{}, err
+				}
+				out := explain.VerifyDrillResult{
+					Passed:     result.Passed,
+					SnapshotID: result.SnapshotID,
+				}
+				if !result.VerifiedAt.IsZero() {
+					out.VerifiedAt = result.VerifiedAt.Format(time.RFC3339)
+				}
+				for _, ch := range result.Checks {
+					out.Checks = append(out.Checks, explain.VerifyDrillCheck{
+						Name:   ch.Name,
+						Passed: ch.Passed,
+						Detail: ch.Detail,
+					})
+				}
+				return out, nil
+			},
 		})
 		httpSrv := &http.Server{
 			Addr:    cfg.statusAddr,

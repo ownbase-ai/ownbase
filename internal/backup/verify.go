@@ -63,6 +63,7 @@ func VerifyRestore(ctx context.Context, cfg Config) (VerifyResult, error) {
 	}
 
 	// 1. Find the latest snapshot.
+	c.progressf("==> Finding the newest snapshot in %s\n", c.Repository)
 	snapshotID, err := latestSnapshotID(ctx, c)
 	if err != nil {
 		return VerifyResult{Err: err}, fmt.Errorf("verify: find snapshot: %w", err)
@@ -81,6 +82,7 @@ func VerifyRestore(ctx context.Context, cfg Config) (VerifyResult, error) {
 	}()
 
 	// 3. Restore the snapshot.
+	c.progressf("==> Restoring snapshot %s into an isolated directory\n", snapshotID)
 	if err := restoreSnapshot(ctx, c, snapshotID, tmpDir); err != nil {
 		return VerifyResult{SnapshotID: snapshotID, Err: err},
 			fmt.Errorf("verify: restore: %w", err)
@@ -91,6 +93,7 @@ func VerifyRestore(ctx context.Context, cfg Config) (VerifyResult, error) {
 		SnapshotID: snapshotID,
 		VerifiedAt: time.Now().UTC(),
 	}
+	c.progressf("==> Running integrity checks\n")
 	result.Checks = runIntegrityChecks(ctx, c, tmpDir)
 
 	allPassed := true
@@ -98,6 +101,7 @@ func VerifyRestore(ctx context.Context, cfg Config) (VerifyResult, error) {
 		if !ch.Passed {
 			allPassed = false
 		}
+		c.progressf("    %s %-28s %s\n", passMark(ch.Passed), ch.Name, ch.Detail)
 	}
 	result.Passed = allPassed
 
@@ -126,6 +130,14 @@ func VerifyRestore(ctx context.Context, cfg Config) (VerifyResult, error) {
 	}
 
 	return result, nil
+}
+
+// passMark renders a check outcome for a progress line.
+func passMark(passed bool) string {
+	if passed {
+		return "✓"
+	}
+	return "✗"
 }
 
 // runIntegrityChecks executes all integrity checks against the restored data.

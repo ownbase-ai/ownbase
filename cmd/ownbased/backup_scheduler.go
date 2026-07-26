@@ -18,6 +18,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"sync/atomic"
 	"time"
@@ -126,7 +127,16 @@ func runBackupScheduler(ctx context.Context, cfg agentConfig, auditLog authz.Aud
 				case err != nil:
 					fmt.Fprintf(os.Stderr, "ownbased: verify restore: %v\n", err)
 				case !result.Passed:
+					// Name the checks that failed. "FAILED" on its own says
+					// backups are not provably restorable without saying which
+					// part is not, and that answer is what decides what the
+					// operator does next.
 					fmt.Fprintln(os.Stderr, "ownbased: verified restore FAILED — restorable=false")
+					for _, ch := range result.Checks {
+						if !ch.Passed {
+							fmt.Fprintf(os.Stderr, "ownbased:   failed check %s: %s\n", ch.Name, ch.Detail)
+						}
+					}
 				default:
 					fmt.Fprintln(os.Stderr, "ownbased: verified restore passed — restorable=true")
 				}
@@ -176,4 +186,36 @@ func runBackupNow(ctx context.Context, cfg agentConfig, auditLog authz.AuditLogg
 	defer release()
 
 	return backup.Run(ctx, loadBackupConfig(cfg, backupCoreCfg.Repo, auditLog))
+}
+
+// verifyBackupNow runs the verified-restore drill synchronously, streaming
+// progress to progress. Used by the /backup/verify API (ownbasectl checkup
+// --verify) so an operator can prove a restore now instead of waiting up to
+// verify_interval for the scheduler to do it.
+//
+// Like runBackupNow it waits its turn on backupBusy rather than running
+// concurrently against the same restic repo.
+//
+// The returned error means the drill could not run. A drill that ran and
+// failed a check returns a result with Passed == false and a nil error — the
+// caller reports which check failed, and only an infrastructure failure is an
+// error in the HTTP sense.
+func verifyBackupNow(ctx context.Context, cfg agentConfig, auditLog authz.AuditLogger, progress io.Writer) (backup.VerifyResult, error) {
+	backupCoreCfg := readCoreConfigFromDisk(cfg.checkoutPath).Backup
+	if !backupCoreCfg.Enabled() {
+		return backup.VerifyResult{}, fmt.Errorf("no backup repo configured — run 'ownbasectl backup setup' first")
+	}
+
+	if progress != nil {
+		fmt.Fprintln(progress, "==> Waiting for any in-progress backup to finish")
+	}
+	release, err := acquireBackupSlot(ctx)
+	if err != nil {
+		return backup.VerifyResult{}, fmt.Errorf("waiting for in-progress backup/verify to finish: %w", err)
+	}
+	defer release()
+
+	backupCfg := loadBackupConfig(cfg, backupCoreCfg.Repo, auditLog)
+	backupCfg.Progress = progress
+	return backup.VerifyRestore(ctx, backupCfg)
 }
