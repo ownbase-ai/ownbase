@@ -70,6 +70,16 @@ const scratchDataDir = "/var/lib/ownbase/db-scratch"
 // recoveryPollInterval is how often pg_is_in_recovery() is checked.
 const recoveryPollInterval = 2 * time.Second
 
+// recoveryStallTimeout is how long replay may sit at the same position before
+// the wait gives up. It bounds a recovery that has stopped, not one that is
+// merely long: the whole point of point-in-time recovery is that it can be
+// asked to replay a lot.
+const recoveryStallTimeout = 10 * time.Minute
+
+// recoveryReportInterval is how often the replay position is printed while
+// waiting. Silence for an hour is indistinguishable from a hang.
+const recoveryReportInterval = 30 * time.Second
+
 // RestoreOutcome describes what a restore produced.
 type RestoreOutcome struct {
 	// Into is where it landed.
@@ -222,32 +232,22 @@ func restoreIntoProduction(ctx context.Context, pb PGBackRest, opts RestoreOptio
 		return out, err
 	}
 
+	// Registered before the first thing is stopped, so a shutdown that fails
+	// half-way still brings back what it already took down.
+	back := newBringBack(pb, opts.Progress)
+	defer back.all()
+
 	for _, dep := range pb.Dependants {
 		progressf(opts.Progress, "==> Stopping %s (depends on %s)\n", dep, pb.Service)
 		if err := systemctlUnit(ctx, "stop", "ownbase-"+dep+".service"); err != nil {
 			return out, fmt.Errorf("stop dependant %s: %w", dep, err)
 		}
 	}
-	// Bring dependants back whatever happens: a failed restore that also left
-	// the rest of the Base down would turn one problem into two. Called
-	// explicitly as soon as the database is serving, and again here in case it
-	// never got that far.
-	startedDependants := false
-	startDependants := func() {
-		if startedDependants {
-			return
-		}
-		startedDependants = true
-		for _, dep := range pb.Dependants {
-			progressf(opts.Progress, "==> Starting %s\n", dep)
-			if err := systemctlUnit(context.Background(), "start", "ownbase-"+dep+".service"); err != nil {
-				fmt.Fprintf(os.Stderr, "db restore: start dependant %s: %v\n", dep, err)
-			}
-		}
-	}
-	defer startDependants()
 
 	progressf(opts.Progress, "==> Stopping %s\n", pb.Service)
+	// Set before the call, not after: a stop that reports an error may still
+	// have taken the database down.
+	back.stoppedPostgres = true
 	if err := systemctlUnit(ctx, "stop", pb.Unit()); err != nil {
 		return out, fmt.Errorf("stop %s: %w", pb.Service, err)
 	}
@@ -282,6 +282,7 @@ func restoreIntoProduction(ctx context.Context, pb PGBackRest, opts RestoreOptio
 	}
 
 	progressf(opts.Progress, "==> Starting %s to replay the archive\n", pb.Service)
+	back.stoppedPostgres = false
 	if err := systemctlUnit(ctx, "start", pb.Unit()); err != nil {
 		return out, fmt.Errorf("start %s: %w", pb.Service, err)
 	}
@@ -295,7 +296,7 @@ func restoreIntoProduction(ctx context.Context, pb PGBackRest, opts RestoreOptio
 
 	// The database is serving, so the outage ends here rather than after the
 	// backup below, which takes as long as the database is large.
-	startDependants()
+	back.dependants()
 
 	// A promotion starts a new timeline, and no backup in the repository is on
 	// it. Until a full backup is taken, this database has recovery history but
@@ -332,28 +333,161 @@ func scratchImage(pb PGBackRest) string {
 // pg_ctl -w and systemd's readiness both return once the postmaster accepts
 // connections, which happens while WAL replay is still running. Only this
 // answers "is the recovery finished".
+//
+// The bound is on progress, not on total time. Replaying a fortnight of WAL
+// into a large database is legitimately slow, and a wall-clock limit would
+// abandon a recovery that was working — reporting a failure that is not one,
+// while Postgres carries on replaying behind it. A replay position that has not
+// moved for recoveryStallTimeout is the thing worth giving up on.
 func waitForRecovery(ctx context.Context, pb PGBackRest, container string, opts RestoreOptions) error {
 	progressf(opts.Progress, "==> Waiting for recovery to finish\n")
 
-	waitCtx, cancel := context.WithTimeout(ctx, recoveryReadyTimeout)
-	defer cancel()
+	var (
+		position     string
+		lastProgress = time.Now()
+		lastReport   time.Time
+	)
 
 	for {
-		if inRecovery, err := psqlScalar(waitCtx, pb, container, "select pg_is_in_recovery()"); err == nil && inRecovery == "f" {
+		if inRecovery, err := psqlScalar(ctx, pb, container, "select pg_is_in_recovery()"); err == nil && inRecovery == "f" {
 			return nil
 		}
 		// A container that has exited will never leave recovery, and its log
-		// holds the reason. Fail immediately rather than after the timeout.
-		if !isContainerRunning(waitCtx, container) {
+		// holds the reason. Fail immediately rather than waiting out the stall.
+		if !isContainerRunning(ctx, container) {
 			return fmt.Errorf("%s", diagnoseRestoreFailure(ctx, pb, container))
 		}
+
+		if at, err := psqlScalar(ctx, pb, container, replayPositionQuery); err == nil && at != "" && at != position {
+			position, lastProgress = at, time.Now()
+			// A long replay with no output reads as a hang, which is what
+			// makes an operator kill it.
+			if time.Since(lastReport) >= recoveryReportInterval {
+				lastReport = time.Now()
+				progressf(opts.Progress, "    replaying — %s\n", position)
+			}
+		}
+		if stalled := time.Since(lastProgress); stalled > recoveryStallTimeout {
+			return fmt.Errorf("recovery has not advanced in %s (last position %s) — the database is not replaying any more; check 'podman logs %s' on the Base",
+				recoveryStallTimeout, orUnknown(position), container)
+		}
+
 		select {
 		case <-time.After(recoveryPollInterval):
-		case <-waitCtx.Done():
-			return fmt.Errorf("recovery did not finish within %s — the database is still replaying WAL, or stopped without completing; check 'podman logs %s' on the Base",
-				recoveryReadyTimeout, container)
+		case <-ctx.Done():
+			return fmt.Errorf("gave up waiting for recovery: %w — Postgres may still be replaying; check 'podman logs %s' on the Base",
+				ctx.Err(), container)
 		}
 	}
+}
+
+// replayPositionQuery reports how far replay has got. Both values are NULL
+// outside recovery, which is not a state this is asked about.
+const replayPositionQuery = `select coalesce(pg_last_wal_replay_lsn()::text,'') ||
+	coalesce(' (' || to_char(pg_last_xact_replay_timestamp(),'YYYY-MM-DD HH24:MI:SSOF') || ')','')`
+
+func orUnknown(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "unknown"
+	}
+	return s
+}
+
+// bringBack puts the Base back together after a production restore, whether it
+// finished or failed part-way. A restore that fails is the case worth designing
+// for — the whole Base is down at that moment — so the steps are fields rather
+// than direct calls, and their ordering is tested rather than hoped for.
+type bringBack struct {
+	pb       PGBackRest
+	progress io.Writer
+
+	// stoppedPostgres records that the database was taken down and not yet
+	// started again; startedDependants that its dependants are already back.
+	stoppedPostgres   bool
+	startedDependants bool
+
+	startUnit func(unit string) error
+	serving   func() bool
+}
+
+func newBringBack(pb PGBackRest, progress io.Writer) *bringBack {
+	return &bringBack{
+		pb:       pb,
+		progress: progress,
+		// Cleanup runs on its own context: the reason for being here is often
+		// that the caller's was cancelled.
+		startUnit: func(unit string) error { return systemctlUnit(context.Background(), "start", unit) },
+		serving:   func() bool { return databaseServing(pb) },
+	}
+}
+
+// dependants starts everything that requires the database, once. The restore
+// calls it as soon as the database is serving, so the outage ends there rather
+// than after the post-promote backup.
+func (b *bringBack) dependants() {
+	if b.startedDependants {
+		return
+	}
+	b.startedDependants = true
+	for _, dep := range b.pb.Dependants {
+		progressf(b.progress, "==> Starting %s\n", dep)
+		if err := b.startUnit("ownbase-" + dep + ".service"); err != nil {
+			fmt.Fprintf(os.Stderr, "db restore: start dependant %s: %v\n", dep, err)
+		}
+	}
+}
+
+// all is what the restore defers: the database first, then the services that
+// need it, in reverse of the order they were stopped.
+func (b *bringBack) all() {
+	if b.startedDependants && !b.stoppedPostgres {
+		return // the restore finished and brought everything back itself
+	}
+	if b.stoppedPostgres {
+		b.stoppedPostgres = false
+		progressf(b.progress, "==> Starting %s\n", b.pb.Service)
+		if err := b.startUnit(b.pb.Unit()); err != nil {
+			fmt.Fprintf(os.Stderr, "db restore: start %s: %v\n", b.pb.Service, err)
+		}
+	}
+	// Dependants only once the database can actually answer them. Starting an
+	// app against a database that is down — or still read-only, part-way
+	// through replay — is a crash loop rather than a recovery, and it buries
+	// which of the two is actually broken.
+	if b.serving() {
+		b.dependants()
+		return
+	}
+	if !b.startedDependants && len(b.pb.Dependants) > 0 {
+		progressf(b.progress, "    %s is not serving, so its dependants are being left stopped rather\n"+
+			"    than started against a database that cannot answer them. Once it is back:\n"+
+			"      systemctl start %s\n", b.pb.Service, strings.Join(dependantUnits(b.pb), " "))
+	}
+}
+
+// databaseServing reports whether Postgres is up and out of recovery — the only
+// state in which starting its dependants brings the Base back rather than
+// pointing every app at a database that cannot answer.
+//
+// Uses its own context: this runs while cleaning up, which is often precisely
+// because the caller's context is done.
+func databaseServing(pb PGBackRest) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), servingProbeTimeout)
+	defer cancel()
+	inRecovery, err := psqlScalar(ctx, pb, pb.Container(), "select pg_is_in_recovery()")
+	return err == nil && inRecovery == "f"
+}
+
+// servingProbeTimeout bounds the "is it back" probe during cleanup.
+const servingProbeTimeout = 15 * time.Second
+
+// dependantUnits names the units an operator would start by hand.
+func dependantUnits(pb PGBackRest) []string {
+	units := make([]string, 0, len(pb.Dependants))
+	for _, dep := range pb.Dependants {
+		units = append(units, "ownbase-"+dep+".service")
+	}
+	return units
 }
 
 // describeRecovered asks the recovered database what it is.

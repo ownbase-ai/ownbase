@@ -255,7 +255,7 @@ Streams plain text with the same two trailers as `POST /backup/verify`. `---RESU
 
 `---OK---` follows only when recovery completed. A scratch instance is torn down on failure rather than left running, since a half-recovered Postgres would be read as a successful restore by anyone who looked.
 
-`into: production` stops the service and everything that `requires:` it, restores with `--delta`, replays the archive, and takes a full backup on the new timeline. Dependants are restarted whatever the outcome. A failed post-promote backup is reported as a warning rather than an error — the database is up and serving, which was the point — but it is stated plainly, because a database on a timeline with no base backup cannot be recovered again.
+`into: production` stops the service and everything that `requires:` it, restores with `--delta`, replays the archive, and takes a full backup on the new timeline. If any of that fails the Base is put back in reverse of the order it came down: the database is started again first, and its dependants only once it answers, since an app started against a database that cannot answer crash-loops rather than recovers. When the database does not come back, the dependants are left stopped and the response names the units to start by hand. A failed post-promote backup is reported as a warning rather than an error — the database is up and serving, which was the point — but it is stated plainly, because a database on a timeline with no base backup cannot be recovered again.
 
 ---
 

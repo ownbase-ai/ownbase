@@ -215,7 +215,7 @@ error: 2026-07-25 18:30:00+00 is newer than the last WAL segment in the reposito
   Or omit --to to recover everything the repository holds.
 ```
 
-Asking to restore to "right now" is the most natural thing to do and the most likely to hit this: archiving is driven by WAL volume and `archive_timeout`, so on a quiet database the newest recoverable point routinely trails the present by minutes. Recovery completion is confirmed by polling `pg_is_in_recovery()` rather than by trusting `pg_ctl -w`, which returns while WAL replay is still running.
+Asking to restore to "right now" is the most natural thing to do and the most likely to hit this: archiving is driven by WAL volume and `archive_timeout`, so on a quiet database the newest recoverable point routinely trails the present by minutes. Recovery completion is confirmed by polling `pg_is_in_recovery()` rather than by trusting `pg_ctl -w`, which returns while WAL replay is still running. A long replay is not treated as a failure — the wait gives up only when the replay position stops moving, and prints where it has got to while it works — because abandoning a recovery that is still progressing would report a failure that is not one.
 
 ---
 

@@ -26,6 +26,84 @@ func TestPGBackRestRestoreScript_IsValidBash(t *testing.T) {
 	}
 }
 
+// testBringBack is a bringBack with the machine replaced: it records the units
+// it was asked to start, in order.
+func testBringBack(serving bool) (*bringBack, *[]string, *strings.Builder) {
+	var started []string
+	var out strings.Builder
+	b := newBringBack(PGBackRest{
+		Service:    "postgres",
+		Dependants: []string{"api", "worker"},
+	}, &out)
+	b.startUnit = func(unit string) error {
+		started = append(started, unit)
+		return nil
+	}
+	b.serving = func() bool { return serving }
+	return b, &started, &out
+}
+
+// The database comes back before the services that need it, because an app
+// started against a database that is not there crash-loops rather than
+// recovers — and then the logs blame the app.
+func TestBringBack_StartsPostgresBeforeItsDependants(t *testing.T) {
+	b, started, _ := testBringBack(true)
+	b.stoppedPostgres = true
+
+	b.all()
+
+	want := []string{"ownbase-postgres.service", "ownbase-api.service", "ownbase-worker.service"}
+	if strings.Join(*started, ",") != strings.Join(want, ",") {
+		t.Errorf("started %v, want %v", *started, want)
+	}
+}
+
+// A restore that fails while the database is still down must not hand every app
+// a database that cannot answer. Leaving them stopped is the honest state, so
+// long as it says so and says how to undo it.
+func TestBringBack_LeavesDependantsStoppedWhileTheDatabaseIsNot(t *testing.T) {
+	b, started, out := testBringBack(false)
+	b.stoppedPostgres = true
+
+	b.all()
+
+	if len(*started) != 1 || (*started)[0] != "ownbase-postgres.service" {
+		t.Errorf("started %v, want only the database", *started)
+	}
+	if !strings.Contains(out.String(), "systemctl start ownbase-api.service ownbase-worker.service") {
+		t.Errorf("output does not say how to start them by hand:\n%s", out)
+	}
+}
+
+// A shutdown that fails part-way — the second dependant refuses to stop — still
+// has to bring back the first. Postgres was never stopped in that case, so only
+// the dependants are started.
+func TestBringBack_RecoversAPartialShutdown(t *testing.T) {
+	b, started, _ := testBringBack(true)
+
+	b.all()
+
+	want := []string{"ownbase-api.service", "ownbase-worker.service"}
+	if strings.Join(*started, ",") != strings.Join(want, ",") {
+		t.Errorf("started %v, want %v", *started, want)
+	}
+}
+
+// The restore starts dependants itself as soon as the database is serving, so
+// the outage ends before the post-promote backup. The deferred call must then
+// do nothing rather than restart everything a second time.
+func TestBringBack_IsANoOpAfterASuccessfulRestore(t *testing.T) {
+	b, started, _ := testBringBack(true)
+	b.dependants()
+	before := len(*started)
+
+	b.all()
+
+	if len(*started) != before {
+		t.Errorf("started %v after the restore had already brought them back", (*started)[before:])
+	}
+}
+
 // Each of these is a production failure the script exists to avoid.
 func TestPGBackRestRestoreScript_KeepsLoadBearingBehaviour(t *testing.T) {
 	musts := map[string]string{
