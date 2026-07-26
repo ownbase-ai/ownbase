@@ -190,10 +190,16 @@ func TestPrintDBStatus_ShowsTheRecoveryWindow(t *testing.T) {
 	if !strings.Contains(out, "Recovery window") {
 		t.Errorf("report should state the recovery window, got:\n%s", out)
 	}
-	// The suggested command must be one that will actually be accepted: the
-	// newest recoverable point, not now().
-	if !strings.Contains(out, `db restore mybase --to "2026-07-25 06:00:00+00"`) {
-		t.Errorf("report should suggest a restore at the newest recoverable point, got:\n%s", out)
+	// The suggested command has to be one that works. The end of the window is
+	// when the last WAL segment finished archiving, which is after the last
+	// change inside it, so restoring to that instant replays everything, never
+	// reaches the target, and refuses to start. Omitting --to is the form that
+	// means "as recent as possible" and cannot miss.
+	if strings.Contains(out, `--to "2026-07-25 06:00:00+00"`) {
+		t.Errorf("report suggests restoring to the end of the window, which Postgres would refuse:\n%s", out)
+	}
+	if !strings.Contains(out, "db restore mybase  ") {
+		t.Errorf("report should offer the no-target restore, got:\n%s", out)
 	}
 }
 

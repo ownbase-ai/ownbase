@@ -229,9 +229,15 @@ func printDBStatus(base string, s dbStatus) {
 	}
 	fmt.Println("────────────────────────────────────────────────────────────────────────")
 	if !s.LatestRecovery.IsZero() {
+		// Deliberately not suggesting --to <end of the window>. That timestamp
+		// is when the last WAL segment finished archiving, which is after the
+		// last change inside it, so Postgres would replay everything it has,
+		// never reach the target, and refuse to start. "As recent as possible"
+		// is what omitting --to means, and it cannot miss.
 		fmt.Println()
-		fmt.Println("Recover to a point in time (into a scratch instance, production untouched):")
-		fmt.Printf("  ownbasectl db restore %s --to %q\n", base, s.LatestRecovery.UTC().Format("2006-01-02 15:04:05+00"))
+		fmt.Println("Recover into a scratch instance, production untouched:")
+		fmt.Printf("  ownbasectl db restore %s                     # everything the repository holds\n", base)
+		fmt.Printf("  ownbasectl db restore %s --to \"<timestamp>\"  # a moment inside the window above\n", base)
 	}
 }
 

@@ -168,6 +168,8 @@ ownbasectl db status mybase
 ────────────────────────────────────────────────────────────────────────
 ```
 
+The far end of the recovery window is when the last WAL segment finished archiving, not the last change inside it, so it is an upper bound rather than a target that is guaranteed reachable: asking for exactly that instant makes Postgres replay everything, never reach it, and refuse to start. That is why the suggested commands under the report offer a restore with no `--to` — "as recent as possible", which cannot miss — alongside the form that takes a timestamp.
+
 The line to watch is `Archiving`. When `archive_command` starts failing, nothing else about the Base looks wrong — the database serves queries, the container is up, the disk is fine — while the recovery window quietly stops moving and every change since the last success becomes unrecoverable. `pg_stat_archiver.failed_count` is the only place that shows, so a failing archiver is reported as a failure rather than as a count:
 
 ```

@@ -285,10 +285,13 @@ func restoreIntoProduction(ctx context.Context, pb PGBackRest, opts RestoreOptio
 	}
 
 	progressf(opts.Progress, "==> Starting %s to replay the archive\n", pb.Service)
-	back.stoppedPostgres = false
+	// Cleared only once the start succeeds — the opposite of the stop above,
+	// and for the same reason. A start that failed leaves the database down,
+	// which is precisely when cleanup needs to try again.
 	if err := systemctlUnit(ctx, "start", pb.Unit()); err != nil {
 		return out, fmt.Errorf("start %s: %w", pb.Service, err)
 	}
+	back.stoppedPostgres = false
 
 	if err := waitForRecovery(ctx, pb, pb.Container(), opts); err != nil {
 		return out, err
