@@ -52,6 +52,10 @@ services:
     requires:
       - <capability> # joins this service's capability network
 
+    # A Postgres database the Base creates for this service, on the named
+    # provider (which must also appear in requires:)
+    database: postgres/<dbname>
+
     # Health check
     health_probe:
       http: /health # GET this path; 2xx = healthy
@@ -160,6 +164,7 @@ ownbasectl deploy mybase auth --ref v1.1.0   # tag, branch, or commit
 1. Fetches the external config repo into the read-only checkout at `/opt/ownbase/checkout` (`internal/configsource`)
 2. Reads `ownbase.yaml` and compiles the desired state (Quadlet units, Caddyfile)
 3. Ensures a local bare clone exists for every service, cloning each `repo:` on first sight and fetching any pinned `ref:` not yet present locally (`internal/repos`)
+3a. Generates any missing `generated_secrets:` (`internal/gensecrets`) and creates any declared `database:`, writing its `DATABASE_URL` (`internal/gendb`) — both before the compile, so a new value reaches the container in this cycle rather than the next
 4. Checks for drift (compiler output vs. `runtime/` on disk)
 5. Queries what Podman/systemd is actually running
 6. Diffs desired vs. actual → produces a `PlannedAction` list
@@ -230,6 +235,45 @@ On each reconcile the daemon generates whatever is missing and stores it in the 
 - **Generation happens on the Base.** A private key never crosses the network nor touches your disk, and a rebuilt Base regenerates what it needs without anyone having to remember what was there before.
 
 Destinations are written as `KEY` (this service) or `service:KEY` (another service, which must exist), so the two halves of a keypair land on the two ends of the connection that uses them. `private_encoding: base64` exists because a PEM private key does not survive a trip through an environment variable intact, and most images that read a key from the environment expect the single-line form.
+
+## Databases: `database:`
+
+A service that needs its own Postgres database says so, naming the service that provides it:
+
+```yaml
+services:
+  postgres:
+    repo: https://github.com/ownbase-ai/pgbackrest
+    context: postgres
+    port: 5432
+    env:
+      - POSTGRES_USER=ownbase
+      - POSTGRES_DB=ownbase
+    generated_secrets:
+      - type: password
+        key: POSTGRES_PASSWORD
+
+  api:
+    repo: git@github.com:org/api.git
+    port: 8080
+    requires: [postgres] # required: this is what joins the two containers
+    database: postgres/revolve
+```
+
+On each reconcile the daemon creates `revolve` if it does not exist, and writes a `DATABASE_URL` into `api`'s secrets file — composed from the provider's `POSTGRES_USER`, its generated `POSTGRES_PASSWORD`, and the provider's container name and port:
+
+```
+postgresql://ownbase:<password>@ownbase-postgres:5432/revolve
+```
+
+From there it reaches the container as an environment variable through the normal secrets path, so the credential is in neither the config repo nor the unit file. Nothing is written to `ownbase.yaml`.
+
+The provider is named rather than inferred, and must also appear in `requires:`. Two separate things are being said: `requires:` joins the containers to a network and orders their startup, `database:` is what gets created. A Base can run two Postgres services, and nothing here depends on one of them happening to be called `postgres`.
+
+Like generated secrets, this converges rather than acts: a database that exists is left alone, and a URL that already matches is not rewritten, so a Base that has been up for a month does no work here and its containers are not restarted. Two consequences worth knowing:
+
+- **A rotated provider password rewrites the URL.** Declaring `database:` says OwnBase owns `DATABASE_URL` for that service; a service whose URL should be managed by hand simply does not declare it.
+- **The first reconcile of a fresh Base is too early.** Creating a database needs the provider's Postgres to be running, which it is not until later in the same cycle. The daemon logs what it skipped and finishes the job on the next tick, about a minute later.
 
 ## Scheduled jobs: `jobs:`
 

@@ -204,8 +204,15 @@ type ServiceDecl struct {
 	// this container to that provider's network.
 	Requires []string `yaml:"requires,omitempty"`
 
-	// Database is the name of the Postgres database to provision. The agent
-	// creates the database and injects credentials as environment variables.
+	// Database declares a Postgres database this service needs, as
+	// "<provider-service>/<dbname>" — e.g. "postgres/revolve". The provider is
+	// named rather than inferred, so a Base with two databases has no ambiguity
+	// and nothing depends on a service happening to be called "postgres".
+	//
+	// On reconcile the agent creates the database if it does not exist and
+	// writes a DATABASE_URL secret for this service, composed from the
+	// provider's user and password. The URL is never written to ownbase.yaml.
+	// The provider must also appear in Requires.
 	Database string `yaml:"database,omitempty"`
 
 	// HealthProbe configures how the agent verifies the service is up before
@@ -346,6 +353,98 @@ func (g GeneratedSecretDecl) Destinations() []SecretDest {
 		add(g.PrivateKey)
 	}
 	return out
+}
+
+// DatabaseRef is a parsed database: declaration.
+type DatabaseRef struct {
+	// Service is the service that runs the Postgres holding the database.
+	Service string
+
+	// Name is the database name.
+	Name string
+}
+
+// DatabaseRef parses the database: field. The second return is false when the
+// field is empty; a malformed value is rejected by Validate, so callers that
+// have parsed a config can treat a true result as well-formed.
+func (s ServiceDecl) DatabaseRef() (DatabaseRef, bool) {
+	spec := strings.TrimSpace(s.Database)
+	if spec == "" {
+		return DatabaseRef{}, false
+	}
+	provider, name, found := strings.Cut(spec, "/")
+	if !found {
+		return DatabaseRef{Name: strings.TrimSpace(spec)}, true
+	}
+	return DatabaseRef{
+		Service: strings.TrimSpace(provider),
+		Name:    strings.TrimSpace(name),
+	}, true
+}
+
+// DatabaseURLKey is the secret key a provisioned database's connection URL is
+// written to. It becomes DATABASE_URL in the service's environment through the
+// normal secrets path, so the URL is in neither git nor the unit file.
+const DatabaseURLKey = "DATABASE_URL"
+
+// validateDatabase checks a database: declaration.
+//
+// The provider is required to appear in requires: as well. The two say
+// different things — requires: is what joins the containers to a network and
+// orders their startup, database: is what gets created — and a database on a
+// provider this service cannot reach is not a configuration worth accepting
+// silently.
+func (s ServiceDecl) validateDatabase(name string, allServices map[string]ServiceDecl) error {
+	ref, ok := s.DatabaseRef()
+	if !ok {
+		return nil
+	}
+	where := fmt.Sprintf("service %q: database", name)
+
+	if ref.Service == "" {
+		return fmt.Errorf("%s: %q must be written as \"<service>/<dbname>\" (e.g. \"postgres/%s\") — the service that provides the database is named explicitly, never inferred",
+			where, s.Database, ref.Name)
+	}
+	if ref.Name == "" {
+		return fmt.Errorf("%s: %q is missing a database name after the \"/\"", where, s.Database)
+	}
+	if ref.Service == name {
+		return fmt.Errorf("%s: %q names this service as its own provider", where, s.Database)
+	}
+	if _, ok := allServices[ref.Service]; !ok {
+		return fmt.Errorf("%s: provider %q does not match any service key", where, ref.Service)
+	}
+	if !isDatabaseName(ref.Name) {
+		return fmt.Errorf("%s: %q is not a usable database name — use letters, digits, and underscores, starting with a letter or underscore", where, ref.Name)
+	}
+
+	for _, req := range s.Requires {
+		if req == ref.Service {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s: provider %q must also be listed in requires: — otherwise this container is never joined to its network and cannot reach the database",
+		where, ref.Service)
+}
+
+// isDatabaseName reports whether s is a plain unquoted SQL identifier.
+//
+// CREATE DATABASE cannot take the name as a bound parameter, so it is
+// interpolated into the statement. Restricting the name here is what keeps that
+// interpolation safe, and every name anyone actually wants already fits.
+func isDatabaseName(s string) bool {
+	if s == "" || len(s) > 63 {
+		return false
+	}
+	for i, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r == '_':
+		case r >= '0' && r <= '9' && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // SecretDest is one destination for a generated secret.
@@ -625,7 +724,7 @@ func (s ServiceDecl) validate(name string, allServices map[string]ServiceDecl) e
 			return err
 		}
 	}
-	return nil
+	return s.validateDatabase(name, allServices)
 }
 
 func (g GeneratedSecretDecl) validate(svcName string, idx int, allServices map[string]ServiceDecl) error {

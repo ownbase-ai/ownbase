@@ -37,6 +37,7 @@ import (
 	"github.com/ownbase/ownbase/internal/configsource"
 	"github.com/ownbase/ownbase/internal/core"
 	"github.com/ownbase/ownbase/internal/explain"
+	"github.com/ownbase/ownbase/internal/gendb"
 	"github.com/ownbase/ownbase/internal/gensecrets"
 	"github.com/ownbase/ownbase/internal/githost"
 	"github.com/ownbase/ownbase/internal/gitssh"
@@ -1036,6 +1037,33 @@ func reconcileLoop(
 		}
 		for _, dest := range gen.Generated {
 			fmt.Fprintf(os.Stderr, "ownbased: generated secret %s\n", dest)
+		}
+	}
+
+	// 3b. Create any database: a service declares and hand it the URL, in the
+	// same slot and for the same reason as generated secrets above: a
+	// DATABASE_URL written here is fingerprinted in step 4a-pre and reaches the
+	// container in this cycle.
+	//
+	// On a Base's first reconcile the provider's Postgres is not running yet, so
+	// this reports a skip and the next tick finishes the job. Non-fatal for the
+	// same reason as above — everything that does not need a database should
+	// still converge.
+	if !dryRun {
+		dbCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		prov, err := gendb.Ensure(dbCtx, cfg, gendb.Config{SecretsDir: explain.DefaultSecretsDir})
+		cancel()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ownbased: provision databases: %v (non-fatal)\n", err)
+		}
+		for _, db := range prov.Created {
+			fmt.Fprintf(os.Stderr, "ownbased: created database %s\n", db)
+		}
+		for _, svc := range prov.Wired {
+			fmt.Fprintf(os.Stderr, "ownbased: wrote %s for %s\n", schema.DatabaseURLKey, svc)
+		}
+		for _, skip := range prov.Skipped {
+			fmt.Fprintf(os.Stderr, "ownbased: database not provisioned yet — %s\n", skip)
 		}
 	}
 

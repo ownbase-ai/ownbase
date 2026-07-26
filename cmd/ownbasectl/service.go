@@ -62,7 +62,7 @@ func (f *serviceFieldFlags) register(cmd *cobra.Command) {
 	fl.StringSliceVar(&f.domains, "domains", nil, "public hostnames for the Caddy route, one route per domain; repeatable, replaces the full list when passed; combined with --domain and deduplicated")
 	fl.BoolVar(&f.internal, "internal", false, "tunnel-only: has domain(s) and port for `ownbasectl tunnel` but no Caddy route — never internet-facing")
 	fl.StringVar(&f.dataPath, "data-path", "", `mount path for the persistent data volume inside the container (default "/data")`)
-	fl.StringVar(&f.database, "database", "", "name of the Postgres database to provision")
+	fl.StringVar(&f.database, "database", "", "Postgres database to provision, as <provider-service>/<dbname> (e.g. postgres/revolve); the provider must also be in --requires, and DATABASE_URL is written to this service's secrets")
 	fl.StringSliceVar(&f.requires, "requires", nil, "capability (service key) this service depends on; repeatable; replaces the full list")
 	fl.StringArrayVar(&f.env, "env", nil, "KEY=VALUE static environment variable to set; repeatable")
 	fl.StringSliceVar(&f.addCapabilities, "add-capabilities", nil, "Linux capability to add back after the default DropCapability=ALL, e.g. NET_BIND_SERVICE for a service that binds directly to a port below 1024; repeatable, replaces the full list; only set what the service genuinely needs")

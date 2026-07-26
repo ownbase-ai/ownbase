@@ -34,7 +34,7 @@ services:
     repo: https://github.com/example/crm.git
     domain: crm.example.ownbase.ai
     port: 8080
-    database: crm_db
+    database: postgres/crm_db
     requires:
       - auth
       - jobs

@@ -330,6 +330,15 @@ ownbasectl service remove mybase crm
 
 `--add-capabilities` restores Linux capabilities after the compiler's default `DropCapability=ALL` — every container starts with none. Only needed by the minority of images that bind directly to a port below 1024 (e.g. `traefik/whoami` on port 80), which requires `NET_BIND_SERVICE`; most images listen on an unprivileged port (3000, 8080, ...) and never need this.
 
+`--database` asks the Base to create a Postgres database for the service and hand it the URL:
+
+```bash
+ownbasectl service add mybase api --repo git@github.com:org/api.git --port 8080 \
+  --requires postgres --database postgres/revolve
+```
+
+The value is `<provider-service>/<dbname>`; the provider must also be in `--requires`. On the next reconcile the daemon creates the database if it is missing and writes a `DATABASE_URL` into the service's secrets, composed from the provider's user and password — so the credential is in neither the config repo nor the unit file. See [ownbase-yaml.md](ownbase-yaml.md#databases-database).
+
 ---
 
 ## Local HTTPS tunnel: `tunnel <name>`

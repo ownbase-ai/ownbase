@@ -71,6 +71,19 @@
 | Injection | Start-time, scoped per service, never written to disk as plaintext | Secrets never appear in compiler output |
 | Backup | `/opt/ownbase/secrets/` and `/opt/ownbase/age/` are both in every restic snapshot | Secrets aren't in git, so restic is their only persistence; key and ciphertext must travel together |
 
+## Databases (`database:`)
+
+| Decision | Choice | Why |
+|---|---|---|
+| Form | `database: <provider-service>/<dbname>`, never a bare name | A Base can run two Postgres services; nothing should depend on one of them happening to be called `postgres`. Inference here would be a guess about the most destructive thing on the Base |
+| Relationship to `requires:` | The provider must appear in both; validation rejects a `database:` without it | They say different things — `requires:` joins the containers to a network and orders startup, `database:` is what gets created — and a database on a provider the service cannot reach is not worth accepting silently |
+| Credential delivery | A `DATABASE_URL` written into the consumer's age-encrypted secrets file, injected by the existing `Secret=` path | No new mechanism, and the URL is in neither git nor the unit file. Composing it into `env:` would put a password in the config repo |
+| URL host | The provider's container name and port, not a published port | The database is reached container to container and need not be exposed to the host at all |
+| Ownership of the value | Declaring `database:` means OwnBase owns that service's `DATABASE_URL` and rewrites it when the provider's password changes | A rotated password has to reach the consumer somehow. A service whose URL should be managed by hand does not declare `database:` |
+| Name charset | Plain SQL identifiers only (letters, digits, underscore) | `CREATE DATABASE` cannot bind its name as a parameter, so the name is interpolated; restricting it is what makes that safe, and every name anyone wants already fits |
+| When it runs | Before the compile, in the same reconcile slot as generated secrets | A URL written there is picked up by the secrets fingerprint and reaches the container in the same cycle |
+| First reconcile | Reports a skip and retries next tick, rather than failing | Creating a database needs the provider running, which on a fresh Base it is not until later in the same cycle. Converging a minute later is better than a reconcile that errors |
+
 ## Host hardening
 
 | Decision | Choice | Why |

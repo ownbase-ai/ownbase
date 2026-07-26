@@ -848,3 +848,109 @@ func TestGeneratedSecrets_Validate(t *testing.T) {
 		})
 	}
 }
+
+func TestDatabaseRef_Parse(t *testing.T) {
+	ref, ok := (schema.ServiceDecl{Database: " postgres / revolve "}).DatabaseRef()
+	if !ok {
+		t.Fatal("DatabaseRef() reported no declaration")
+	}
+	if ref.Service != "postgres" || ref.Name != "revolve" {
+		t.Errorf("DatabaseRef() = %+v, want postgres/revolve", ref)
+	}
+
+	if _, ok := (schema.ServiceDecl{}).DatabaseRef(); ok {
+		t.Error("DatabaseRef() reported a declaration for an empty field")
+	}
+}
+
+func TestDatabase_Validate(t *testing.T) {
+	tests := []struct {
+		name     string
+		database string
+		requires []string
+		wantErr  string
+	}{
+		{
+			name:     "valid",
+			database: "postgres/revolve",
+			requires: []string{"postgres"},
+		},
+		{
+			// The old bare-name form. Naming the provider is the whole point:
+			// a Base can run two databases, and nothing should depend on one
+			// of them happening to be called "postgres".
+			name:     "bare database name",
+			database: "revolve",
+			requires: []string{"postgres"},
+			wantErr:  `must be written as "<service>/<dbname>"`,
+		},
+		{
+			name:     "missing database name",
+			database: "postgres/",
+			requires: []string{"postgres"},
+			wantErr:  "missing a database name",
+		},
+		{
+			name:     "provider does not exist",
+			database: "ghost/revolve",
+			requires: []string{"postgres"},
+			wantErr:  "does not match any service key",
+		},
+		{
+			// requires: is what joins the containers to a network. A database
+			// on a provider this service cannot reach is not worth accepting.
+			name:     "provider not in requires",
+			database: "postgres/revolve",
+			wantErr:  "must also be listed in requires:",
+		},
+		{
+			name:     "provider is itself",
+			database: "svc/revolve",
+			requires: []string{"svc"},
+			wantErr:  "names this service as its own provider",
+		},
+		{
+			// CREATE DATABASE cannot bind its name as a parameter, so the name
+			// is interpolated and has to be an identifier.
+			name:     "name is not an identifier",
+			database: `postgres/rev"; drop database postgres; --`,
+			requires: []string{"postgres"},
+			wantErr:  "not a usable database name",
+		},
+		{
+			name:     "name starts with a digit",
+			database: "postgres/1db",
+			requires: []string{"postgres"},
+			wantErr:  "not a usable database name",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &schema.OwnbaseConfig{
+				SchemaVersion: "v1",
+				Services: map[string]schema.ServiceDecl{
+					"svc": {
+						Repo:     "https://github.com/org/svc",
+						Database: tc.database,
+						Requires: tc.requires,
+					},
+					"postgres": {Repo: "https://github.com/org/postgres"},
+				},
+			}
+			err := cfg.Validate()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("Validate() = nil, want an error containing %q", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("Validate() = %v, want it to contain %q", err, tc.wantErr)
+			}
+		})
+	}
+}
