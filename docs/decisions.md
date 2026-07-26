@@ -91,7 +91,9 @@
 | Cadence | Backup 1h, verify 24h, retention 30 days by default | Configurable via `core.backup.interval`/`verify_interval` |
 | Config vs. credentials | Repo URL in `core.backup:` (git-tracked); credentials in `/opt/ownbase/secrets/backup.yaml.age` | Config survives rebuild; credentials use the normal secrets model |
 | Restorable flag | Only set **after** a verified restore drill passes | A backup never verified is not restorable by definition |
-| Integrity checks | `restic check --read-data-subset=5%` + file-presence + `pg_controldata` | Practical middle ground between "ran" and "fully verified" |
+| Integrity checks | `restic check --read-data-subset=5%` + file-presence + a **real Postgres recovery** when the restore contains a pgBackRest repository | The first two prove the files came back; only the third proves the database does. A repository can restore cleanly and still fail to recover (a gap in the WAL archive, a full backup aged out from under its incrementals), and no file-level check can tell the difference. Replaces an earlier `pg_controldata` check, which parsed a control file and therefore could not |
+| Drill isolation | Recovery runs in `podman run --rm` with no network, `listen_addresses=''`, and `archive_mode=off`, against the restic-restored copy of the repository | The drill must be unable to affect production or write to a backup repository, even by accident |
+| Opting out | `core.backup.verify_postgres: false` | The recovery costs real CPU and minutes; operators who cannot spare them should have to say so explicitly, since the alternative is that the recovery path goes untested until the day it is needed |
 
 ## Updates and drift
 

@@ -14,6 +14,7 @@ core:
     repo: s3:s3.amazonaws.com/my-bucket/ownbase # restic repository URL
     # interval: 1h          # optional, default 1h
     # verify_interval: 24h  # optional, default 24h
+    # verify_postgres: true # optional, default true — recover a real Postgres in the drill
 
 services:
   <name>:
@@ -167,6 +168,29 @@ ownbasectl deploy mybase auth --ref v1.1.0   # tag, branch, or commit
 9. Updates the `/status` API with the new state
 
 Reconciles are triggered explicitly by `ownbasectl` (`deploy`, `config set`, `service *`, `config setup`) via `POST /reconcile`; a periodic timer backstop also runs as a safety net.
+
+## Backups: `core.backup:`
+
+| Key | Default | Meaning |
+|---|---|---|
+| `repo` | *(unset — backups disabled)* | restic repository URL (`s3:`, `b2:`, `sftp:`, or a local path for dev) |
+| `interval` | `1h` | how often a snapshot is taken |
+| `verify_interval` | `24h` | how often the verified-restore drill runs |
+| `verify_postgres` | `true` | whether the drill recovers a real Postgres from the backed-up pgBackRest repository |
+
+Credentials do not go here — they live in `/opt/ownbase/secrets/backup.yaml.age`, set with `ownbasectl secrets set <base> backup RESTIC_PASSWORD=… AWS_ACCESS_KEY_ID=…`. Which volumes reach the repository is decided per service by `volumes[].backup:`.
+
+### What the verified-restore drill proves
+
+`Restorable` is not set because backups ran; it is set because a restore worked. On its `verify_interval` (or on demand via `ownbasectl checkup <base> --verify`) the daemon restores the newest snapshot into a throwaway directory, checks it, and tears it down:
+
+1. **`restic check --read-data-subset=5%`** — the repository is internally consistent and its pack data actually reads back.
+2. **File presence** — every path that was backed up came back. A path that does not exist on this Base passes vacuously, since restic skips a nonexistent source rather than failing the snapshot.
+3. **Postgres recovery** — when the restore contains a pgBackRest repository, the drill restores that stanza into a throwaway Postgres built from the same image production runs, waits for WAL replay to finish, and asks the recovered database for its catalog.
+
+The third check is the one that makes the claim meaningful. The first two prove the files came back, which is a much weaker statement than the database came back: a pgBackRest repository can restore cleanly and still fail to recover — a gap in the WAL archive, a full backup that aged out from under its incrementals, a server version that cannot read what the client wrote — and none of that is visible to a file-level check.
+
+It cannot touch production. The repository it recovers is the restic-restored copy in a temporary directory, the container has no network, Postgres listens on nothing but a Unix socket inside it, and `archive_mode` is forced off so the promoted throwaway cluster cannot push WAL into a backup repository. Set `verify_postgres: false` to skip it when the CPU and minutes are genuinely a problem — at the cost of leaving the recovery path untested until the day it is needed.
 
 ## Secrets
 

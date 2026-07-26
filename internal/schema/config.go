@@ -62,6 +62,26 @@ type BackupCoreConfig struct {
 	// VerifyInterval is how often the verified-restore drill runs (e.g. "24h").
 	// Defaults to 24h when empty.
 	VerifyInterval string `yaml:"verify_interval,omitempty"`
+
+	// VerifyPostgres controls whether the drill proves Postgres recoverable by
+	// restoring the backed-up pgBackRest repository into a throwaway container
+	// and waiting for a real database to come up. nil means true.
+	//
+	// Leaving it on is the point of the drill: without it, "restorable" means
+	// the files came back, which is a much weaker claim than the database came
+	// back. Set false only when the CPU and minutes it costs are genuinely a
+	// problem, and understand that the recovery path then goes untested until
+	// the day it is needed.
+	VerifyPostgres *bool `yaml:"verify_postgres,omitempty"`
+}
+
+// PostgresVerifyEnabled reports whether the drill should prove Postgres
+// recoverable, defaulting to true when unset.
+func (b BackupCoreConfig) PostgresVerifyEnabled() bool {
+	if b.VerifyPostgres == nil {
+		return true
+	}
+	return *b.VerifyPostgres
 }
 
 // DefaultBackupInterval is the snapshot cadence used when Interval is empty.

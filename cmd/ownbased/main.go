@@ -876,6 +876,7 @@ func loadBackupConfig(cfg agentConfig, repo string, auditLog authz.AuditLogger) 
 	}
 
 	var paths []string
+	var pgRecovery backup.PostgresRecovery
 	oc, err := schema.ParseConfigFile(filepath.Join(cfg.checkoutPath, "ownbase.yaml"))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ownbased: backup: parse ownbase.yaml: %v (falling back to default paths)\n", err)
@@ -886,14 +887,16 @@ func loadBackupConfig(cfg agentConfig, repo string, auditLog authz.AuditLogger) 
 		} else {
 			paths = resolved
 		}
+		pgRecovery = backup.FindPostgresRecovery(oc)
 	}
 
 	return backup.Config{
-		Repository:  repo,
-		Paths:       paths,
-		Credentials: creds,
-		DryRun:      cfg.dryRun,
-		AuditLog:    auditLog,
+		Repository:       repo,
+		Paths:            paths,
+		Credentials:      creds,
+		DryRun:           cfg.dryRun,
+		AuditLog:         auditLog,
+		PostgresRecovery: pgRecovery,
 	}
 }
 

@@ -114,6 +114,12 @@ type Config struct {
 	// where it is and, on failure, which check failed — not just a boolean
 	// several minutes later. Scheduled runs leave this nil and log a summary.
 	Progress io.Writer
+
+	// PostgresRecovery, when configured, lets the verify drill prove that the
+	// backed-up pgBackRest repository actually brings a database back rather
+	// than merely restoring as files. Zero value skips that check — see
+	// core.backup.verify_postgres and postgres_recovery.go.
+	PostgresRecovery PostgresRecovery
 }
 
 // progressf writes one progress line, if a Progress writer was configured.
