@@ -59,6 +59,18 @@ services:
     user: "1000" # UID/username to run as; empty = image default
     add_capabilities: # caps to restore after DropCapability=ALL
       - NET_BIND_SERVICE # only set when the service genuinely needs them
+    security_opt: # --security-opt flags; each entry widens the security boundary
+      - apparmor=unconfined
+
+    # Credentials the Base creates for you, on first reconcile, if missing
+    generated_secrets:
+      - type: password # a random value nobody needs to choose
+        key: POSTGRES_PASSWORD
+        # length: 32   # optional, default 32
+      - type: ssh-ed25519 # a keypair, optionally split across two services
+        public_key: CLIENT_PUBKEY
+        private_key: other-service:SSH_KEY_B64
+        private_encoding: base64 # or "raw" (default) for PEM as-is
 
 jobs:
   <name>:
@@ -166,6 +178,34 @@ ownbasectl secrets get mybase myapp DB_URL
 ```
 
 The age private key (`/opt/ownbase/age/key.age`) never leaves the Base; plaintext values travel only inside the SSH tunnel between `ownbasectl` and the daemon. There is one age recipient per Base — no multi-key sharing, no external KMS. This is a deliberate simplicity choice over formats like `sops`: the file is opaque as a whole (no per-field structure to inspect), which is sufficient because the daemon is the only consumer and rotation just re-encrypts the (small) file.
+
+### Generated secrets: `generated_secrets:`
+
+Some credentials have no business being authored by a human. An SSH keypair cannot be written in YAML at all, and a database password an operator invents is a password they are tempted to reuse. So `ownbase.yaml` names the keys and leaves the values to the Base:
+
+```yaml
+services:
+  pgbackrest:
+    repo: https://github.com/ownbase-ai/pgbackrest
+    generated_secrets:
+      - type: ssh-ed25519
+        public_key: PGBACKREST_CLIENT_PUBKEY # stored on this service (the end that accepts)
+        private_key: postgres:PGBACKREST_SSH_KEY_B64 # stored on postgres (the end that dials)
+        private_encoding: base64
+
+  postgres:
+    repo: https://github.com/ownbase-ai/pgbackrest
+    generated_secrets:
+      - type: password
+        key: POSTGRES_PASSWORD
+```
+
+On each reconcile the daemon generates whatever is missing and stores it in the same age-encrypted per-service files as `ownbasectl secrets set`, from which it is injected as a container environment variable. Two properties make this safe to run on every tick:
+
+- **It only ever fills gaps.** A key that already has a value is left alone, so restarts never rotate a credential and you can always override a generated value by setting it by hand. A keypair is all-or-nothing: if one half is already present, neither half is regenerated, since a mismatched pair would authenticate against nothing.
+- **Generation happens on the Base.** A private key never crosses the network nor touches your disk, and a rebuilt Base regenerates what it needs without anyone having to remember what was there before.
+
+Destinations are written as `KEY` (this service) or `service:KEY` (another service, which must exist), so the two halves of a keypair land on the two ends of the connection that uses them. `private_encoding: base64` exists because a PEM private key does not survive a trip through an environment variable intact, and most images that read a key from the environment expect the single-line form.
 
 ## Scheduled jobs: `jobs:`
 

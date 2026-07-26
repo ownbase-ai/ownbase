@@ -196,6 +196,8 @@ ownbasectl config setup mybase --repo git@github.com:org/ownbase-config.git
 ownbasectl config setup mybase --repo git@github.com:org/ownbase-config.git --init  # seed an empty repo
 ```
 
+The seed is a working **Postgres 17 with point-in-time recovery** — a `postgres` service plus the `pgbackrest` repository host that owns its WAL archive and base backups — rather than an empty `services:` map. Almost every Base needs a database, and the settings that make one recoverable (the AppArmor exception Postgres will not start without, the capabilities `sshd` needs, backing up the pgBackRest repository instead of the live data directory) are exactly the ones nobody discovers on their own. Each is spelled out in the seeded file with a comment on what breaks if it is removed. The SSH keypair and the Postgres password are declared as [`generated_secrets:`](ownbase-yaml.md#generated-secrets-generated_secrets) and created by the Base on its first reconcile, so there is no `ssh-keygen` and no password to invent. Delete both services if this Base needs no database; nothing else depends on them.
+
 ### `config get|set <name>`
 
 Read `ownbase.yaml` (from the Base's checkout) or atomically replace it (client-side commit to the config repo).

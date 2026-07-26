@@ -37,6 +37,7 @@ import (
 	"github.com/ownbase/ownbase/internal/configsource"
 	"github.com/ownbase/ownbase/internal/core"
 	"github.com/ownbase/ownbase/internal/explain"
+	"github.com/ownbase/ownbase/internal/gensecrets"
 	"github.com/ownbase/ownbase/internal/githost"
 	"github.com/ownbase/ownbase/internal/gitssh"
 	"github.com/ownbase/ownbase/internal/install"
@@ -954,6 +955,24 @@ func reconcileLoop(
 	adminUser := install.ReadAdminUser(install.AdminUserPath)
 	for _, err := range repos.EnsureRepos(cfg, adminUser) {
 		fmt.Fprintf(os.Stderr, "ownbased: ensure repos: %v (non-fatal)\n", err)
+	}
+
+	// 3a. Fill in any generated_secrets: whose destination key is still empty.
+	// This runs before the compile below so a freshly generated value is
+	// picked up by the secrets fingerprint in step 4a-pre and the container
+	// starts with it in the same cycle rather than the next one.
+	//
+	// Non-fatal: a Base whose age key is unreadable should still reconcile
+	// everything that doesn't need a secret, and the affected service will
+	// fail its own health probe with a much clearer symptom.
+	if !dryRun {
+		gen, err := gensecrets.Ensure(cfg, gensecrets.Config{SecretsDir: explain.DefaultSecretsDir})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ownbased: generate secrets: %v (non-fatal)\n", err)
+		}
+		for _, dest := range gen.Generated {
+			fmt.Fprintf(os.Stderr, "ownbased: generated secret %s\n", dest)
+		}
 	}
 
 	// 4. Compile desired state.

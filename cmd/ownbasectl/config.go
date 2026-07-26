@@ -37,9 +37,25 @@ command, safe to script or run from an AI agent.`,
 	return cmd
 }
 
-// defaultOwnbaseYAML is the minimal config seeded into an empty config repo by
+// pgBackRestRef pins the commit of github.com/ownbase-ai/pgbackrest that the
+// scaffolded config builds both the repository host and the Postgres image
+// from. Bumping the Postgres/pgBackRest pair is a one-line change here.
+const pgBackRestRef = "3ec931b9e2afe5eec934d46442031d21019c2da3"
+
+// defaultOwnbaseYAML is the config seeded into an empty config repo by
 // `config setup --init`.
-const defaultOwnbaseYAML = `schema_version: v1
+//
+// It ships a working Postgres with point-in-time recovery rather than an empty
+// services: map, because almost every Base needs a database and the settings
+// that make one recoverable are exactly the settings nobody discovers on their
+// own — the AppArmor exception Postgres cannot start without, the capabilities
+// sshd needs, and the decision to back up the pgBackRest repository instead of
+// the live data directory. Each is spelled out here, with a comment explaining
+// what breaks if it is removed. Delete both services if this Base needs no
+// database; nothing else depends on them.
+//
+// The %s is pgBackRestRef, interpolated in defaultOwnbaseYAMLContent.
+const defaultOwnbaseYAMLTemplate = `schema_version: v1
 
 # OwnBase configuration — the single source of truth for this Base.
 # Edit via ownbasectl (config set / service add / deploy), which commits here.
@@ -48,8 +64,88 @@ core:
   caddy:
     # email: you@example.com  # for automatic TLS certificates
 
-services: {}
+  backup:
+    # Set a restic repository to enable off-machine backups, then store the
+    # credentials with: ownbasectl secrets set <base> backup RESTIC_PASSWORD=...
+    #   repo: s3:s3.us-east-2.amazonaws.com/my-bucket/my-base
+    repo: ""
+    interval: 1h
+    verify_interval: 24h
+
+services:
+  # pgBackRest repository host. Owns the WAL archive and the base backups; the
+  # postgres container pushes to it over SSH. Its repo volume is what restic
+  # ships off the machine, so Postgres recovery never depends on a file-level
+  # copy of a live data directory.
+  pgbackrest:
+    repo: https://github.com/ownbase-ai/pgbackrest
+    ref: %[1]s
+    context: "."
+    # OwnBase always emits DropCapability=ALL. sshd needs SETUID/SETGID to drop
+    # privileges to the pgbackrest user, and SYS_CHROOT because its pre-auth
+    # privilege-separation child chroots into /run/sshd. Without SYS_CHROOT sshd
+    # listens but every connection is reset during key exchange.
+    add_capabilities:
+      - SETUID
+      - SETGID
+      - SYS_CHROOT
+    # The Base generates this keypair on first reconcile and keeps both halves
+    # age-encrypted: the public half here, the private half on postgres, which
+    # is the end that dials in. No ssh-keygen, and the private key never leaves
+    # the machine.
+    generated_secrets:
+      - type: ssh-ed25519
+        public_key: PGBACKREST_CLIENT_PUBKEY
+        private_key: postgres:PGBACKREST_SSH_KEY_B64
+        # A PEM does not survive a trip through an environment variable.
+        private_encoding: base64
+    volumes:
+      - name: repo
+        mount: /var/lib/pgbackrest
+        # The one volume that makes Postgres recoverable from off-machine backup.
+        backup: ["."]
+      - name: log
+        mount: /var/log/pgbackrest
+
+  # Postgres 17 with the pgBackRest client. The image pre-owns every writable
+  # path as UID 999 and sets USER postgres, so unlike the plain docker-library
+  # image it needs no added capabilities.
+  #
+  # PGDATA is deliberately unset: the image default (/var/lib/postgresql/data)
+  # is what pgBackRest's pg1-path points at.
+  postgres:
+    repo: https://github.com/ownbase-ai/pgbackrest
+    ref: %[1]s
+    context: "postgres"
+    port: 5432
+    requires:
+      - pgbackrest
+    generated_secrets:
+      - type: password
+        key: POSTGRES_PASSWORD
+    volumes:
+      - name: data
+        mount: /var/lib/postgresql/data
+        # No backup: key — pgBackRest owns Postgres recovery. A restic file copy
+        # of a live data directory is crash-inconsistent and cannot do PITR.
+    env:
+      - POSTGRES_USER=ownbase
+      - POSTGRES_DB=ownbase
+      # Inter-container DNS resolves the container name, not the service key.
+      - PGBACKREST_HOST=ownbase-pgbackrest
+      - PGBACKREST_STANZA=main
+    # Required, and not optional: Podman's containers-default AppArmor profile
+    # denies signals between the container's own processes, so the startup
+    # process cannot signal the checkpointer. Postgres then dies with
+    # "could not signal for checkpoint: Permission denied" at the end-of-recovery
+    # checkpoint, on every start. CAP_KILL does not substitute — this is
+    # AppArmor mediation, not the kill(2) UID check.
+    security_opt:
+      - apparmor=unconfined
 `
+
+// defaultOwnbaseYAML is the seeded config with pgBackRestRef interpolated.
+var defaultOwnbaseYAML = fmt.Sprintf(defaultOwnbaseYAMLTemplate, pgBackRestRef)
 
 func newConfigSetupCmd() *cobra.Command {
 	var repo, ref string

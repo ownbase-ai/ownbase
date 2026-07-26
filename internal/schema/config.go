@@ -226,6 +226,130 @@ type ServiceDecl struct {
 	// child processes and require inter-process signaling, which the default
 	// containers-default AppArmor profile blocks when no-new-privileges is set.
 	SecurityOpt []string `yaml:"security_opt,omitempty"`
+
+	// GeneratedSecrets declares secret values the agent creates for this
+	// service when they do not already exist. Nothing sensitive is written
+	// to ownbase.yaml — only the names of the keys to fill in.
+	GeneratedSecrets []GeneratedSecretDecl `yaml:"generated_secrets,omitempty"`
+}
+
+// GeneratedSecretType is the kind of value a GeneratedSecretDecl produces.
+type GeneratedSecretType string
+
+const (
+	// GeneratedSecretPassword is a random high-entropy string, for things
+	// like POSTGRES_PASSWORD that must exist but that nobody needs to read.
+	GeneratedSecretPassword GeneratedSecretType = "password"
+
+	// GeneratedSecretSSHEd25519 is an ed25519 SSH keypair, where the public
+	// half is usually stored on the service that accepts the connection and
+	// the private half on the service that makes it.
+	GeneratedSecretSSHEd25519 GeneratedSecretType = "ssh-ed25519"
+)
+
+// GeneratedSecretDecl declares one secret the agent generates on first
+// reconcile if it is missing, rather than making the operator produce it by
+// hand and paste it in with `ownbasectl secrets set`.
+//
+// Generation happens on the Base, so a private key never crosses the network
+// or touches the operator's disk. It is skipped entirely when every
+// destination key already has a value, which makes it idempotent across
+// restarts and means a rebuilt Base regenerates what it needs on its own.
+//
+// A destination is written as "KEY" (this service) or "service:KEY" (another
+// service), so a keypair can be split across the two ends of a connection:
+//
+//	generated_secrets:
+//	  - type: ssh-ed25519
+//	    public_key: PGBACKREST_CLIENT_PUBKEY
+//	    private_key: postgres:PGBACKREST_SSH_KEY_B64
+//	    private_encoding: base64
+type GeneratedSecretDecl struct {
+	// Type selects the generator. Required.
+	Type GeneratedSecretType `yaml:"type"`
+
+	// Key is the destination for a password. Required for type: password,
+	// and not used by keypair types.
+	Key string `yaml:"key,omitempty"`
+
+	// Length is the password length in characters. Defaults to
+	// DefaultGeneratedPasswordLength. Only meaningful for type: password.
+	Length int `yaml:"length,omitempty"`
+
+	// PublicKey is the destination for the public half of a keypair, in
+	// OpenSSH authorized_keys form. Required for keypair types.
+	PublicKey string `yaml:"public_key,omitempty"`
+
+	// PrivateKey is the destination for the private half of a keypair, in
+	// OpenSSH PEM form. Required for keypair types.
+	PrivateKey string `yaml:"private_key,omitempty"`
+
+	// PrivateEncoding is how the private key is encoded before being stored:
+	// "raw" (the default) for PEM as-is, or "base64" for a single-line form,
+	// which some images require because a PEM cannot survive a round trip
+	// through an environment variable intact.
+	PrivateEncoding string `yaml:"private_encoding,omitempty"`
+}
+
+// DefaultGeneratedPasswordLength is the password length used when Length is 0.
+const DefaultGeneratedPasswordLength = 32
+
+// EffectiveLength returns Length, or DefaultGeneratedPasswordLength when unset.
+func (g GeneratedSecretDecl) EffectiveLength() int {
+	if g.Length <= 0 {
+		return DefaultGeneratedPasswordLength
+	}
+	return g.Length
+}
+
+// Base64Private reports whether the private key should be base64-encoded.
+func (g GeneratedSecretDecl) Base64Private() bool {
+	return g.PrivateEncoding == "base64"
+}
+
+// Destinations returns every secret destination this declaration writes to,
+// as (service, key) pairs. An empty service means "the service that declared
+// it" — the caller substitutes its own name.
+func (g GeneratedSecretDecl) Destinations() []SecretDest {
+	var out []SecretDest
+	add := func(spec string) {
+		if strings.TrimSpace(spec) == "" {
+			return
+		}
+		out = append(out, ParseSecretDest(spec))
+	}
+	switch g.Type {
+	case GeneratedSecretPassword:
+		add(g.Key)
+	case GeneratedSecretSSHEd25519:
+		add(g.PublicKey)
+		add(g.PrivateKey)
+	}
+	return out
+}
+
+// SecretDest is one destination for a generated secret.
+type SecretDest struct {
+	// Service is the service whose secrets file receives the value. Empty
+	// means the service that declared the generator.
+	Service string
+
+	// Key is the secret key name (which becomes an environment variable
+	// inside the container).
+	Key string
+}
+
+// ParseSecretDest splits a destination spec into its service and key.
+// "KEY" yields an empty Service; "service:KEY" yields both.
+func ParseSecretDest(spec string) SecretDest {
+	spec = strings.TrimSpace(spec)
+	if idx := strings.IndexByte(spec, ':'); idx >= 0 {
+		return SecretDest{
+			Service: strings.TrimSpace(spec[:idx]),
+			Key:     strings.TrimSpace(spec[idx+1:]),
+		}
+	}
+	return SecretDest{Key: spec}
 }
 
 // VolumeDecl declares one named Podman volume for a service.
@@ -475,6 +599,60 @@ func (s ServiceDecl) validate(name string, allServices map[string]ServiceDecl) e
 			return fmt.Errorf("service %q: duplicate volume name %q", name, v.Name)
 		}
 		seenVolNames[v.Name] = true
+	}
+	for i, g := range s.GeneratedSecrets {
+		if err := g.validate(name, i, allServices); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (g GeneratedSecretDecl) validate(svcName string, idx int, allServices map[string]ServiceDecl) error {
+	where := fmt.Sprintf("service %q: generated_secrets[%d]", svcName, idx)
+
+	switch g.Type {
+	case GeneratedSecretPassword:
+		if strings.TrimSpace(g.Key) == "" {
+			return fmt.Errorf("%s: key is required for type: password", where)
+		}
+		if g.PublicKey != "" || g.PrivateKey != "" {
+			return fmt.Errorf("%s: public_key/private_key are not used by type: password (use key:)", where)
+		}
+	case GeneratedSecretSSHEd25519:
+		if strings.TrimSpace(g.PublicKey) == "" {
+			return fmt.Errorf("%s: public_key is required for type: %s", where, g.Type)
+		}
+		if strings.TrimSpace(g.PrivateKey) == "" {
+			return fmt.Errorf("%s: private_key is required for type: %s", where, g.Type)
+		}
+		if g.Key != "" {
+			return fmt.Errorf("%s: key is not used by type: %s (use public_key:/private_key:)", where, g.Type)
+		}
+	case "":
+		return fmt.Errorf("%s: type is required (one of: %s, %s)",
+			where, GeneratedSecretPassword, GeneratedSecretSSHEd25519)
+	default:
+		return fmt.Errorf("%s: unknown type %q (one of: %s, %s)",
+			where, g.Type, GeneratedSecretPassword, GeneratedSecretSSHEd25519)
+	}
+
+	if enc := g.PrivateEncoding; enc != "" && enc != "raw" && enc != "base64" {
+		return fmt.Errorf("%s: private_encoding %q must be \"raw\" or \"base64\"", where, enc)
+	}
+
+	// A destination naming another service must name one that exists, or the
+	// generated half would be written to a secrets file nothing ever reads.
+	for _, d := range g.Destinations() {
+		if d.Key == "" {
+			return fmt.Errorf("%s: destination is missing a key name", where)
+		}
+		if d.Service == "" {
+			continue
+		}
+		if _, ok := allServices[d.Service]; !ok {
+			return fmt.Errorf("%s: destination service %q does not match any service key", where, d.Service)
+		}
 	}
 	return nil
 }
