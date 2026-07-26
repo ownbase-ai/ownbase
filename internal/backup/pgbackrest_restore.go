@@ -206,12 +206,18 @@ func restoreIntoScratch(ctx context.Context, pb PGBackRest, opts RestoreOptions)
 func restoreIntoProduction(ctx context.Context, pb PGBackRest, opts RestoreOptions) (RestoreOutcome, error) {
 	out := RestoreOutcome{Into: RestoreIntoProduction, Target: opts.Target}
 
+	// Checked before anything is resolved or stopped: this is the one path that
+	// takes the Base down, so it fails while that is still free.
+	if pb.DataVolume == "" {
+		return out, fmt.Errorf("service %q declares no volume at its data directory (%s) — a production restore replaces that directory, so it has to be a volume ownbase manages; a scratch restore works either way",
+			pb.Service, DefaultPostgresDataDir)
+	}
+
 	repoPath, err := PodmanVolumeResolver{}.Resolve(ctx, pb.RepoVolume)
 	if err != nil {
 		return out, err
 	}
-	dataVolume := fmt.Sprintf("ownbase-%s-data", pb.Service)
-	dataPath, err := PodmanVolumeResolver{}.Resolve(ctx, dataVolume)
+	dataPath, err := PodmanVolumeResolver{}.Resolve(ctx, pb.DataVolume)
 	if err != nil {
 		return out, err
 	}

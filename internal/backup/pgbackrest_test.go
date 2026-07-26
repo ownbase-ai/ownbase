@@ -6,6 +6,7 @@ package backup
 // recovery target the repository cannot reach.
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -65,6 +66,105 @@ func TestFindPGBackRest_FindsPostgresRepoAndDependants(t *testing.T) {
 
 // A service called postgres that archives nowhere has no point-in-time recovery
 // to report on, and saying so is more use than reporting on nothing.
+// The data directory volume is found by mount path, like the repository is. A
+// production restore replaces that directory, so assuming the volume is called
+// "data" would break the destructive path on any Base that names it otherwise.
+func TestFindPGBackRest_FindsDataVolumeByMount(t *testing.T) {
+	cases := []struct {
+		name   string
+		env    []string
+		volume schema.VolumeDecl
+		want   string
+	}{
+		{
+			name:   "image default",
+			volume: schema.VolumeDecl{Name: "pgdata", Mount: DefaultPostgresDataDir},
+			want:   "ownbase-postgres-pgdata",
+		},
+		{
+			name:   "PGDATA moves it",
+			env:    []string{"PGDATA=/data/pg17"},
+			volume: schema.VolumeDecl{Name: "cluster", Mount: "/data/pg17"},
+			want:   "ownbase-postgres-cluster",
+		},
+		{
+			name:   "pg1-path wins, trailing slash ignored",
+			env:    []string{"PGDATA=/unused", "PGBACKREST_PG1_PATH=/srv/pg"},
+			volume: schema.VolumeDecl{Name: "srv", Mount: "/srv/pg/"},
+			want:   "ownbase-postgres-srv",
+		},
+		{
+			// Not an error: only a production restore needs it, and db status
+			// has to keep working here.
+			name:   "no volume at the data directory",
+			volume: schema.VolumeDecl{Name: "data", Mount: "/var/lib/somewhere-else"},
+			want:   "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			oc := pgConfig()
+			svc := oc.Services["postgres"]
+			svc.Env = append(svc.Env, tc.env...)
+			svc.Volumes = []schema.VolumeDecl{tc.volume}
+			oc.Services["postgres"] = svc
+
+			pb, err := FindPGBackRest(oc)
+			if err != nil {
+				t.Fatalf("FindPGBackRest: %v", err)
+			}
+			if pb.DataVolume != tc.want {
+				t.Errorf("DataVolume = %q, want %q", pb.DataVolume, tc.want)
+			}
+		})
+	}
+}
+
+// A service that declares no volumes: still gets one, created by the compiler
+// as ownbase-<name>-data at its data_path. Reading only the declaration would
+// miss it and refuse a production restore on the most ordinary config there is.
+func TestFindPGBackRest_FindsTheImplicitDataVolume(t *testing.T) {
+	cases := []struct {
+		name     string
+		dataPath string
+		want     string
+	}{
+		{name: "data_path is the data directory", dataPath: DefaultPostgresDataDir, want: "ownbase-postgres-data"},
+		{name: "data_path is somewhere else", dataPath: "", want: ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			oc := pgConfig()
+			svc := oc.Services["postgres"]
+			svc.DataPath = tc.dataPath
+			oc.Services["postgres"] = svc
+
+			pb, err := FindPGBackRest(oc)
+			if err != nil {
+				t.Fatalf("FindPGBackRest: %v", err)
+			}
+			if pb.DataVolume != tc.want {
+				t.Errorf("DataVolume = %q, want %q", pb.DataVolume, tc.want)
+			}
+		})
+	}
+}
+
+// Without a data volume the destructive path has nothing to restore over, and
+// finding that out after the Base is down would be the worst possible moment.
+func TestRestoreIntoProduction_RefusesWithoutADataVolume(t *testing.T) {
+	pb := PGBackRest{Service: "postgres", Stanza: "main", RepoVolume: "ownbase-pgbackrest-repo"}
+	_, err := restoreIntoProduction(context.Background(), pb, RestoreOptions{})
+	if err == nil {
+		t.Fatal("want an error when no volume holds the data directory")
+	}
+	if !strings.Contains(err.Error(), DefaultPostgresDataDir) {
+		t.Errorf("error should name the directory it looked for, got: %v", err)
+	}
+}
+
 func TestFindPGBackRest_RequiresArchiving(t *testing.T) {
 	oc := &schema.OwnbaseConfig{
 		Services: map[string]schema.ServiceDecl{

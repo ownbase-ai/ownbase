@@ -50,6 +50,11 @@ type PGBackRest struct {
 	// to fail when it is needed most.
 	RepoVolume string
 
+	// DataVolume is the Podman volume holding the live data directory, e.g.
+	// "ownbase-postgres-data". Empty when the service declares no volume at its
+	// data directory, which only a production restore cares about.
+	DataVolume string
+
 	// Dependants are the services that declare requires: on Service. A
 	// production restore stops them first, because a client holding a
 	// connection through a data-directory swap sees corruption, not an outage.
@@ -77,6 +82,49 @@ func (p PGBackRest) database() string {
 // pgBackRestRepoMount is where the pgBackRest image keeps its repository. It
 // identifies the repository volume among a repository host's volumes.
 const pgBackRestRepoMount = "/var/lib/pgbackrest"
+
+// DefaultPostgresDataDir is the data directory of the official Postgres image,
+// and of the pgBackRest image built on it.
+const DefaultPostgresDataDir = "/var/lib/postgresql/data"
+
+// postgresDataDir is where a Postgres service keeps its data directory inside
+// the container: whatever pgBackRest is pointed at, then PGDATA, then the image
+// default. Read from configuration rather than assumed, because a Base that
+// moves its data directory would otherwise have a production restore replace
+// the wrong one — or, if the volume is missing, none at all.
+// volumeMount pairs a Podman volume with where a service mounts it.
+type volumeMount struct{ Volume, Mount string }
+
+// serviceVolumeMounts lists a service's volumes as the compiler creates them,
+// including the implicit "ownbase-<name>-data" that a service declaring no
+// volumes: gets at its data_path. Reading the declaration directly would miss
+// that one, which is the shape most Bases have.
+func serviceVolumeMounts(name string, svc schema.ServiceDecl) []volumeMount {
+	if len(svc.Volumes) == 0 {
+		mount := svc.DataPath
+		if mount == "" {
+			mount = "/data"
+		}
+		return []volumeMount{{Volume: fmt.Sprintf("ownbase-%s-data", name), Mount: mount}}
+	}
+	out := make([]volumeMount, 0, len(svc.Volumes))
+	for _, v := range svc.Volumes {
+		out = append(out, volumeMount{
+			Volume: fmt.Sprintf("ownbase-%s-%s", name, v.Name),
+			Mount:  v.Mount,
+		})
+	}
+	return out
+}
+
+func postgresDataDir(svc schema.ServiceDecl) string {
+	for _, key := range []string{"PGBACKREST_PG1_PATH", "PGDATA"} {
+		if v := envValue(svc.Env, key); v != "" {
+			return strings.TrimRight(v, "/")
+		}
+	}
+	return DefaultPostgresDataDir
+}
 
 // FindPGBackRest locates the Postgres service that archives to a pgBackRest
 // repository host, and the repository volume on that host.
@@ -126,6 +174,18 @@ func FindPGBackRest(oc *schema.OwnbaseConfig) (PGBackRest, error) {
 		if out.RepoVolume == "" {
 			return PGBackRest{}, fmt.Errorf("service %q has no volume mounted at %s — cannot find the pgBackRest repository",
 				repoService, pgBackRestRepoMount)
+		}
+
+		// The data directory is found by mount path, like the repository, since
+		// a volume can be called anything. Not finding one is not an error
+		// here: only a production restore replaces the data directory, and
+		// `db status` has to keep working on a Base this does not fit.
+		dataDir := postgresDataDir(svc)
+		for _, vm := range serviceVolumeMounts(name, svc) {
+			if strings.TrimRight(vm.Mount, "/") == dataDir {
+				out.DataVolume = vm.Volume
+				break
+			}
 		}
 
 		for _, dep := range sortedServiceNames(oc) {
