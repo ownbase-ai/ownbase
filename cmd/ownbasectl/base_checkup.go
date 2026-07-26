@@ -60,9 +60,13 @@ func checkup(conn *connection, base string, jsonOut, doVerify bool) error {
 	// drill is not fatal to the checkup: the report that follows is exactly
 	// what an operator wants to see next, so the failure is noted and the
 	// report still prints.
-	var verifyErr error
+	var (
+		verifyErr    error
+		verifyResult string
+	)
 	if doVerify {
-		if verifyErr = runVerifyDrill(conn, jsonOut); verifyErr != nil && !jsonOut {
+		verifyResult, verifyErr = runVerifyDrill(conn, jsonOut)
+		if verifyErr != nil && !jsonOut {
 			fmt.Printf("\n  ⚠ %v\n", verifyErr)
 		}
 	}
@@ -73,10 +77,10 @@ func checkup(conn *connection, base string, jsonOut, doVerify bool) error {
 	}
 
 	if jsonOut {
-		fmt.Println(string(body))
+		printCheckupJSON(body, verifyResult)
 		// Same verdict as the formatted path below: a failed drill exits
-		// non-zero. Its message went to stderr rather than into the payload so
-		// that stdout stays parseable.
+		// non-zero. Its message goes to stderr rather than into the payload,
+		// which is what keeps stdout a document rather than a report.
 		return verifyErr
 	}
 
@@ -114,6 +118,31 @@ func checkup(conn *connection, base string, jsonOut, doVerify bool) error {
 	return verifyErr
 }
 
+// printCheckupJSON writes one document, not two. Without --verify that is the
+// /status body unchanged, so anything already parsing it keeps working; with
+// --verify the drill result would otherwise be a second document on the same
+// stream, which no ordinary JSON reader accepts.
+func printCheckupJSON(status []byte, verifyResult string) {
+	if strings.TrimSpace(verifyResult) == "" {
+		fmt.Println(strings.TrimSpace(string(status)))
+		return
+	}
+	combined, err := json.Marshal(struct {
+		Verify json.RawMessage `json:"verify"`
+		Status json.RawMessage `json:"status"`
+	}{
+		Verify: json.RawMessage(verifyResult),
+		Status: json.RawMessage(status),
+	})
+	if err != nil {
+		// Neither half is this CLI's to rewrite, so an unmarshalable one is
+		// passed through rather than swallowed.
+		fmt.Println(strings.TrimSpace(string(status)))
+		return
+	}
+	fmt.Println(string(combined))
+}
+
 // runVerifyDrill triggers the verified-restore drill on the Base and streams
 // its progress, mirroring how `upgrade` and `security fix` consume their
 // long-running endpoints.
@@ -122,11 +151,14 @@ func checkup(conn *connection, base string, jsonOut, doVerify bool) error {
 // only when every check passed. The trailer is what makes a failure
 // actionable: without the per-check breakdown, "not restorable" says the
 // backups cannot be proven good without saying which part is not.
-func runVerifyDrill(conn *connection, jsonOut bool) error {
+//
+// Returns that trailer verbatim so --json can fold it into the one document the
+// caller prints, rather than printing a second one here.
+func runVerifyDrill(conn *connection, jsonOut bool) (string, error) {
 	verifyURL := conn.baseURL + "/backup/verify"
 	req, err := http.NewRequest(http.MethodPost, verifyURL, nil)
 	if err != nil {
-		return fmt.Errorf("build request: %w", err)
+		return "", fmt.Errorf("build request: %w", err)
 	}
 	if conn.token != "" {
 		req.Header.Set("Authorization", "Bearer "+conn.token)
@@ -142,20 +174,20 @@ func runVerifyDrill(conn *connection, jsonOut bool) error {
 	client := &http.Client{Timeout: 60 * time.Minute}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("backup/verify API at %s: %w\n  Is the agent running?", verifyURL, err)
+		return "", fmt.Errorf("backup/verify API at %s: %w\n  Is the agent running?", verifyURL, err)
 	}
 	defer resp.Body.Close()
 
 	switch resp.StatusCode {
 	case http.StatusOK:
 	case http.StatusUnauthorized:
-		return fmt.Errorf("unauthorized — the cached token may be stale; remove the profile and run 'ownbasectl adopt' again")
+		return "", fmt.Errorf("unauthorized — the cached token may be stale; remove the profile and run 'ownbasectl adopt' again")
 	case http.StatusNotImplemented:
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("%s", strings.TrimSpace(string(body)))
+		return "", fmt.Errorf("%s", strings.TrimSpace(string(body)))
 	default:
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("backup/verify returned %d: %s", resp.StatusCode, body)
+		return "", fmt.Errorf("backup/verify returned %d: %s", resp.StatusCode, body)
 	}
 
 	var gotOK bool
@@ -186,11 +218,7 @@ func runVerifyDrill(conn *connection, jsonOut bool) error {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return err
-	}
-
-	if jsonOut && resultJSON != "" {
-		fmt.Println(resultJSON)
+		return resultJSON, err
 	}
 
 	if gotOK {
@@ -198,7 +226,7 @@ func runVerifyDrill(conn *connection, jsonOut bool) error {
 			fmt.Println("\n  ✓ Restore verified — every check passed.")
 			fmt.Println()
 		}
-		return nil
+		return resultJSON, nil
 	}
 
 	// Name the failures in the error itself, so a scripted caller that only
@@ -210,9 +238,9 @@ func runVerifyDrill(conn *connection, jsonOut bool) error {
 		}
 	}
 	if len(failed) > 0 {
-		return fmt.Errorf("verified-restore drill failed: %s", strings.Join(failed, "; "))
+		return resultJSON, fmt.Errorf("verified-restore drill failed: %s", strings.Join(failed, "; "))
 	}
-	return fmt.Errorf("verified-restore drill did not complete — see output above")
+	return resultJSON, fmt.Errorf("verified-restore drill did not complete — see output above")
 }
 
 type checkupFinding struct {

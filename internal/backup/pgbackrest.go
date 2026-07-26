@@ -55,6 +55,11 @@ type PGBackRest struct {
 	// data directory, which only a production restore cares about.
 	DataVolume string
 
+	// DataDir is where that volume is expected: PGBACKREST_PG1_PATH, then
+	// PGDATA, then the image default. Kept so that failing to find the volume
+	// can say which path was looked for rather than which one is usual.
+	DataDir string
+
 	// Dependants are the services that declare requires: on Service. A
 	// production restore stops them first, because a client holding a
 	// connection through a data-directory swap sees corruption, not an outage.
@@ -180,9 +185,9 @@ func FindPGBackRest(oc *schema.OwnbaseConfig) (PGBackRest, error) {
 		// a volume can be called anything. Not finding one is not an error
 		// here: only a production restore replaces the data directory, and
 		// `db status` has to keep working on a Base this does not fit.
-		dataDir := postgresDataDir(svc)
+		out.DataDir = postgresDataDir(svc)
 		for _, vm := range serviceVolumeMounts(name, svc) {
-			if strings.TrimRight(vm.Mount, "/") == dataDir {
+			if strings.TrimRight(vm.Mount, "/") == out.DataDir {
 				out.DataVolume = vm.Volume
 				break
 			}

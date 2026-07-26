@@ -219,8 +219,11 @@ func restoreIntoProduction(ctx context.Context, pb PGBackRest, opts RestoreOptio
 	// Checked before anything is resolved or stopped: this is the one path that
 	// takes the Base down, so it fails while that is still free.
 	if pb.DataVolume == "" {
-		return out, fmt.Errorf("service %q declares no volume at its data directory (%s) — a production restore replaces that directory, so it has to be a volume ownbase manages; a scratch restore works either way",
-			pb.Service, DefaultPostgresDataDir)
+		// Names the path that was actually looked for, which is not the default
+		// on a Base that sets PGBACKREST_PG1_PATH or PGDATA — being told about
+		// a directory you do not use is worse than not being told at all.
+		return out, fmt.Errorf("service %q declares no volume mounted at its data directory (%s) — a production restore replaces that directory, so it has to be a volume ownbase manages; a scratch restore works either way",
+			pb.Service, orElseString(pb.DataDir, DefaultPostgresDataDir))
 	}
 
 	repoPath, err := PodmanVolumeResolver{}.Resolve(ctx, pb.RepoVolume)
@@ -387,8 +390,12 @@ const replayPositionQuery = `select coalesce(pg_last_wal_replay_lsn()::text,'') 
 	coalesce(' (' || to_char(pg_last_xact_replay_timestamp(),'YYYY-MM-DD HH24:MI:SSOF') || ')','')`
 
 func orUnknown(s string) string {
+	return orElseString(s, "unknown")
+}
+
+func orElseString(s, fallback string) string {
 	if strings.TrimSpace(s) == "" {
-		return "unknown"
+		return fallback
 	}
 	return s
 }

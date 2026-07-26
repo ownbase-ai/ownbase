@@ -5,6 +5,7 @@ package main
 // that is precisely where a swallowed failure would go unnoticed.
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -55,10 +56,56 @@ func TestCheckupVerify_FailedDrillIsAnErrorInBothModes(t *testing.T) {
 			if !strings.Contains(err.Error(), "postgres-recovery") {
 				t.Errorf("error does not name the check that failed: %v", err)
 			}
-			if jsonOut && !strings.Contains(out, `"passed":false`) {
-				t.Errorf("--json did not print the drill result payload:\n%s", out)
+			if jsonOut {
+				assertSingleJSONDocument(t, out, true)
 			}
 		})
+	}
+}
+
+// --json has to be one document. The drill result and /status are two payloads,
+// and printing both in sequence gives a stream that no ordinary JSON reader
+// accepts — the caller most likely to use --json is the one least able to
+// notice.
+func assertSingleJSONDocument(t *testing.T, out string, wantVerify bool) {
+	t.Helper()
+	var payload struct {
+		Verify struct {
+			Passed bool `json:"passed"`
+			Checks []struct {
+				Name string `json:"name"`
+			} `json:"checks"`
+		} `json:"verify"`
+		Status map[string]any `json:"status"`
+	}
+	dec := json.NewDecoder(strings.NewReader(out))
+	if err := dec.Decode(&payload); err != nil {
+		t.Fatalf("stdout is not a JSON document: %v\n%s", err, out)
+	}
+	if err := dec.Decode(new(any)); err != io.EOF {
+		t.Fatalf("stdout carries more than one JSON document (err=%v):\n%s", err, out)
+	}
+	if wantVerify && len(payload.Verify.Checks) == 0 {
+		t.Errorf("drill result missing from the document:\n%s", out)
+	}
+	if payload.Status == nil {
+		t.Errorf("status payload missing from the document:\n%s", out)
+	}
+}
+
+// Without --verify the payload stays the /status body verbatim, so anything
+// already parsing `checkup --json` keeps working.
+func TestCheckupJSON_IsUnchangedWithoutVerify(t *testing.T) {
+	ts := drillServer(true)
+	defer ts.Close()
+
+	out := captureStdout(t, func() {
+		if err := checkup(fakeConn(ts, "token"), "mybase", true, false); err != nil {
+			t.Fatalf("checkup: %v", err)
+		}
+	})
+	if strings.TrimSpace(out) != "{}" {
+		t.Errorf("output = %q, want the /status body unchanged", strings.TrimSpace(out))
 	}
 }
 

@@ -119,6 +119,8 @@ Verified-restore drill
 
 Without `--verify` the report shows the last drill the Base ran on its own `core.backup.verify_interval` schedule, which may be up to a day old. A drill that fails names the check that failed and exits non-zero, and the report still prints.
 
+`--json` is one document either way. On its own it is the `/status` payload unchanged; with `--verify` it is `{"verify": {…}, "status": {…}}`, since two payloads printed in sequence is not something a JSON reader accepts. A failed drill still exits non-zero, with its message on stderr so stdout stays a document.
+
 ### `backup setup|run|status <name>`
 
 ```bash

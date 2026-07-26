@@ -155,13 +155,21 @@ func TestFindPGBackRest_FindsTheImplicitDataVolume(t *testing.T) {
 // Without a data volume the destructive path has nothing to restore over, and
 // finding that out after the Base is down would be the worst possible moment.
 func TestRestoreIntoProduction_RefusesWithoutADataVolume(t *testing.T) {
-	pb := PGBackRest{Service: "postgres", Stanza: "main", RepoVolume: "ownbase-pgbackrest-repo"}
-	_, err := restoreIntoProduction(context.Background(), pb, RestoreOptions{})
-	if err == nil {
-		t.Fatal("want an error when no volume holds the data directory")
-	}
-	if !strings.Contains(err.Error(), DefaultPostgresDataDir) {
-		t.Errorf("error should name the directory it looked for, got: %v", err)
+	// The path it names is the one it looked for, which on a Base that sets
+	// PGBACKREST_PG1_PATH is not the default.
+	for _, dataDir := range []string{"", "/srv/pg"} {
+		pb := PGBackRest{Service: "postgres", Stanza: "main", RepoVolume: "ownbase-pgbackrest-repo", DataDir: dataDir}
+		_, err := restoreIntoProduction(context.Background(), pb, RestoreOptions{})
+		if err == nil {
+			t.Fatal("want an error when no volume holds the data directory")
+		}
+		want := dataDir
+		if want == "" {
+			want = DefaultPostgresDataDir
+		}
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should name %s, got: %v", want, err)
+		}
 	}
 }
 
