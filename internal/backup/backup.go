@@ -40,6 +40,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -106,6 +107,27 @@ type Config struct {
 	// no audit records are emitted. Inject the production logger from the
 	// agent; leave nil in tests that don't test audit emission.
 	AuditLog authz.AuditLogger
+
+	// Progress, when non-nil, receives human-readable progress lines from
+	// long operations. The verify drill takes minutes and can fail at any of
+	// several stages, so an operator who triggered it on demand needs to see
+	// where it is and, on failure, which check failed — not just a boolean
+	// several minutes later. Scheduled runs leave this nil and log a summary.
+	Progress io.Writer
+
+	// PostgresRecovery, when configured, lets the verify drill prove that the
+	// backed-up pgBackRest repository actually brings a database back rather
+	// than merely restoring as files. Zero value skips that check — see
+	// core.backup.verify_postgres and postgres_recovery.go.
+	PostgresRecovery PostgresRecovery
+}
+
+// progressf writes one progress line, if a Progress writer was configured.
+func (c Config) progressf(format string, args ...any) {
+	if c.Progress == nil {
+		return
+	}
+	fmt.Fprintf(c.Progress, format, args...)
 }
 
 // DefaultDataDir is the root directory of all service persistent data.

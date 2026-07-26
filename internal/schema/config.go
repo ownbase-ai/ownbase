@@ -62,6 +62,26 @@ type BackupCoreConfig struct {
 	// VerifyInterval is how often the verified-restore drill runs (e.g. "24h").
 	// Defaults to 24h when empty.
 	VerifyInterval string `yaml:"verify_interval,omitempty"`
+
+	// VerifyPostgres controls whether the drill proves Postgres recoverable by
+	// restoring the backed-up pgBackRest repository into a throwaway container
+	// and waiting for a real database to come up. nil means true.
+	//
+	// Leaving it on is the point of the drill: without it, "restorable" means
+	// the files came back, which is a much weaker claim than the database came
+	// back. Set false only when the CPU and minutes it costs are genuinely a
+	// problem, and understand that the recovery path then goes untested until
+	// the day it is needed.
+	VerifyPostgres *bool `yaml:"verify_postgres,omitempty"`
+}
+
+// PostgresVerifyEnabled reports whether the drill should prove Postgres
+// recoverable, defaulting to true when unset.
+func (b BackupCoreConfig) PostgresVerifyEnabled() bool {
+	if b.VerifyPostgres == nil {
+		return true
+	}
+	return *b.VerifyPostgres
 }
 
 // DefaultBackupInterval is the snapshot cadence used when Interval is empty.
@@ -184,8 +204,15 @@ type ServiceDecl struct {
 	// this container to that provider's network.
 	Requires []string `yaml:"requires,omitempty"`
 
-	// Database is the name of the Postgres database to provision. The agent
-	// creates the database and injects credentials as environment variables.
+	// Database declares a Postgres database this service needs, as
+	// "<provider-service>/<dbname>" — e.g. "postgres/revolve". The provider is
+	// named rather than inferred, so a Base with two databases has no ambiguity
+	// and nothing depends on a service happening to be called "postgres".
+	//
+	// On reconcile the agent creates the database if it does not exist and
+	// writes a DATABASE_URL secret for this service, composed from the
+	// provider's user and password. The URL is never written to ownbase.yaml.
+	// The provider must also appear in Requires.
 	Database string `yaml:"database,omitempty"`
 
 	// HealthProbe configures how the agent verifies the service is up before
@@ -226,6 +253,222 @@ type ServiceDecl struct {
 	// child processes and require inter-process signaling, which the default
 	// containers-default AppArmor profile blocks when no-new-privileges is set.
 	SecurityOpt []string `yaml:"security_opt,omitempty"`
+
+	// GeneratedSecrets declares secret values the agent creates for this
+	// service when they do not already exist. Nothing sensitive is written
+	// to ownbase.yaml — only the names of the keys to fill in.
+	GeneratedSecrets []GeneratedSecretDecl `yaml:"generated_secrets,omitempty"`
+}
+
+// GeneratedSecretType is the kind of value a GeneratedSecretDecl produces.
+type GeneratedSecretType string
+
+const (
+	// GeneratedSecretPassword is a random high-entropy string, for things
+	// like POSTGRES_PASSWORD that must exist but that nobody needs to read.
+	GeneratedSecretPassword GeneratedSecretType = "password"
+
+	// GeneratedSecretSSHEd25519 is an ed25519 SSH keypair, where the public
+	// half is usually stored on the service that accepts the connection and
+	// the private half on the service that makes it.
+	GeneratedSecretSSHEd25519 GeneratedSecretType = "ssh-ed25519"
+)
+
+// GeneratedSecretDecl declares one secret the agent generates on first
+// reconcile if it is missing, rather than making the operator produce it by
+// hand and paste it in with `ownbasectl secrets set`.
+//
+// Generation happens on the Base, so a private key never crosses the network
+// or touches the operator's disk. It is skipped entirely when every
+// destination key already has a value, which makes it idempotent across
+// restarts and means a rebuilt Base regenerates what it needs on its own.
+//
+// A destination is written as "KEY" (this service) or "service:KEY" (another
+// service), so a keypair can be split across the two ends of a connection:
+//
+//	generated_secrets:
+//	  - type: ssh-ed25519
+//	    public_key: PGBACKREST_CLIENT_PUBKEY
+//	    private_key: postgres:PGBACKREST_SSH_KEY_B64
+//	    private_encoding: base64
+type GeneratedSecretDecl struct {
+	// Type selects the generator. Required.
+	Type GeneratedSecretType `yaml:"type"`
+
+	// Key is the destination for a password. Required for type: password,
+	// and not used by keypair types.
+	Key string `yaml:"key,omitempty"`
+
+	// Length is the password length in characters. Defaults to
+	// DefaultGeneratedPasswordLength. Only meaningful for type: password.
+	Length int `yaml:"length,omitempty"`
+
+	// PublicKey is the destination for the public half of a keypair, in
+	// OpenSSH authorized_keys form. Required for keypair types.
+	PublicKey string `yaml:"public_key,omitempty"`
+
+	// PrivateKey is the destination for the private half of a keypair, in
+	// OpenSSH PEM form. Required for keypair types.
+	PrivateKey string `yaml:"private_key,omitempty"`
+
+	// PrivateEncoding is how the private key is encoded before being stored:
+	// "raw" (the default) for PEM as-is, or "base64" for a single-line form,
+	// which some images require because a PEM cannot survive a round trip
+	// through an environment variable intact.
+	PrivateEncoding string `yaml:"private_encoding,omitempty"`
+}
+
+// DefaultGeneratedPasswordLength is the password length used when Length is 0.
+const DefaultGeneratedPasswordLength = 32
+
+// EffectiveLength returns Length, or DefaultGeneratedPasswordLength when unset.
+func (g GeneratedSecretDecl) EffectiveLength() int {
+	if g.Length <= 0 {
+		return DefaultGeneratedPasswordLength
+	}
+	return g.Length
+}
+
+// Base64Private reports whether the private key should be base64-encoded.
+func (g GeneratedSecretDecl) Base64Private() bool {
+	return g.PrivateEncoding == "base64"
+}
+
+// Destinations returns every secret destination this declaration writes to,
+// as (service, key) pairs. An empty service means "the service that declared
+// it" — the caller substitutes its own name.
+func (g GeneratedSecretDecl) Destinations() []SecretDest {
+	var out []SecretDest
+	add := func(spec string) {
+		if strings.TrimSpace(spec) == "" {
+			return
+		}
+		out = append(out, ParseSecretDest(spec))
+	}
+	switch g.Type {
+	case GeneratedSecretPassword:
+		add(g.Key)
+	case GeneratedSecretSSHEd25519:
+		add(g.PublicKey)
+		add(g.PrivateKey)
+	}
+	return out
+}
+
+// DatabaseRef is a parsed database: declaration.
+type DatabaseRef struct {
+	// Service is the service that runs the Postgres holding the database.
+	Service string
+
+	// Name is the database name.
+	Name string
+}
+
+// DatabaseRef parses the database: field. The second return is false when the
+// field is empty; a malformed value is rejected by Validate, so callers that
+// have parsed a config can treat a true result as well-formed.
+func (s ServiceDecl) DatabaseRef() (DatabaseRef, bool) {
+	spec := strings.TrimSpace(s.Database)
+	if spec == "" {
+		return DatabaseRef{}, false
+	}
+	provider, name, found := strings.Cut(spec, "/")
+	if !found {
+		return DatabaseRef{Name: strings.TrimSpace(spec)}, true
+	}
+	return DatabaseRef{
+		Service: strings.TrimSpace(provider),
+		Name:    strings.TrimSpace(name),
+	}, true
+}
+
+// DatabaseURLKey is the secret key a provisioned database's connection URL is
+// written to. It becomes DATABASE_URL in the service's environment through the
+// normal secrets path, so the URL is in neither git nor the unit file.
+const DatabaseURLKey = "DATABASE_URL"
+
+// validateDatabase checks a database: declaration.
+//
+// The provider is required to appear in requires: as well. The two say
+// different things — requires: is what joins the containers to a network and
+// orders their startup, database: is what gets created — and a database on a
+// provider this service cannot reach is not a configuration worth accepting
+// silently.
+func (s ServiceDecl) validateDatabase(name string, allServices map[string]ServiceDecl) error {
+	ref, ok := s.DatabaseRef()
+	if !ok {
+		return nil
+	}
+	where := fmt.Sprintf("service %q: database", name)
+
+	if ref.Service == "" {
+		return fmt.Errorf("%s: %q must be written as \"<service>/<dbname>\" (e.g. \"postgres/%s\") — the service that provides the database is named explicitly, never inferred",
+			where, s.Database, ref.Name)
+	}
+	if ref.Name == "" {
+		return fmt.Errorf("%s: %q is missing a database name after the \"/\"", where, s.Database)
+	}
+	if ref.Service == name {
+		return fmt.Errorf("%s: %q names this service as its own provider", where, s.Database)
+	}
+	if _, ok := allServices[ref.Service]; !ok {
+		return fmt.Errorf("%s: provider %q does not match any service key", where, ref.Service)
+	}
+	if !isDatabaseName(ref.Name) {
+		return fmt.Errorf("%s: %q is not a usable database name — use letters, digits, and underscores, starting with a letter or underscore", where, ref.Name)
+	}
+
+	for _, req := range s.Requires {
+		if req == ref.Service {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s: provider %q must also be listed in requires: — otherwise this container is never joined to its network and cannot reach the database",
+		where, ref.Service)
+}
+
+// isDatabaseName reports whether s is a plain unquoted SQL identifier.
+//
+// CREATE DATABASE cannot take the name as a bound parameter, so it is
+// interpolated into the statement. Restricting the name here is what keeps that
+// interpolation safe, and every name anyone actually wants already fits.
+func isDatabaseName(s string) bool {
+	if s == "" || len(s) > 63 {
+		return false
+	}
+	for i, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r == '_':
+		case r >= '0' && r <= '9' && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// SecretDest is one destination for a generated secret.
+type SecretDest struct {
+	// Service is the service whose secrets file receives the value. Empty
+	// means the service that declared the generator.
+	Service string
+
+	// Key is the secret key name (which becomes an environment variable
+	// inside the container).
+	Key string
+}
+
+// ParseSecretDest splits a destination spec into its service and key.
+// "KEY" yields an empty Service; "service:KEY" yields both.
+func ParseSecretDest(spec string) SecretDest {
+	spec = strings.TrimSpace(spec)
+	if idx := strings.IndexByte(spec, ':'); idx >= 0 {
+		return SecretDest{
+			Service: strings.TrimSpace(spec[:idx]),
+			Key:     strings.TrimSpace(spec[idx+1:]),
+		}
+	}
+	return SecretDest{Key: spec}
 }
 
 // VolumeDecl declares one named Podman volume for a service.
@@ -475,6 +718,60 @@ func (s ServiceDecl) validate(name string, allServices map[string]ServiceDecl) e
 			return fmt.Errorf("service %q: duplicate volume name %q", name, v.Name)
 		}
 		seenVolNames[v.Name] = true
+	}
+	for i, g := range s.GeneratedSecrets {
+		if err := g.validate(name, i, allServices); err != nil {
+			return err
+		}
+	}
+	return s.validateDatabase(name, allServices)
+}
+
+func (g GeneratedSecretDecl) validate(svcName string, idx int, allServices map[string]ServiceDecl) error {
+	where := fmt.Sprintf("service %q: generated_secrets[%d]", svcName, idx)
+
+	switch g.Type {
+	case GeneratedSecretPassword:
+		if strings.TrimSpace(g.Key) == "" {
+			return fmt.Errorf("%s: key is required for type: password", where)
+		}
+		if g.PublicKey != "" || g.PrivateKey != "" {
+			return fmt.Errorf("%s: public_key/private_key are not used by type: password (use key:)", where)
+		}
+	case GeneratedSecretSSHEd25519:
+		if strings.TrimSpace(g.PublicKey) == "" {
+			return fmt.Errorf("%s: public_key is required for type: %s", where, g.Type)
+		}
+		if strings.TrimSpace(g.PrivateKey) == "" {
+			return fmt.Errorf("%s: private_key is required for type: %s", where, g.Type)
+		}
+		if g.Key != "" {
+			return fmt.Errorf("%s: key is not used by type: %s (use public_key:/private_key:)", where, g.Type)
+		}
+	case "":
+		return fmt.Errorf("%s: type is required (one of: %s, %s)",
+			where, GeneratedSecretPassword, GeneratedSecretSSHEd25519)
+	default:
+		return fmt.Errorf("%s: unknown type %q (one of: %s, %s)",
+			where, g.Type, GeneratedSecretPassword, GeneratedSecretSSHEd25519)
+	}
+
+	if enc := g.PrivateEncoding; enc != "" && enc != "raw" && enc != "base64" {
+		return fmt.Errorf("%s: private_encoding %q must be \"raw\" or \"base64\"", where, enc)
+	}
+
+	// A destination naming another service must name one that exists, or the
+	// generated half would be written to a secrets file nothing ever reads.
+	for _, d := range g.Destinations() {
+		if d.Key == "" {
+			return fmt.Errorf("%s: destination is missing a key name", where)
+		}
+		if d.Service == "" {
+			continue
+		}
+		if _, ok := allServices[d.Service]; !ok {
+			return fmt.Errorf("%s: destination service %q does not match any service key", where, d.Service)
+		}
 	}
 	return nil
 }

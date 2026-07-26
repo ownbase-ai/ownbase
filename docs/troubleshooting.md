@@ -95,8 +95,18 @@ It never left the Base: `sudo cat /opt/ownbase/api-token` (root, 0600). Re-regis
 
 - **"--password is required"** — the restic password is the encryption key for your backup repo. OwnBase cannot recover it. Store it in a password manager the moment you choose it.
 - **First backup fails right after `backup setup`** — the config commit reaches the daemon asynchronously; `setup` retries the "no backup repo configured" race for 30 seconds automatically. A *persistent* failure means bad credentials or an unreachable repo — check the repo URL scheme (`s3:`, `b2:`, `sftp:`) and credentials, then `ownbasectl backup run <name>` to retry.
-- **`backup status` says "not yet verified"** — the verified-restore drill runs on its own cadence (default daily). Right after setup this is normal; if it never flips to "restorable", check `journalctl -u ownbased` for restic errors.
+- **`backup status` says "not yet verified"** — the verified-restore drill runs on its own cadence (default daily), so right after setup this is normal. Rather than waiting, run `ownbasectl checkup <base> --verify` to run the drill now; it streams progress and names any check that fails. If it keeps failing, the named check is the thing to chase — `journalctl -u ownbased` on the Base has the underlying restic or Postgres output.
 - **`restore` refuses to run** — it restores only snapshots that passed a verify drill, unless you pass `--force`. Prefer waiting for a verified snapshot when you have the choice.
+
+---
+
+## Postgres point-in-time recovery
+
+- **"`<time>` is newer than the last WAL segment in the repository"** — `db restore` refused before doing anything, which is the intended outcome. Postgres archives a WAL segment when it fills or `archive_timeout` elapses, so on a quiet database the newest recoverable point trails the present by minutes and "restore to right now" asks for something the repository does not have. Use the timestamp the message names, force a segment switch first (`select pg_switch_wal();` inside the container), or omit `--to` to recover everything the repository holds.
+- **"recovery ended before configured recovery target was reached"** — the same cause reaching Postgres directly, either from a restore started outside `db restore` or from a `--to` sitting at the very end of the recovery window. That end is when the last WAL segment finished archiving, which is after the last change inside it, so a target there is unreachable even though it is inside the window. It reads like data loss and is not: the data is intact and the target was simply in the future as far as the repository is concerned. Re-run with an earlier target, or with no `--to` at all.
+- **`db status` says archiving is FAILING** — the database is fine and the recovery window has stopped moving; every change since the last success is currently unrecoverable. `podman logs ownbase-pgbackrest` on the Base has the reason, usually a full repository volume, an SSH key the Postgres container can no longer use, or a stanza that needs `pgbackrest stanza-create` after a restore. Nothing else about the Base will look wrong while this is true, so treat it as urgent.
+- **A scratch instance is in the way** — `db restore --into scratch` leaves a container running on purpose, and a second restore replaces it. To remove it now: `podman rm -f ownbase-db-scratch` on the Base.
+- **A production restore finished but the post-promote backup failed** — the database is up and serving, but it is on a new timeline that no backup covers, so it cannot be recovered again until one exists. Run `pgbackrest --stanza=main --type=full backup` inside the Postgres container, or `ownbasectl db status <base>` to confirm a full backup on the current timeline appeared.
 
 ---
 

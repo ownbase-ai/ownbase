@@ -14,6 +14,7 @@ core:
     repo: s3:s3.amazonaws.com/my-bucket/ownbase # restic repository URL
     # interval: 1h          # optional, default 1h
     # verify_interval: 24h  # optional, default 24h
+    # verify_postgres: true # optional, default true — recover a real Postgres in the drill
 
 services:
   <name>:
@@ -51,6 +52,10 @@ services:
     requires:
       - <capability> # joins this service's capability network
 
+    # A Postgres database the Base creates for this service, on the named
+    # provider (which must also appear in requires:)
+    database: postgres/<dbname>
+
     # Health check
     health_probe:
       http: /health # GET this path; 2xx = healthy
@@ -59,6 +64,18 @@ services:
     user: "1000" # UID/username to run as; empty = image default
     add_capabilities: # caps to restore after DropCapability=ALL
       - NET_BIND_SERVICE # only set when the service genuinely needs them
+    security_opt: # --security-opt flags; each entry widens the security boundary
+      - apparmor=unconfined
+
+    # Credentials the Base creates for you, on first reconcile, if missing
+    generated_secrets:
+      - type: password # a random value nobody needs to choose
+        key: POSTGRES_PASSWORD
+        # length: 32   # optional, default 32
+      - type: ssh-ed25519 # a keypair, optionally split across two services
+        public_key: CLIENT_PUBKEY
+        private_key: other-service:SSH_KEY_B64
+        private_encoding: base64 # or "raw" (default) for PEM as-is
 
 jobs:
   <name>:
@@ -147,6 +164,7 @@ ownbasectl deploy mybase auth --ref v1.1.0   # tag, branch, or commit
 1. Fetches the external config repo into the read-only checkout at `/opt/ownbase/checkout` (`internal/configsource`)
 2. Reads `ownbase.yaml` and compiles the desired state (Quadlet units, Caddyfile)
 3. Ensures a local bare clone exists for every service, cloning each `repo:` on first sight and fetching any pinned `ref:` not yet present locally (`internal/repos`)
+3a. Generates any missing `generated_secrets:` (`internal/gensecrets`) and creates any declared `database:`, writing its `DATABASE_URL` (`internal/gendb`) — both before the compile, so a new value reaches the container in this cycle rather than the next
 4. Checks for drift (compiler output vs. `runtime/` on disk)
 5. Queries what Podman/systemd is actually running
 6. Diffs desired vs. actual → produces a `PlannedAction` list
@@ -155,6 +173,29 @@ ownbasectl deploy mybase auth --ref v1.1.0   # tag, branch, or commit
 9. Updates the `/status` API with the new state
 
 Reconciles are triggered explicitly by `ownbasectl` (`deploy`, `config set`, `service *`, `config setup`) via `POST /reconcile`; a periodic timer backstop also runs as a safety net.
+
+## Backups: `core.backup:`
+
+| Key | Default | Meaning |
+|---|---|---|
+| `repo` | *(unset — backups disabled)* | restic repository URL (`s3:`, `b2:`, `sftp:`, or a local path for dev) |
+| `interval` | `1h` | how often a snapshot is taken |
+| `verify_interval` | `24h` | how often the verified-restore drill runs |
+| `verify_postgres` | `true` | whether the drill recovers a real Postgres from the backed-up pgBackRest repository |
+
+Credentials do not go here — they live in `/opt/ownbase/secrets/backup.yaml.age`, set with `ownbasectl secrets set <base> backup RESTIC_PASSWORD=… AWS_ACCESS_KEY_ID=…`. Which volumes reach the repository is decided per service by `volumes[].backup:`.
+
+### What the verified-restore drill proves
+
+`Restorable` is not set because backups ran; it is set because a restore worked. On its `verify_interval` (or on demand via `ownbasectl checkup <base> --verify`) the daemon restores the newest snapshot into a throwaway directory, checks it, and tears it down:
+
+1. **`restic check --read-data-subset=5%`** — the repository is internally consistent and its pack data actually reads back.
+2. **File presence** — every path that was backed up came back. A path that does not exist on this Base passes vacuously, since restic skips a nonexistent source rather than failing the snapshot.
+3. **Postgres recovery** — when the restore contains a pgBackRest repository, the drill restores that stanza into a throwaway Postgres built from the same image production runs, waits for WAL replay to finish, and asks the recovered database for its catalog.
+
+The third check is the one that makes the claim meaningful. The first two prove the files came back, which is a much weaker statement than the database came back: a pgBackRest repository can restore cleanly and still fail to recover — a gap in the WAL archive, a full backup that aged out from under its incrementals, a server version that cannot read what the client wrote — and none of that is visible to a file-level check.
+
+It cannot touch production. The repository it recovers is the restic-restored copy in a temporary directory, the container has no network, Postgres listens on nothing but a Unix socket inside it, and `archive_mode` is forced off so the promoted throwaway cluster cannot push WAL into a backup repository. Set `verify_postgres: false` to skip it when the CPU and minutes are genuinely a problem — at the cost of leaving the recovery path untested until the day it is needed.
 
 ## Secrets
 
@@ -166,6 +207,73 @@ ownbasectl secrets get mybase myapp DB_URL
 ```
 
 The age private key (`/opt/ownbase/age/key.age`) never leaves the Base; plaintext values travel only inside the SSH tunnel between `ownbasectl` and the daemon. There is one age recipient per Base — no multi-key sharing, no external KMS. This is a deliberate simplicity choice over formats like `sops`: the file is opaque as a whole (no per-field structure to inspect), which is sufficient because the daemon is the only consumer and rotation just re-encrypts the (small) file.
+
+### Generated secrets: `generated_secrets:`
+
+Some credentials have no business being authored by a human. An SSH keypair cannot be written in YAML at all, and a database password an operator invents is a password they are tempted to reuse. So `ownbase.yaml` names the keys and leaves the values to the Base:
+
+```yaml
+services:
+  pgbackrest:
+    repo: https://github.com/ownbase-ai/pgbackrest
+    generated_secrets:
+      - type: ssh-ed25519
+        public_key: PGBACKREST_CLIENT_PUBKEY # stored on this service (the end that accepts)
+        private_key: postgres:PGBACKREST_SSH_KEY_B64 # stored on postgres (the end that dials)
+        private_encoding: base64
+
+  postgres:
+    repo: https://github.com/ownbase-ai/pgbackrest
+    generated_secrets:
+      - type: password
+        key: POSTGRES_PASSWORD
+```
+
+On each reconcile the daemon generates whatever is missing and stores it in the same age-encrypted per-service files as `ownbasectl secrets set`, from which it is injected as a container environment variable. Two properties make this safe to run on every tick:
+
+- **It only ever fills gaps.** A key that already has a value is left alone, so restarts never rotate a credential and you can always override a generated value by setting it by hand. A keypair is all-or-nothing: if one half is already present, neither half is regenerated, since a mismatched pair would authenticate against nothing.
+- **Generation happens on the Base.** A private key never crosses the network nor touches your disk, and a rebuilt Base regenerates what it needs without anyone having to remember what was there before.
+
+Destinations are written as `KEY` (this service) or `service:KEY` (another service, which must exist), so the two halves of a keypair land on the two ends of the connection that uses them. `private_encoding: base64` exists because a PEM private key does not survive a trip through an environment variable intact, and most images that read a key from the environment expect the single-line form.
+
+## Databases: `database:`
+
+A service that needs its own Postgres database says so, naming the service that provides it:
+
+```yaml
+services:
+  postgres:
+    repo: https://github.com/ownbase-ai/pgbackrest
+    context: postgres
+    port: 5432
+    env:
+      - POSTGRES_USER=ownbase
+      - POSTGRES_DB=ownbase
+    generated_secrets:
+      - type: password
+        key: POSTGRES_PASSWORD
+
+  api:
+    repo: git@github.com:org/api.git
+    port: 8080
+    requires: [postgres] # required: this is what joins the two containers
+    database: postgres/revolve
+```
+
+On each reconcile the daemon creates `revolve` if it does not exist, and writes a `DATABASE_URL` into `api`'s secrets file — composed from the provider's `POSTGRES_USER`, its generated `POSTGRES_PASSWORD`, and the provider's container name and port:
+
+```
+postgresql://ownbase:<password>@ownbase-postgres:5432/revolve
+```
+
+From there it reaches the container as an environment variable through the normal secrets path, so the credential is in neither the config repo nor the unit file. Nothing is written to `ownbase.yaml`.
+
+The provider is named rather than inferred, and must also appear in `requires:`. Two separate things are being said: `requires:` joins the containers to a network and orders their startup, `database:` is what gets created. A Base can run two Postgres services, and nothing here depends on one of them happening to be called `postgres`.
+
+Like generated secrets, this converges rather than acts: a database that exists is left alone, and a URL that already matches is not rewritten, so a Base that has been up for a month does no work here and its containers are not restarted. Two consequences worth knowing:
+
+- **A rotated provider password rewrites the URL.** Declaring `database:` says OwnBase owns `DATABASE_URL` for that service; a service whose URL should be managed by hand simply does not declare it.
+- **The first reconcile of a fresh Base is too early.** Creating a database needs the provider's Postgres to be running, which it is not until later in the same cycle. The daemon logs what it skipped and finishes the job on the next tick, about a minute later.
 
 ## Scheduled jobs: `jobs:`
 

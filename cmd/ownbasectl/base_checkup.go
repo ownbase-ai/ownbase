@@ -7,37 +7,69 @@ package main
 // the specific command that fixes it.
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 )
 
 func newCheckupCmd() *cobra.Command {
 	var jsonOut bool
+	var doVerify bool
 	cmd := &cobra.Command{
 		Use:   "checkup <name>",
 		Short: "One health report: intrusions, exposure, CVEs, updates, backups",
 		Long: `One aggregated health report combining intrusion/access monitoring,
 network exposure, CVE scan results, service update drift, and backup
 health — each finding paired with the exact command to fix it. Run this
-regularly (weekly is reasonable).`,
+regularly (weekly is reasonable).
+
+With --verify, the verified-restore drill runs first: the Base restores its
+newest snapshot into an isolated directory, checks it, and (when Postgres is
+in the backup) starts a real database from it. That takes minutes and streams
+its progress. Without --verify the report shows the result of the last drill
+the Base ran on its own schedule, which may be up to core.backup.verify_interval
+old.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runBaseCheckup(args[0], jsonOut)
+			return runBaseCheckup(args[0], jsonOut, doVerify)
 		},
 	}
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "print raw JSON instead of a formatted report")
+	cmd.Flags().BoolVar(&doVerify, "verify", false, "run the verified-restore drill now instead of reporting the last scheduled one (takes minutes)")
 	return cmd
 }
 
-func runBaseCheckup(base string, jsonOut bool) error {
+func runBaseCheckup(base string, jsonOut, doVerify bool) error {
 	conn, err := connectToServer(base)
 	if err != nil {
 		return err
 	}
 	defer conn.close()
+	return checkup(conn, base, jsonOut, doVerify)
+}
+
+func checkup(conn *connection, base string, jsonOut, doVerify bool) error {
+	// The drill is what sets Restorable, so it must finish before /status is
+	// read or the report would show the previous drill's verdict. A failed
+	// drill is not fatal to the checkup: the report that follows is exactly
+	// what an operator wants to see next, so the failure is noted and the
+	// report still prints.
+	var (
+		verifyErr    error
+		verifyResult string
+	)
+	if doVerify {
+		verifyResult, verifyErr = runVerifyDrill(conn, jsonOut)
+		if verifyErr != nil && !jsonOut {
+			fmt.Printf("\n  ⚠ %v\n", verifyErr)
+		}
+	}
 
 	body, err := apiGet(conn, "/status")
 	if err != nil {
@@ -45,8 +77,11 @@ func runBaseCheckup(base string, jsonOut bool) error {
 	}
 
 	if jsonOut {
-		fmt.Println(string(body))
-		return nil
+		printCheckupJSON(body, verifyResult)
+		// Same verdict as the formatted path below: a failed drill exits
+		// non-zero. Its message goes to stderr rather than into the payload,
+		// which is what keeps stdout a document rather than a report.
+		return verifyErr
 	}
 
 	fmt.Println("╔════════════════════════════════════════════════════════════════════╗")
@@ -80,7 +115,132 @@ func runBaseCheckup(base string, jsonOut bool) error {
 		fmt.Printf("  updates summary: %v\n", err)
 	}
 
-	return nil
+	return verifyErr
+}
+
+// printCheckupJSON writes one document, not two. Without --verify that is the
+// /status body unchanged, so anything already parsing it keeps working; with
+// --verify the drill result would otherwise be a second document on the same
+// stream, which no ordinary JSON reader accepts.
+func printCheckupJSON(status []byte, verifyResult string) {
+	if strings.TrimSpace(verifyResult) == "" {
+		fmt.Println(strings.TrimSpace(string(status)))
+		return
+	}
+	combined, err := json.Marshal(struct {
+		Verify json.RawMessage `json:"verify"`
+		Status json.RawMessage `json:"status"`
+	}{
+		Verify: json.RawMessage(verifyResult),
+		Status: json.RawMessage(status),
+	})
+	if err != nil {
+		// Neither half is this CLI's to rewrite, so an unmarshalable one is
+		// passed through rather than swallowed.
+		fmt.Println(strings.TrimSpace(string(status)))
+		return
+	}
+	fmt.Println(string(combined))
+}
+
+// runVerifyDrill triggers the verified-restore drill on the Base and streams
+// its progress, mirroring how `upgrade` and `security fix` consume their
+// long-running endpoints.
+//
+// The daemon ends with a ---RESULT--- JSON trailer either way, and ---OK---
+// only when every check passed. The trailer is what makes a failure
+// actionable: without the per-check breakdown, "not restorable" says the
+// backups cannot be proven good without saying which part is not.
+//
+// Returns that trailer verbatim so --json can fold it into the one document the
+// caller prints, rather than printing a second one here.
+func runVerifyDrill(conn *connection, jsonOut bool) (string, error) {
+	verifyURL := conn.baseURL + "/backup/verify"
+	req, err := http.NewRequest(http.MethodPost, verifyURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("build request: %w", err)
+	}
+	if conn.token != "" {
+		req.Header.Set("Authorization", "Bearer "+conn.token)
+	}
+
+	if !jsonOut {
+		fmt.Println("Verified-restore drill")
+		fmt.Println(strings.Repeat("─", 68))
+	}
+
+	// The drill restores a full snapshot and may start a Postgres container,
+	// so it is bounded generously rather than by a typical request timeout.
+	client := &http.Client{Timeout: 60 * time.Minute}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("backup/verify API at %s: %w\n  Is the agent running?", verifyURL, err)
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusUnauthorized:
+		return "", fmt.Errorf("unauthorized — the cached token may be stale; remove the profile and run 'ownbasectl adopt' again")
+	case http.StatusNotImplemented:
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("%s", strings.TrimSpace(string(body)))
+	default:
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("backup/verify returned %d: %s", resp.StatusCode, body)
+	}
+
+	var gotOK bool
+	var result struct {
+		Passed bool `json:"passed"`
+		Checks []struct {
+			Name   string `json:"name"`
+			Passed bool   `json:"passed"`
+			Detail string `json:"detail"`
+		} `json:"checks"`
+	}
+	var resultJSON string
+
+	scanner := bufio.NewScanner(resp.Body)
+	// A check's detail can carry a long command error; the default 64 KiB
+	// token limit would turn that into a truncated-looking stream.
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		switch {
+		case line == "---OK---":
+			gotOK = true
+		case strings.HasPrefix(line, "---RESULT---"):
+			resultJSON = strings.TrimPrefix(line, "---RESULT---")
+			_ = json.Unmarshal([]byte(resultJSON), &result)
+		case !jsonOut:
+			fmt.Println(line)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return resultJSON, err
+	}
+
+	if gotOK {
+		if !jsonOut {
+			fmt.Println("\n  ✓ Restore verified — every check passed.")
+			fmt.Println()
+		}
+		return resultJSON, nil
+	}
+
+	// Name the failures in the error itself, so a scripted caller that only
+	// keeps the error still learns which check failed.
+	var failed []string
+	for _, ch := range result.Checks {
+		if !ch.Passed {
+			failed = append(failed, fmt.Sprintf("%s (%s)", ch.Name, ch.Detail))
+		}
+	}
+	if len(failed) > 0 {
+		return resultJSON, fmt.Errorf("verified-restore drill failed: %s", strings.Join(failed, "; "))
+	}
+	return resultJSON, fmt.Errorf("verified-restore drill did not complete — see output above")
 }
 
 type checkupFinding struct {
@@ -106,10 +266,9 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 		if restorable, _ := sec["backup_restorable"].(bool); !restorable {
 			// Only point at `backup setup` when backups have never run
 			// at all. If a snapshot already exists, backups are configured
-			// and working — what's missing is just the (periodic,
-			// automatic) verify-restore drill, which re-running setup
-			// would not skip ahead of and would misleadingly suggest is
-			// the fix.
+			// and working — what's missing is just the verify-restore
+			// drill, which re-running setup would not skip ahead of and
+			// would misleadingly suggest is the fix.
 			lastBackup, _ := sec["last_backup"].(string)
 			if lastBackup == "" {
 				findings = append(findings, checkupFinding{
@@ -119,7 +278,7 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 			} else {
 				findings = append(findings, checkupFinding{
 					summary: "Backups not yet verified restorable",
-					fix:     "ownbasectl backup status " + base + "  (verify-restore drill runs automatically)",
+					fix:     "ownbasectl checkup " + base + " --verify",
 				})
 			}
 		}
@@ -247,5 +406,12 @@ func printBackupCheckupSection(base string, body []byte) error {
 		restorable = "✓ restorable"
 	}
 	fmt.Printf("    Restorable:    %s\n", restorable)
+	if s.Security.LastVerified == "" {
+		if s.Security.LastBackup != "" {
+			fmt.Printf("    Last drill:    never — run 'ownbasectl checkup %s --verify'\n", base)
+		}
+	} else {
+		fmt.Printf("    Last drill:    %s\n", shortTime(s.Security.LastVerified))
+	}
 	return nil
 }

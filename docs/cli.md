@@ -96,9 +96,30 @@ Takes all the provisioning flags of `create`, plus the credential flags of `back
 
 ## Health and backups
 
-### `checkup <name>`
+### `checkup <name> [--verify]`
 
 One aggregated health report: intrusion/access monitoring, network exposure, CVE scan results, service update drift, and backup health — each finding paired with the exact command that fixes it. Run it regularly (weekly is reasonable). `--json` prints the raw status payload.
+
+`--verify` runs the verified-restore drill before reporting: the Base restores its newest snapshot into an isolated directory, checks it, and — when Postgres is in the backup — starts a real database from it and waits for recovery to finish. That takes minutes, so progress streams as it goes and each check's outcome is printed:
+
+```bash
+ownbasectl checkup mybase --verify
+```
+
+```
+Verified-restore drill
+────────────────────────────────────────────────────────────────────
+==> Restoring snapshot 4f2a91c into an isolated directory
+==> Running integrity checks
+    ✓ restic-check                 repository integrity OK
+    ✓ postgres-recovery            recovered to 2026-07-25 18:04:11+00, 214 relations
+
+  ✓ Restore verified — every check passed.
+```
+
+Without `--verify` the report shows the last drill the Base ran on its own `core.backup.verify_interval` schedule, which may be up to a day old. A drill that fails names the check that failed and exits non-zero, and the report still prints.
+
+`--json` is one document either way. On its own it is the `/status` payload unchanged; with `--verify` it is `{"verify": {…}, "status": {…}}`, since two payloads printed in sequence is not something a JSON reader accepts. A failed drill still exits non-zero, with its message on stderr so stdout stays a document.
 
 ### `backup setup|run|status <name>`
 
@@ -123,6 +144,82 @@ ownbasectl backup status mybase    # last snapshot, restorable?, last verify dri
 | `--verify-interval` | verified-restore drill cadence (default `24h`) |
 
 Credentials are stored age-encrypted on the Base; the repo URL and cadence are committed to `ownbase.yaml` client-side (see `config set` below) and applied via a reconcile. No daemon restart needed.
+
+### `db status <name>`
+
+`backup status` answers whether the restic snapshot is good. `db status` answers the question underneath it: how far back this Postgres can be recovered, and whether that window is still moving.
+
+```bash
+ownbasectl db status mybase
+```
+
+```
+─────────────────────── Postgres Recovery Status ───────────────────────
+  Stanza:        main  (PostgreSQL 17)
+  Repository:    ✓ ok
+  Backups held:  3
+      20260724-020000F             full   412.0 MiB  Jul 24 02:07:11
+      20260725-020000F_20260725-140000I incr   18.4 MiB  Jul 25 14:00:22
+
+  Recovery window: Jul 24 02:07:11  →  Jul 25 18:04:11
+  WAL archive:     000000010000000000000002 → 00000001000000000000001F
+
+  Archiving:     ✓ 74 segments, last Jul 25 18:04:11
+────────────────────────────────────────────────────────────────────────
+```
+
+The far end of the recovery window is when the last WAL segment finished archiving, not the last change inside it, so it is an upper bound rather than a target that is guaranteed reachable: asking for exactly that instant makes Postgres replay everything, never reach it, and refuse to start. That is why the suggested commands under the report offer a restore with no `--to` — "as recent as possible", which cannot miss — alongside the form that takes a timestamp.
+
+The line to watch is `Archiving`. When `archive_command` starts failing, nothing else about the Base looks wrong — the database serves queries, the container is up, the disk is fine — while the recovery window quietly stops moving and every change since the last success becomes unrecoverable. `pg_stat_archiver.failed_count` is the only place that shows, so a failing archiver is reported as a failure rather than as a count:
+
+```
+  Archiving:     ✗ FAILING — 12 failures, last Jul 25 18:41:02
+                 stuck on segment 000000010000000000000020
+                 The database is fine, but the recovery window has stopped
+                 moving: changes since the last success cannot be recovered.
+```
+
+`--json` prints the raw payload (`GET /db/status`).
+
+### `db restore <name> [--to <timestamp>] [--into scratch|production]`
+
+Point-in-time recovery from the pgBackRest repository. It streams progress, since a restore takes minutes and all of its failure modes happen mid-flight.
+
+```bash
+# Look at yesterday's data. Production keeps serving throughout.
+ownbasectl db restore mybase --to "2026-07-25 14:00:00+00"
+
+# Take production back to just before a bad migration.
+ownbasectl db restore mybase --to "2026-07-25 14:00:00+00" --into production
+```
+
+| Flag | Meaning |
+|---|---|
+| `--to` | recovery target, e.g. `"2026-07-25 14:00:00+00"`. A timestamp without a zone is read as UTC. Omit it to recover everything the repository holds |
+| `--into` | `scratch` (default) or `production` |
+| `--scratch-port` | loopback port for the scratch instance (default `5433`) |
+| `-y`, `--yes` | skip the confirmation prompt for `--into production` |
+
+`--into scratch` brings up a second Postgres on `127.0.0.1:5433` on the Base and leaves it running to be inspected; production is untouched. This is how a recovery should normally start — look at what came back before deciding to keep it. The instance is a container, so `podman rm -f ownbase-db-scratch` is a complete teardown, and a second restore replaces it rather than accumulating instances.
+
+`--into production` stops the database and every service that `requires:` it (a client holding a connection through a data-directory swap sees corruption, not an outage), restores over the live data directory with `--delta`, replays the archive, and then **takes a full backup**. That last step is not optional: a promotion starts a new timeline, and no backup in the repository is on it, so until a full backup exists the database has recovery history but nothing to recover from. The data directory is found from the service's own volume mounts (`PGBACKREST_PG1_PATH`, then `PGDATA`, then the image default), so a Postgres that keeps its cluster somewhere other than the usual path is restored correctly rather than not at all; if no volume is mounted there, the command says so before stopping anything.
+
+`--to` is checked against the repository before anything is stopped:
+
+```
+==> Checking 2026-07-25 18:30:00+00 against the repository
+error: 2026-07-25 18:30:00+00 is newer than the last WAL segment in the repository
+  (2026-07-25 18:04:11+00) — Postgres would replay everything it has and then abort
+  with "recovery ended before configured recovery target was reached", which looks
+  like data loss but is not.
+  The newest recoverable point is 2026-07-25 18:04:11+00 (segment 00000001000000000000001F).
+  Postgres archives WAL when a segment fills or archive_timeout elapses, so the newest
+  recoverable point normally trails now(). To bring it forward, force a segment switch:
+    select pg_switch_wal();
+  Or omit --to to recover everything the repository holds.
+```
+
+Asking to restore to "right now" is the most natural thing to do and the most likely to hit this: archiving is driven by WAL volume and `archive_timeout`, so on a quiet database the newest recoverable point routinely trails the present by minutes. Recovery completion is confirmed by polling `pg_is_in_recovery()` rather than by trusting `pg_ctl -w`, which returns while WAL replay is still running. A long replay is not treated as a failure — the wait gives up only when the replay position stops moving, and prints where it has got to while it works — because abandoning a recovery that is still progressing would report a failure that is not one.
 
 ---
 
@@ -196,6 +293,8 @@ ownbasectl config setup mybase --repo git@github.com:org/ownbase-config.git
 ownbasectl config setup mybase --repo git@github.com:org/ownbase-config.git --init  # seed an empty repo
 ```
 
+The seed is a working **Postgres 17 with point-in-time recovery** — a `postgres` service plus the `pgbackrest` repository host that owns its WAL archive and base backups — rather than an empty `services:` map. Almost every Base needs a database, and the settings that make one recoverable (the AppArmor exception Postgres will not start without, the capabilities `sshd` needs, backing up the pgBackRest repository instead of the live data directory) are exactly the ones nobody discovers on their own. Each is spelled out in the seeded file with a comment on what breaks if it is removed. The SSH keypair and the Postgres password are declared as [`generated_secrets:`](ownbase-yaml.md#generated-secrets-generated_secrets) and created by the Base on its first reconcile, so there is no `ssh-keygen` and no password to invent. Delete both services if this Base needs no database; nothing else depends on them.
+
 ### `config get|set <name>`
 
 Read `ownbase.yaml` (from the Base's checkout) or atomically replace it (client-side commit to the config repo).
@@ -234,6 +333,15 @@ ownbasectl service remove mybase crm
 `add` requires `--repo` (the external git URL). To pin or move the service to a specific ref, run `ownbasectl deploy` afterwards. `update` only touches the fields whose flags were explicitly passed — every other field of the service keeps its current value. `--env` merges into the existing list (new values win on a duplicate key); `--requires`, `--domains`, and `--add-capabilities` replace their respective lists entirely when passed. `--domain` (singular) still works and is combined with `--domains`, deduplicated. All subcommands accept `--json` for structured output.
 
 `--add-capabilities` restores Linux capabilities after the compiler's default `DropCapability=ALL` — every container starts with none. Only needed by the minority of images that bind directly to a port below 1024 (e.g. `traefik/whoami` on port 80), which requires `NET_BIND_SERVICE`; most images listen on an unprivileged port (3000, 8080, ...) and never need this.
+
+`--database` asks the Base to create a Postgres database for the service and hand it the URL:
+
+```bash
+ownbasectl service add mybase api --repo git@github.com:org/api.git --port 8080 \
+  --requires postgres --database postgres/revolve
+```
+
+The value is `<provider-service>/<dbname>`; the provider must also be in `--requires`. On the next reconcile the daemon creates the database if it is missing and writes a `DATABASE_URL` into the service's secrets, composed from the provider's user and password — so the credential is in neither the config repo nor the unit file. See [ownbase-yaml.md](ownbase-yaml.md#databases-database).
 
 ---
 

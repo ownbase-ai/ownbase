@@ -3,7 +3,9 @@ package backup
 // verify.go implements the verified-restore drill:
 //
 //  1. Restore the latest snapshot into an ephemeral isolated directory.
-//  2. Run integrity checks (restic check, file presence, optional Postgres).
+//  2. Run integrity checks (restic check, file presence, and — when a
+//     pgBackRest repository is in the restore — a real Postgres recovery, see
+//     postgres_recovery.go).
 //  3. Tear down the ephemeral directory.
 //  4. Set Status.Restorable = true only on a full pass.
 //
@@ -18,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -63,6 +64,7 @@ func VerifyRestore(ctx context.Context, cfg Config) (VerifyResult, error) {
 	}
 
 	// 1. Find the latest snapshot.
+	c.progressf("==> Finding the newest snapshot in %s\n", c.Repository)
 	snapshotID, err := latestSnapshotID(ctx, c)
 	if err != nil {
 		return VerifyResult{Err: err}, fmt.Errorf("verify: find snapshot: %w", err)
@@ -81,6 +83,7 @@ func VerifyRestore(ctx context.Context, cfg Config) (VerifyResult, error) {
 	}()
 
 	// 3. Restore the snapshot.
+	c.progressf("==> Restoring snapshot %s into an isolated directory\n", snapshotID)
 	if err := restoreSnapshot(ctx, c, snapshotID, tmpDir); err != nil {
 		return VerifyResult{SnapshotID: snapshotID, Err: err},
 			fmt.Errorf("verify: restore: %w", err)
@@ -91,6 +94,7 @@ func VerifyRestore(ctx context.Context, cfg Config) (VerifyResult, error) {
 		SnapshotID: snapshotID,
 		VerifiedAt: time.Now().UTC(),
 	}
+	c.progressf("==> Running integrity checks\n")
 	result.Checks = runIntegrityChecks(ctx, c, tmpDir)
 
 	allPassed := true
@@ -98,6 +102,7 @@ func VerifyRestore(ctx context.Context, cfg Config) (VerifyResult, error) {
 		if !ch.Passed {
 			allPassed = false
 		}
+		c.progressf("    %s %-28s %s\n", passMark(ch.Passed), ch.Name, ch.Detail)
 	}
 	result.Passed = allPassed
 
@@ -128,6 +133,14 @@ func VerifyRestore(ctx context.Context, cfg Config) (VerifyResult, error) {
 	return result, nil
 }
 
+// passMark renders a check outcome for a progress line.
+func passMark(passed bool) string {
+	if passed {
+		return "✓"
+	}
+	return "✗"
+}
+
 // runIntegrityChecks executes all integrity checks against the restored data.
 func runIntegrityChecks(ctx context.Context, cfg Config, restoreDir string) []CheckResult {
 	var checks []CheckResult
@@ -141,10 +154,24 @@ func runIntegrityChecks(ctx context.Context, cfg Config, restoreDir string) []Ch
 		checks = append(checks, checkPathPresence(restoreDir, path))
 	}
 
-	// Check 3: Postgres consistency (conditional — only if a Postgres data
-	// directory is found in the restore).
-	if pgDir := findPostgresDataDir(restoreDir); pgDir != "" {
-		checks = append(checks, checkPostgresConsistency(pgDir))
+	// Check 3: Postgres recoverability (conditional — only when the restore
+	// contains a pgBackRest repository).
+	//
+	// This is the check that makes "restorable" mean something: the two above
+	// prove the files came back, which is a much weaker claim than the database
+	// came back. A repository can restore cleanly and still fail to recover, and
+	// no file-level check can tell the difference.
+	if repo := findPGBackRestRepo(restoreDir); repo != nil {
+		switch {
+		case !cfg.PostgresRecovery.Configured():
+			checks = append(checks, CheckResult{
+				Name:   "postgres-recovery",
+				Passed: true,
+				Detail: fmt.Sprintf("skipped: found stanza %q but no Postgres service to recover it with", repo.Stanza),
+			})
+		default:
+			checks = append(checks, checkPostgresRecovery(ctx, cfg, *repo, cfg.PostgresRecovery))
+		}
 	}
 
 	return checks
@@ -199,71 +226,4 @@ func checkPathPresence(restoreDir, originalPath string) CheckResult {
 		detail = fmt.Sprintf("present (%d entries)", len(entries))
 	}
 	return CheckResult{Name: name, Passed: true, Detail: detail}
-}
-
-// findPostgresDataDir searches the restore for a Postgres data directory
-// (identified by the presence of PG_VERSION). Returns empty string if not found.
-func findPostgresDataDir(restoreDir string) string {
-	var found string
-	_ = filepath.WalkDir(restoreDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
-		}
-		if d.Name() == "PG_VERSION" {
-			found = filepath.Dir(path)
-			return filepath.SkipAll
-		}
-		return nil
-	})
-	return found
-}
-
-// checkPostgresConsistency runs pg_controldata on a restored Postgres data
-// directory to verify it is not corrupted.
-//
-// pg_controldata lives in postgresql-client, which OwnBase does not install —
-// Postgres normally runs in a container. When the binary is absent this check
-// cannot say anything about the data either way, so it is reported as skipped
-// rather than failed. Failing it would peg Restorable at false forever on every
-// Base that backs up a Postgres directory without the client tools installed,
-// which teaches operators to ignore the one flag that is supposed to mean
-// something. A pg_controldata that runs and reports a problem still fails.
-func checkPostgresConsistency(pgDataDir string) CheckResult {
-	name := "postgres-controldata"
-	if _, lookErr := exec.LookPath("pg_controldata"); lookErr != nil {
-		return CheckResult{
-			Name:   name,
-			Passed: true,
-			Detail: "skipped: pg_controldata is not installed on this Base",
-		}
-	}
-	out, err := exec.Command("pg_controldata", pgDataDir).CombinedOutput()
-	if err != nil {
-		return CheckResult{
-			Name:   name,
-			Passed: false,
-			Detail: fmt.Sprintf("pg_controldata failed: %v\n%s", err, out),
-		}
-	}
-	// A healthy control file contains "Database cluster state".
-	if !strings.Contains(string(out), "Database cluster state") {
-		return CheckResult{
-			Name:   name,
-			Passed: false,
-			Detail: "pg_controldata output missing expected fields",
-		}
-	}
-	// Extract state for the log.
-	state := ""
-	for _, line := range strings.Split(string(out), "\n") {
-		if strings.Contains(line, "Database cluster state") {
-			state = strings.TrimSpace(strings.SplitN(line, ":", 2)[1])
-			break
-		}
-	}
-	return CheckResult{
-		Name:   name,
-		Passed: true,
-		Detail: fmt.Sprintf("Postgres cluster state: %s", state),
-	}
 }

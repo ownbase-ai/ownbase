@@ -71,6 +71,19 @@
 | Injection | Start-time, scoped per service, never written to disk as plaintext | Secrets never appear in compiler output |
 | Backup | `/opt/ownbase/secrets/` and `/opt/ownbase/age/` are both in every restic snapshot | Secrets aren't in git, so restic is their only persistence; key and ciphertext must travel together |
 
+## Databases (`database:`)
+
+| Decision | Choice | Why |
+|---|---|---|
+| Form | `database: <provider-service>/<dbname>`, never a bare name | A Base can run two Postgres services; nothing should depend on one of them happening to be called `postgres`. Inference here would be a guess about the most destructive thing on the Base |
+| Relationship to `requires:` | The provider must appear in both; validation rejects a `database:` without it | They say different things — `requires:` joins the containers to a network and orders startup, `database:` is what gets created — and a database on a provider the service cannot reach is not worth accepting silently |
+| Credential delivery | A `DATABASE_URL` written into the consumer's age-encrypted secrets file, injected by the existing `Secret=` path | No new mechanism, and the URL is in neither git nor the unit file. Composing it into `env:` would put a password in the config repo |
+| URL host | The provider's container name and port, not a published port | The database is reached container to container and need not be exposed to the host at all |
+| Ownership of the value | Declaring `database:` means OwnBase owns that service's `DATABASE_URL` and rewrites it when the provider's password changes | A rotated password has to reach the consumer somehow. A service whose URL should be managed by hand does not declare `database:` |
+| Name charset | Plain SQL identifiers only (letters, digits, underscore) | `CREATE DATABASE` cannot bind its name as a parameter, so the name is interpolated; restricting it is what makes that safe, and every name anyone wants already fits |
+| When it runs | Before the compile, in the same reconcile slot as generated secrets | A URL written there is picked up by the secrets fingerprint and reaches the container in the same cycle |
+| First reconcile | Reports a skip and retries next tick, rather than failing | Creating a database needs the provider running, which on a fresh Base it is not until later in the same cycle. Converging a minute later is better than a reconcile that errors |
+
 ## Host hardening
 
 | Decision | Choice | Why |
@@ -91,7 +104,23 @@
 | Cadence | Backup 1h, verify 24h, retention 30 days by default | Configurable via `core.backup.interval`/`verify_interval` |
 | Config vs. credentials | Repo URL in `core.backup:` (git-tracked); credentials in `/opt/ownbase/secrets/backup.yaml.age` | Config survives rebuild; credentials use the normal secrets model |
 | Restorable flag | Only set **after** a verified restore drill passes | A backup never verified is not restorable by definition |
-| Integrity checks | `restic check --read-data-subset=5%` + file-presence + `pg_controldata` | Practical middle ground between "ran" and "fully verified" |
+| Integrity checks | `restic check --read-data-subset=5%` + file-presence + a **real Postgres recovery** when the restore contains a pgBackRest repository | The first two prove the files came back; only the third proves the database does. A repository can restore cleanly and still fail to recover (a gap in the WAL archive, a full backup aged out from under its incrementals), and no file-level check can tell the difference. Replaces an earlier `pg_controldata` check, which parsed a control file and therefore could not |
+| Drill isolation | Recovery runs in `podman run --rm` with no network, `listen_addresses=''`, and `archive_mode=off`, against the restic-restored copy of the repository | The drill must be unable to affect production or write to a backup repository, even by accident |
+| Opting out | `core.backup.verify_postgres: false` | The recovery costs real CPU and minutes; operators who cannot spare them should have to say so explicitly, since the alternative is that the recovery path goes untested until the day it is needed |
+
+## Point-in-time recovery (`ownbasectl db`)
+
+| Decision | Choice | Why |
+|---|---|---|
+| Where it runs | `podman exec` inside the Postgres container, from the daemon | That is where the pgBackRest client, the stanza config, and the SSH identity live. An earlier version of `internal/backup/pgbackrest.go` assumed a host-installed `pgbackrest` and had no callers |
+| WAL archiving | Postgres's own `archive_command`; the daemon never pushes WAL | Archiving is driven by WAL volume and `archive_timeout`. A daemon polling `archive-push` was doing Postgres's job worse (`PGBackRestArchiveWAL`, deleted) |
+| Restore source | The repository Podman volume, mounted read-only | The repository is on the same machine; a restore that needs neither the network nor an SSH key is one less thing to fail when it is needed most. Read-only means a restore cannot damage what it restores from |
+| Default destination | `--into scratch`: a second Postgres on `127.0.0.1:5433`, left running | A recovery should start by looking at what came back. Defaulting to production would make the destructive path the easy one |
+| Scratch lifecycle | Postgres is the container's own process, under a fixed container name | The instance then lives exactly as long as the container, so `podman rm -f` is a complete teardown and a second restore replaces the first. Backgrounding Postgres instead left podman waiting on a process nobody watched, and `podman exec` failed with "container state improper" |
+| Target validation | `--to` is checked against the archive range before anything is stopped | A target past the end of the archive fails with `recovery ended before configured recovery target was reached`, which reads like data loss and is not. On a quiet database the newest recoverable point routinely trails `now()` by minutes, so "restore to right now" hits this constantly. The far end is the last segment's *archive* time, so it bounds the window without being a reachable target — which is why `db status` suggests a restore with no `--to` rather than one aimed at it |
+| Recovery completion | Poll `pg_is_in_recovery()` with a bound | `pg_ctl -w` and systemd readiness both return once the postmaster accepts connections, which happens while WAL replay is still running |
+| After a production restore | Stop dependants first; take a **full backup** immediately after promotion | A client holding a connection through a data-directory swap sees corruption, not an outage. A promotion starts a new timeline that no existing backup is on, so until a full backup exists the database has recovery history but nothing to recover from |
+| Archiver health | Surfaced as a failure, not a count, when `last_failed_time` is newer than `last_archived_time` | A failing `archive_command` is invisible from every other angle — queries serve, the container is up, the disk is fine — while the recovery window stops moving. `pg_stat_archiver.failed_count` is the only place it shows |
 
 ## Updates and drift
 

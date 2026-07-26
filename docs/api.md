@@ -191,6 +191,72 @@ Runs one backup cycle synchronously (the daemon allows up to 10 minutes). Respon
 {"last_backup": "…", "latest_snapshot": "abc123", "restorable": true, "last_error": ""}
 ```
 
+### `POST /backup/verify` — run the verified-restore drill now
+
+Restores the newest snapshot into an isolated directory, runs the integrity checks, and — when the backup contains a pgBackRest repository — recovers a real Postgres from it. Sets `Restorable` only on a full pass. Behind `ownbasectl checkup <base> --verify`.
+
+Streams **plain text**, like `POST /upgrade`, because the drill takes minutes. Two trailers close the stream:
+
+- `---RESULT---{…}` carries the outcome as JSON, and is emitted whether or not the drill passed:
+
+```json
+{"passed": false, "snapshot_id": "4f2a91c", "verified_at": "…", "checks": [{"name": "restic-check", "passed": true, "detail": "repository integrity OK"}, {"name": "postgres-recovery", "passed": false, "detail": "recovery never completed"}]}
+```
+
+- `---OK---` follows it **only when every check passed.** Its absence is how a caller detects failure, since the 200 status was already committed before the drill started.
+
+A drill that ran and failed a check is not an error: the response is still 200 with a full `---RESULT---`, because which check failed is what decides what the operator does next. Only a drill that could not run at all (no repo configured, restic unreachable) reports `ERROR:` with no trailer. `501` when backups are not configured on this Base.
+
+Waits for any in-flight snapshot or scheduled drill to finish first — one restic operation at a time per Base.
+
+---
+
+## Postgres point-in-time recovery
+
+Both endpoints locate the Base's Postgres by reading `ownbase.yaml` on each call — the service that sets `PGBACKREST_HOST`, and the repository volume on the host it names. A Base that gains, renames, or removes its database needs no daemon restart for these to follow. `501` when no service declares `PGBACKREST_HOST`.
+
+### `GET /db/status` — recovery window and archiver health
+
+Runs `pgbackrest info` and reads `pg_stat_archiver`, both inside the Postgres container. Behind `ownbasectl db status`.
+
+```json
+{
+  "stanza": "main", "stanza_ok": true, "postgres_version": "17",
+  "backups": [{"label": "20260724-020000F", "type": "full", "size_bytes": 1073741824, "repo_size_bytes": 431906816, "started": "…", "stopped": "…", "error": false}],
+  "archive_min_wal": "000000010000000000000002", "archive_max_wal": "00000001000000000000001F",
+  "archiver": {"archived_count": 74, "last_archived_wal": "00000001000000000000001F", "last_archived_time": "…", "failed_count": 0, "last_failed_wal": "", "last_failed_time": null},
+  "earliest_recovery": "…", "latest_recovery": "…"
+}
+```
+
+`earliest_recovery` is the end of the oldest backup still held; WAL older than it has nothing to be applied to. `latest_recovery` is bounded by the **last WAL segment archived**, not by `now()` — a change committed after that segment is on disk but not in the repository. `archiver.failed_count` climbing while `last_failed_time` is newer than `last_archived_time` is the one silent failure here: the database is healthy and the recovery window has stopped moving.
+
+If Postgres itself is unreachable the repository half is still returned, as a `500` whose body is `{"error": "…", "status": {…}}` — a database that is down is exactly when what can be restored matters. `ownbasectl db status` renders that half and marks the archiver unknown rather than reporting it as idle.
+
+### `POST /db/restore` — point-in-time recovery
+
+Body (all fields optional):
+
+```json
+{"target": "2026-07-25 14:00:00+00", "into": "scratch", "scratch_port": 5433}
+```
+
+`target` empty means recover everything the repository holds. `into` is `scratch` (default) or `production`. The target is validated against the repository's archive range **before** anything is stopped, and a target past the end of the archive is refused with an explanation rather than allowed to fail as `recovery ended before configured recovery target was reached`, which reads like data loss and is not.
+
+Both paths mount the repository volume read-only and restore from it directly rather than reaching the repository host over SSH: the repository is on the same machine, and a restore that needs neither the network nor a key is one less thing to fail when it is needed most.
+
+Streams plain text with the same two trailers as `POST /backup/verify`. `---RESULT---` carries:
+
+```json
+{"into": "scratch", "target": "…", "timeline": "3", "databases": 2, "relations": 412, "last_transaction": "2026-07-25 13:58:02+00", "scratch_endpoint": "127.0.0.1:5433", "backup_after_promote": false}
+```
+
+`last_transaction` is the log time of the last transaction replayed — the honest answer to what point the data represents, which can be earlier than `target` when the repository held nothing newer. Row counts are deliberately absent: Postgres resets its statistics views during recovery, so every table reads as empty regardless of its contents.
+
+`---OK---` follows only when recovery completed. A scratch instance is torn down on failure rather than left running, since a half-recovered Postgres would be read as a successful restore by anyone who looked.
+
+`into: production` stops the service and everything that `requires:` it, restores with `--delta`, replays the archive, and takes a full backup on the new timeline. If any of that fails the Base is put back in reverse of the order it came down: the database is started again first, and its dependants only once it answers, since an app started against a database that cannot answer crash-loops rather than recovers. When the database does not come back, the dependants are left stopped and the response names the units to start by hand. A failed post-promote backup is reported as a warning rather than an error — the database is up and serving, which was the point — but it is stated plainly, because a database on a timeline with no base backup cannot be recovered again.
+
 ---
 
 ## Secrets

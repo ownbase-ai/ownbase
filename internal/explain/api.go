@@ -69,11 +69,47 @@ type APIConfig struct {
 	// RunBackup, when non-nil, runs one backup cycle immediately and returns
 	// the resulting status. Called by POST /backup/run.
 	RunBackup func() (BackupRunStatus, error)
+	// VerifyBackup, when non-nil, runs the verified-restore drill immediately,
+	// streaming progress lines to w, and returns the per-check outcomes.
+	// Called by POST /backup/verify. A non-nil error means the drill could not
+	// run at all, which is distinct from a drill that ran and failed a check
+	// (VerifyDrillResult.Passed == false).
+	VerifyBackup func(w io.Writer) (VerifyDrillResult, error)
 	// CoreStatus, when non-nil, reports the current state of the OwnBase core
 	// package (Caddy): pinned image + digest and whether the
 	// container is running on the Base. Called by GET /core/status — the
 	// endpoint behind `ownbasectl upgrade` (check-only mode).
 	CoreStatus func() []CorePackageStatus
+	// DBStatus, when non-nil, reports the Postgres point-in-time recovery
+	// posture: backups held, WAL archive range, and archiver health. Called by
+	// GET /db/status — the endpoint behind `ownbasectl db status`.
+	DBStatus func() (any, error)
+	// DBRestore, when non-nil, performs a point-in-time restore, streaming
+	// progress to w and returning a JSON-serialisable outcome. Called by
+	// POST /db/restore — the endpoint behind `ownbasectl db restore`.
+	DBRestore func(w io.Writer, req DBRestoreRequest) (any, error)
+}
+
+// DBRestoreRequest is the body of POST /db/restore.
+type DBRestoreRequest struct {
+	// Target is the recovery timestamp. Empty means recover everything the
+	// repository holds.
+	Target string `json:"target,omitempty"`
+
+	// Into is "scratch" (default) or "production".
+	Into string `json:"into,omitempty"`
+
+	// ScratchPort overrides the loopback port a scratch instance publishes on.
+	ScratchPort int `json:"scratch_port,omitempty"`
+}
+
+// DBStatusError is the 500 body of GET /db/status. It carries whatever was
+// readable with the reason the rest was not: the repository is read first and
+// from the filesystem, so a Postgres that is down still has a recovery window
+// worth reporting.
+type DBStatusError struct {
+	Error  string `json:"error"`
+	Status any    `json:"status,omitempty"`
 }
 
 // CorePackageStatus is the JSON-friendly state of one core package as
@@ -95,6 +131,27 @@ type BackupRunStatus struct {
 	LatestSnapshot string `json:"latest_snapshot,omitempty"`
 	Restorable     bool   `json:"restorable"`
 	LastError      string `json:"last_error,omitempty"`
+}
+
+// VerifyDrillResult is the JSON-friendly outcome of one verified-restore
+// drill, emitted as the ---RESULT--- trailer of POST /backup/verify.
+//
+// The per-check breakdown is the point of it. A drill that collapses to a
+// single boolean tells an operator that their backups are not provably
+// restorable without telling them which part is not — and the answer ("restic
+// is fine, Postgres would not start") decides what they do next.
+type VerifyDrillResult struct {
+	Passed     bool               `json:"passed"`
+	SnapshotID string             `json:"snapshot_id,omitempty"`
+	VerifiedAt string             `json:"verified_at,omitempty"`
+	Checks     []VerifyDrillCheck `json:"checks,omitempty"`
+}
+
+// VerifyDrillCheck is one integrity check's outcome.
+type VerifyDrillCheck struct {
+	Name   string `json:"name"`
+	Passed bool   `json:"passed"`
+	Detail string `json:"detail,omitempty"`
 }
 
 // DefaultSecretsDir is the conventional directory for age-encrypted secrets files.
@@ -436,6 +493,137 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 			return
 		}
 		writeJSON(w, status)
+	})
+
+	// /backup/verify — run the verified-restore drill on demand and stream
+	// progress, rather than making the operator wait for the daemon's
+	// verify_interval to come round. Used by `ownbasectl checkup --verify`.
+	//
+	// Streamed plain text, like /upgrade and /security/fix: the drill restores
+	// a real snapshot and (when Postgres is in it) starts a real database, so
+	// it takes minutes and an operator watching it needs to see where it is.
+	// The response ends with a ---RESULT--- line carrying the per-check
+	// outcomes as JSON, then ---OK--- only when every check passed.
+	mux.HandleFunc("/backup/verify", func(w http.ResponseWriter, r *http.Request) {
+		if !authRequired(w, r, cfg.StatusSrv) {
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if cfg.VerifyBackup == nil {
+			http.Error(w, "backup not configured", http.StatusNotImplemented)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.WriteHeader(http.StatusOK)
+
+		flusher, canFlush := w.(http.Flusher)
+		fw := &flushWriter{w: w, flush: func() {
+			if canFlush {
+				flusher.Flush()
+			}
+		}}
+
+		result, err := cfg.VerifyBackup(fw)
+		if err != nil {
+			fmt.Fprintf(fw, "\nERROR: %v\n", err)
+			return
+		}
+
+		// The trailer is emitted whether or not the drill passed — a failed
+		// drill's per-check detail is exactly what the caller needs.
+		if encoded, err := json.Marshal(result); err == nil {
+			fmt.Fprintf(fw, "---RESULT---%s\n", encoded)
+		}
+		if !result.Passed {
+			return
+		}
+		fmt.Fprintf(fw, "---OK---\n")
+	})
+
+	// /db/status — Postgres point-in-time recovery posture: what backups are
+	// held, how far the WAL archive reaches, and whether archiving still works.
+	// Behind `ownbasectl db status`.
+	mux.HandleFunc("/db/status", func(w http.ResponseWriter, r *http.Request) {
+		if !authRequired(w, r, cfg.StatusSrv) {
+			return
+		}
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if cfg.DBStatus == nil {
+			http.Error(w, "no managed Postgres on this Base", http.StatusNotImplemented)
+			return
+		}
+		status, err := cfg.DBStatus()
+		if err != nil {
+			// The repository half is read before Postgres is, and the usual
+			// reason this fails is a database that is down — which is exactly
+			// when what can be restored is the thing worth knowing. Return that
+			// half alongside the error rather than only the error text.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(DBStatusError{
+				Error:  "db status: " + err.Error(),
+				Status: status,
+			})
+			return
+		}
+		writeJSON(w, status)
+	})
+
+	// /db/restore — point-in-time recovery, either into a scratch instance
+	// beside production or over production itself. Behind
+	// `ownbasectl db restore`.
+	//
+	// Streamed plain text with the same two trailers as /backup/verify: a
+	// restore takes minutes, and every one of its failure modes happens
+	// mid-flight, so an operator needs to see where it got to.
+	mux.HandleFunc("/db/restore", func(w http.ResponseWriter, r *http.Request) {
+		if !authRequired(w, r, cfg.StatusSrv) {
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if cfg.DBRestore == nil {
+			http.Error(w, "no managed Postgres on this Base", http.StatusNotImplemented)
+			return
+		}
+
+		var req DBRestoreRequest
+		if r.Body != nil {
+			// An empty body is valid: it means recover everything the
+			// repository holds, into a scratch instance.
+			_ = json.NewDecoder(r.Body).Decode(&req)
+		}
+
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.WriteHeader(http.StatusOK)
+
+		flusher, canFlush := w.(http.Flusher)
+		fw := &flushWriter{w: w, flush: func() {
+			if canFlush {
+				flusher.Flush()
+			}
+		}}
+
+		outcome, err := cfg.DBRestore(fw, req)
+		if err != nil {
+			fmt.Fprintf(fw, "\nERROR: %v\n", err)
+			return
+		}
+		if encoded, err := json.Marshal(outcome); err == nil {
+			fmt.Fprintf(fw, "---RESULT---%s\n", encoded)
+		}
+		fmt.Fprintf(fw, "---OK---\n")
 	})
 
 	// /security/scan — trigger an immediate vulnerability scan. Returns quickly;

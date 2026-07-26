@@ -37,6 +37,8 @@ import (
 	"github.com/ownbase/ownbase/internal/configsource"
 	"github.com/ownbase/ownbase/internal/core"
 	"github.com/ownbase/ownbase/internal/explain"
+	"github.com/ownbase/ownbase/internal/gendb"
+	"github.com/ownbase/ownbase/internal/gensecrets"
 	"github.com/ownbase/ownbase/internal/githost"
 	"github.com/ownbase/ownbase/internal/gitssh"
 	"github.com/ownbase/ownbase/internal/install"
@@ -506,6 +508,67 @@ func run(cfg agentConfig) error {
 				}
 				return out, nil
 			},
+			// VerifyBackup runs the verified-restore drill immediately
+			// (ownbasectl checkup --verify) rather than waiting for the
+			// scheduler's verify_interval to come round.
+			VerifyBackup: func(w io.Writer) (explain.VerifyDrillResult, error) {
+				// The drill restores a full snapshot and, when Postgres is in
+				// it, starts a real database — generously longer than a
+				// snapshot's 10 minutes.
+				runCtx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
+				defer cancel()
+				result, err := verifyBackupNow(runCtx, cfg, auditLog, w)
+				// Refresh the cached /status payload either way, so the
+				// Restorable flag the drill just set is what a following
+				// `checkup` reports.
+				signalReconcile(reconcileSig)
+				if err != nil {
+					return explain.VerifyDrillResult{}, err
+				}
+				out := explain.VerifyDrillResult{
+					Passed:     result.Passed,
+					SnapshotID: result.SnapshotID,
+				}
+				if !result.VerifiedAt.IsZero() {
+					out.VerifiedAt = result.VerifiedAt.Format(time.RFC3339)
+				}
+				for _, ch := range result.Checks {
+					out.Checks = append(out.Checks, explain.VerifyDrillCheck{
+						Name:   ch.Name,
+						Passed: ch.Passed,
+						Detail: ch.Detail,
+					})
+				}
+				return out, nil
+			},
+			// DBStatus reports the Postgres point-in-time recovery posture
+			// (ownbasectl db status).
+			DBStatus: func() (any, error) {
+				statusCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				defer cancel()
+				pb, err := findPGBackRest(cfg)
+				if err != nil {
+					return nil, err
+				}
+				return backup.QueryStatus(statusCtx, pb)
+			},
+			// DBRestore performs point-in-time recovery (ownbasectl db restore).
+			DBRestore: func(w io.Writer, req explain.DBRestoreRequest) (any, error) {
+				// A production restore stops dependants, restores over the live
+				// data directory, replays the archive, and takes a fresh full
+				// backup — generously bounded, since every step scales with the
+				// size of the database.
+				restoreCtx, cancel := context.WithTimeout(context.Background(), 3*time.Hour)
+				defer cancel()
+				outcome, err := restoreDatabase(restoreCtx, cfg, w, req)
+				if err != nil {
+					return nil, err
+				}
+				// A production restore replaced the data directory and took a
+				// new backup, so the cached /status payload is stale.
+				signalReconcile(reconcileSig)
+				return outcome, nil
+			},
 		})
 		httpSrv := &http.Server{
 			Addr:    cfg.statusAddr,
@@ -842,6 +905,7 @@ func loadBackupConfig(cfg agentConfig, repo string, auditLog authz.AuditLogger) 
 	}
 
 	var paths []string
+	var pgRecovery backup.PostgresRecovery
 	oc, err := schema.ParseConfigFile(filepath.Join(cfg.checkoutPath, "ownbase.yaml"))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ownbased: backup: parse ownbase.yaml: %v (falling back to default paths)\n", err)
@@ -852,14 +916,16 @@ func loadBackupConfig(cfg agentConfig, repo string, auditLog authz.AuditLogger) 
 		} else {
 			paths = resolved
 		}
+		pgRecovery = backup.FindPostgresRecovery(oc)
 	}
 
 	return backup.Config{
-		Repository:  repo,
-		Paths:       paths,
-		Credentials: creds,
-		DryRun:      cfg.dryRun,
-		AuditLog:    auditLog,
+		Repository:       repo,
+		Paths:            paths,
+		Credentials:      creds,
+		DryRun:           cfg.dryRun,
+		AuditLog:         auditLog,
+		PostgresRecovery: pgRecovery,
 	}
 }
 
@@ -954,6 +1020,51 @@ func reconcileLoop(
 	adminUser := install.ReadAdminUser(install.AdminUserPath)
 	for _, err := range repos.EnsureRepos(cfg, adminUser) {
 		fmt.Fprintf(os.Stderr, "ownbased: ensure repos: %v (non-fatal)\n", err)
+	}
+
+	// 3a. Fill in any generated_secrets: whose destination key is still empty.
+	// This runs before the compile below so a freshly generated value is
+	// picked up by the secrets fingerprint in step 4a-pre and the container
+	// starts with it in the same cycle rather than the next one.
+	//
+	// Non-fatal: a Base whose age key is unreadable should still reconcile
+	// everything that doesn't need a secret, and the affected service will
+	// fail its own health probe with a much clearer symptom.
+	if !dryRun {
+		gen, err := gensecrets.Ensure(cfg, gensecrets.Config{SecretsDir: explain.DefaultSecretsDir})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ownbased: generate secrets: %v (non-fatal)\n", err)
+		}
+		for _, dest := range gen.Generated {
+			fmt.Fprintf(os.Stderr, "ownbased: generated secret %s\n", dest)
+		}
+	}
+
+	// 3b. Create any database: a service declares and hand it the URL, in the
+	// same slot and for the same reason as generated secrets above: a
+	// DATABASE_URL written here is fingerprinted in step 4a-pre and reaches the
+	// container in this cycle.
+	//
+	// On a Base's first reconcile the provider's Postgres is not running yet, so
+	// this reports a skip and the next tick finishes the job. Non-fatal for the
+	// same reason as above — everything that does not need a database should
+	// still converge.
+	if !dryRun {
+		dbCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		prov, err := gendb.Ensure(dbCtx, cfg, gendb.Config{SecretsDir: explain.DefaultSecretsDir})
+		cancel()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ownbased: provision databases: %v (non-fatal)\n", err)
+		}
+		for _, db := range prov.Created {
+			fmt.Fprintf(os.Stderr, "ownbased: created database %s\n", db)
+		}
+		for _, svc := range prov.Wired {
+			fmt.Fprintf(os.Stderr, "ownbased: wrote %s for %s\n", schema.DatabaseURLKey, svc)
+		}
+		for _, skip := range prov.Skipped {
+			fmt.Fprintf(os.Stderr, "ownbased: database not provisioned yet — %s\n", skip)
+		}
 	}
 
 	// 4. Compile desired state.

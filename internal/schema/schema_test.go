@@ -691,3 +691,266 @@ core:
 		t.Errorf("VerifyInterval = %q", cfg.Core.Backup.VerifyInterval)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// generated_secrets tests
+// ---------------------------------------------------------------------------
+
+func TestGeneratedSecrets_RoundTrip(t *testing.T) {
+	yaml := `schema_version: v1
+services:
+  pgbackrest:
+    repo: https://github.com/ownbase-ai/pgbackrest
+    generated_secrets:
+      - type: ssh-ed25519
+        public_key: PGBACKREST_CLIENT_PUBKEY
+        private_key: postgres:PGBACKREST_SSH_KEY_B64
+        private_encoding: base64
+  postgres:
+    repo: https://github.com/ownbase-ai/pgbackrest
+    generated_secrets:
+      - type: password
+        key: POSTGRES_PASSWORD
+        length: 48
+`
+	cfg, err := schema.ParseConfig(strings.NewReader(yaml))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	keypair := cfg.Services["pgbackrest"].GeneratedSecrets[0]
+	if keypair.Type != schema.GeneratedSecretSSHEd25519 {
+		t.Errorf("Type = %q", keypair.Type)
+	}
+	if !keypair.Base64Private() {
+		t.Error("Base64Private() = false, want true for private_encoding: base64")
+	}
+
+	// The private half targets another service, which is how a keypair gets
+	// split across the two ends of a connection.
+	dests := keypair.Destinations()
+	if len(dests) != 2 {
+		t.Fatalf("Destinations() = %v, want 2", dests)
+	}
+	if dests[0] != (schema.SecretDest{Key: "PGBACKREST_CLIENT_PUBKEY"}) {
+		t.Errorf("public destination = %+v", dests[0])
+	}
+	if dests[1] != (schema.SecretDest{Service: "postgres", Key: "PGBACKREST_SSH_KEY_B64"}) {
+		t.Errorf("private destination = %+v", dests[1])
+	}
+
+	pw := cfg.Services["postgres"].GeneratedSecrets[0]
+	if got := pw.EffectiveLength(); got != 48 {
+		t.Errorf("EffectiveLength() = %d, want 48", got)
+	}
+}
+
+func TestGeneratedSecrets_EffectiveLengthDefault(t *testing.T) {
+	var g schema.GeneratedSecretDecl
+	if got := g.EffectiveLength(); got != schema.DefaultGeneratedPasswordLength {
+		t.Errorf("EffectiveLength() = %d, want %d", got, schema.DefaultGeneratedPasswordLength)
+	}
+}
+
+func TestGeneratedSecrets_Validate(t *testing.T) {
+	tests := []struct {
+		name    string
+		decl    schema.GeneratedSecretDecl
+		wantErr string
+	}{
+		{
+			name: "valid password",
+			decl: schema.GeneratedSecretDecl{Type: schema.GeneratedSecretPassword, Key: "PW"},
+		},
+		{
+			name: "valid keypair split across services",
+			decl: schema.GeneratedSecretDecl{
+				Type:       schema.GeneratedSecretSSHEd25519,
+				PublicKey:  "PUB",
+				PrivateKey: "other:PRIV",
+			},
+		},
+		{
+			name:    "missing type",
+			decl:    schema.GeneratedSecretDecl{Key: "PW"},
+			wantErr: "type is required",
+		},
+		{
+			name:    "unknown type",
+			decl:    schema.GeneratedSecretDecl{Type: "rsa-4096", PublicKey: "PUB", PrivateKey: "PRIV"},
+			wantErr: "unknown type",
+		},
+		{
+			name:    "password without key",
+			decl:    schema.GeneratedSecretDecl{Type: schema.GeneratedSecretPassword},
+			wantErr: "key is required",
+		},
+		{
+			name: "password with keypair fields",
+			decl: schema.GeneratedSecretDecl{
+				Type: schema.GeneratedSecretPassword, Key: "PW", PublicKey: "PUB",
+			},
+			wantErr: "not used by type: password",
+		},
+		{
+			name:    "keypair without private_key",
+			decl:    schema.GeneratedSecretDecl{Type: schema.GeneratedSecretSSHEd25519, PublicKey: "PUB"},
+			wantErr: "private_key is required",
+		},
+		{
+			name: "keypair with key",
+			decl: schema.GeneratedSecretDecl{
+				Type: schema.GeneratedSecretSSHEd25519, PublicKey: "PUB", PrivateKey: "PRIV", Key: "PW",
+			},
+			wantErr: "key is not used",
+		},
+		{
+			name: "unknown private_encoding",
+			decl: schema.GeneratedSecretDecl{
+				Type: schema.GeneratedSecretSSHEd25519, PublicKey: "PUB", PrivateKey: "PRIV",
+				PrivateEncoding: "hex",
+			},
+			wantErr: "private_encoding",
+		},
+		{
+			// A destination on a service that does not exist would write a
+			// half of the keypair to a file nothing ever reads.
+			name: "destination service does not exist",
+			decl: schema.GeneratedSecretDecl{
+				Type: schema.GeneratedSecretSSHEd25519, PublicKey: "PUB", PrivateKey: "ghost:PRIV",
+			},
+			wantErr: "does not match any service key",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &schema.OwnbaseConfig{
+				SchemaVersion: "v1",
+				Services: map[string]schema.ServiceDecl{
+					"svc":   {Repo: "https://github.com/org/svc", GeneratedSecrets: []schema.GeneratedSecretDecl{tc.decl}},
+					"other": {Repo: "https://github.com/org/other"},
+				},
+			}
+			err := cfg.Validate()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("Validate() = nil, want an error containing %q", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("Validate() = %v, want it to contain %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestDatabaseRef_Parse(t *testing.T) {
+	ref, ok := (schema.ServiceDecl{Database: " postgres / revolve "}).DatabaseRef()
+	if !ok {
+		t.Fatal("DatabaseRef() reported no declaration")
+	}
+	if ref.Service != "postgres" || ref.Name != "revolve" {
+		t.Errorf("DatabaseRef() = %+v, want postgres/revolve", ref)
+	}
+
+	if _, ok := (schema.ServiceDecl{}).DatabaseRef(); ok {
+		t.Error("DatabaseRef() reported a declaration for an empty field")
+	}
+}
+
+func TestDatabase_Validate(t *testing.T) {
+	tests := []struct {
+		name     string
+		database string
+		requires []string
+		wantErr  string
+	}{
+		{
+			name:     "valid",
+			database: "postgres/revolve",
+			requires: []string{"postgres"},
+		},
+		{
+			// The old bare-name form. Naming the provider is the whole point:
+			// a Base can run two databases, and nothing should depend on one
+			// of them happening to be called "postgres".
+			name:     "bare database name",
+			database: "revolve",
+			requires: []string{"postgres"},
+			wantErr:  `must be written as "<service>/<dbname>"`,
+		},
+		{
+			name:     "missing database name",
+			database: "postgres/",
+			requires: []string{"postgres"},
+			wantErr:  "missing a database name",
+		},
+		{
+			name:     "provider does not exist",
+			database: "ghost/revolve",
+			requires: []string{"postgres"},
+			wantErr:  "does not match any service key",
+		},
+		{
+			// requires: is what joins the containers to a network. A database
+			// on a provider this service cannot reach is not worth accepting.
+			name:     "provider not in requires",
+			database: "postgres/revolve",
+			wantErr:  "must also be listed in requires:",
+		},
+		{
+			name:     "provider is itself",
+			database: "svc/revolve",
+			requires: []string{"svc"},
+			wantErr:  "names this service as its own provider",
+		},
+		{
+			// CREATE DATABASE cannot bind its name as a parameter, so the name
+			// is interpolated and has to be an identifier.
+			name:     "name is not an identifier",
+			database: `postgres/rev"; drop database postgres; --`,
+			requires: []string{"postgres"},
+			wantErr:  "not a usable database name",
+		},
+		{
+			name:     "name starts with a digit",
+			database: "postgres/1db",
+			requires: []string{"postgres"},
+			wantErr:  "not a usable database name",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &schema.OwnbaseConfig{
+				SchemaVersion: "v1",
+				Services: map[string]schema.ServiceDecl{
+					"svc": {
+						Repo:     "https://github.com/org/svc",
+						Database: tc.database,
+						Requires: tc.requires,
+					},
+					"postgres": {Repo: "https://github.com/org/postgres"},
+				},
+			}
+			err := cfg.Validate()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("Validate() = nil, want an error containing %q", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("Validate() = %v, want it to contain %q", err, tc.wantErr)
+			}
+		})
+	}
+}
