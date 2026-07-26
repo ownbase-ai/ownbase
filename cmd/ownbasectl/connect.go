@@ -35,6 +35,11 @@ type connection struct {
 	baseURL string // e.g. "http://127.0.0.1:54321"
 	token   string // Bearer token
 	tun     *tunnel.Tunnel
+
+	// sshTarget is the Base's SSH destination, e.g. "root@203.0.113.10". Kept
+	// so a command can print an SSH invocation the operator can paste, rather
+	// than a placeholder they have to fill in.
+	sshTarget string
 }
 
 func (c *connection) close() {
@@ -112,9 +117,10 @@ func connectToServer(serverName string) (*connection, error) {
 	}
 
 	return &connection{
-		baseURL: "http://" + tun.LocalAddr(),
-		token:   tok,
-		tun:     tun,
+		baseURL:   "http://" + tun.LocalAddr(),
+		token:     tok,
+		tun:       tun,
+		sshTarget: profile.EffectiveSSHUser() + "@" + profile.Host,
 	}, nil
 }
 

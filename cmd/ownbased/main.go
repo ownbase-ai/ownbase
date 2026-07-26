@@ -540,6 +540,34 @@ func run(cfg agentConfig) error {
 				}
 				return out, nil
 			},
+			// DBStatus reports the Postgres point-in-time recovery posture
+			// (ownbasectl db status).
+			DBStatus: func() (any, error) {
+				statusCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				defer cancel()
+				pb, err := findPGBackRest(cfg)
+				if err != nil {
+					return nil, err
+				}
+				return backup.QueryStatus(statusCtx, pb)
+			},
+			// DBRestore performs point-in-time recovery (ownbasectl db restore).
+			DBRestore: func(w io.Writer, req explain.DBRestoreRequest) (any, error) {
+				// A production restore stops dependants, restores over the live
+				// data directory, replays the archive, and takes a fresh full
+				// backup — generously bounded, since every step scales with the
+				// size of the database.
+				restoreCtx, cancel := context.WithTimeout(context.Background(), 3*time.Hour)
+				defer cancel()
+				outcome, err := restoreDatabase(restoreCtx, cfg, w, req)
+				if err != nil {
+					return nil, err
+				}
+				// A production restore replaced the data directory and took a
+				// new backup, so the cached /status payload is stale.
+				signalReconcile(reconcileSig)
+				return outcome, nil
+			},
 		})
 		httpSrv := &http.Server{
 			Addr:    cfg.statusAddr,

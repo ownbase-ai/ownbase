@@ -80,6 +80,27 @@ type APIConfig struct {
 	// container is running on the Base. Called by GET /core/status — the
 	// endpoint behind `ownbasectl upgrade` (check-only mode).
 	CoreStatus func() []CorePackageStatus
+	// DBStatus, when non-nil, reports the Postgres point-in-time recovery
+	// posture: backups held, WAL archive range, and archiver health. Called by
+	// GET /db/status — the endpoint behind `ownbasectl db status`.
+	DBStatus func() (any, error)
+	// DBRestore, when non-nil, performs a point-in-time restore, streaming
+	// progress to w and returning a JSON-serialisable outcome. Called by
+	// POST /db/restore — the endpoint behind `ownbasectl db restore`.
+	DBRestore func(w io.Writer, req DBRestoreRequest) (any, error)
+}
+
+// DBRestoreRequest is the body of POST /db/restore.
+type DBRestoreRequest struct {
+	// Target is the recovery timestamp. Empty means recover everything the
+	// repository holds.
+	Target string `json:"target,omitempty"`
+
+	// Into is "scratch" (default) or "production".
+	Into string `json:"into,omitempty"`
+
+	// ScratchPort overrides the loopback port a scratch instance publishes on.
+	ScratchPort int `json:"scratch_port,omitempty"`
 }
 
 // CorePackageStatus is the JSON-friendly state of one core package as
@@ -511,6 +532,78 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 		}
 		if !result.Passed {
 			return
+		}
+		fmt.Fprintf(fw, "---OK---\n")
+	})
+
+	// /db/status — Postgres point-in-time recovery posture: what backups are
+	// held, how far the WAL archive reaches, and whether archiving still works.
+	// Behind `ownbasectl db status`.
+	mux.HandleFunc("/db/status", func(w http.ResponseWriter, r *http.Request) {
+		if !authRequired(w, r, cfg.StatusSrv) {
+			return
+		}
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if cfg.DBStatus == nil {
+			http.Error(w, "no managed Postgres on this Base", http.StatusNotImplemented)
+			return
+		}
+		status, err := cfg.DBStatus()
+		if err != nil {
+			http.Error(w, "db status: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, status)
+	})
+
+	// /db/restore — point-in-time recovery, either into a scratch instance
+	// beside production or over production itself. Behind
+	// `ownbasectl db restore`.
+	//
+	// Streamed plain text with the same two trailers as /backup/verify: a
+	// restore takes minutes, and every one of its failure modes happens
+	// mid-flight, so an operator needs to see where it got to.
+	mux.HandleFunc("/db/restore", func(w http.ResponseWriter, r *http.Request) {
+		if !authRequired(w, r, cfg.StatusSrv) {
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if cfg.DBRestore == nil {
+			http.Error(w, "no managed Postgres on this Base", http.StatusNotImplemented)
+			return
+		}
+
+		var req DBRestoreRequest
+		if r.Body != nil {
+			// An empty body is valid: it means recover everything the
+			// repository holds, into a scratch instance.
+			_ = json.NewDecoder(r.Body).Decode(&req)
+		}
+
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.WriteHeader(http.StatusOK)
+
+		flusher, canFlush := w.(http.Flusher)
+		fw := &flushWriter{w: w, flush: func() {
+			if canFlush {
+				flusher.Flush()
+			}
+		}}
+
+		outcome, err := cfg.DBRestore(fw, req)
+		if err != nil {
+			fmt.Fprintf(fw, "\nERROR: %v\n", err)
+			return
+		}
+		if encoded, err := json.Marshal(outcome); err == nil {
+			fmt.Fprintf(fw, "---RESULT---%s\n", encoded)
 		}
 		fmt.Fprintf(fw, "---OK---\n")
 	})

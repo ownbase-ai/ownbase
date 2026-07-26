@@ -100,6 +100,16 @@ It never left the Base: `sudo cat /opt/ownbase/api-token` (root, 0600). Re-regis
 
 ---
 
+## Postgres point-in-time recovery
+
+- **"`<time>` is newer than the last WAL segment in the repository"** — `db restore` refused before doing anything, which is the intended outcome. Postgres archives a WAL segment when it fills or `archive_timeout` elapses, so on a quiet database the newest recoverable point trails the present by minutes and "restore to right now" asks for something the repository does not have. Use the timestamp the message names, force a segment switch first (`select pg_switch_wal();` inside the container), or omit `--to` to recover everything the repository holds.
+- **"recovery ended before configured recovery target was reached"** — the same cause reaching Postgres directly, from a restore started outside `db restore`. It reads like data loss and is not: the data is intact and the target was simply in the future as far as the repository is concerned. Re-run with an earlier target.
+- **`db status` says archiving is FAILING** — the database is fine and the recovery window has stopped moving; every change since the last success is currently unrecoverable. `podman logs ownbase-pgbackrest` on the Base has the reason, usually a full repository volume, an SSH key the Postgres container can no longer use, or a stanza that needs `pgbackrest stanza-create` after a restore. Nothing else about the Base will look wrong while this is true, so treat it as urgent.
+- **A scratch instance is in the way** — `db restore --into scratch` leaves a container running on purpose, and a second restore replaces it. To remove it now: `podman rm -f ownbase-db-scratch` on the Base.
+- **A production restore finished but the post-promote backup failed** — the database is up and serving, but it is on a new timeline that no backup covers, so it cannot be recovered again until one exists. Run `pgbackrest --stanza=main --type=full backup` inside the Postgres container, or `ownbasectl db status <base>` to confirm a full backup on the current timeline appeared.
+
+---
+
 ## Upgrading the daemon itself
 
 `ownbasectl upgrade` updates the **core package** (Caddy) — not `ownbased`. To update the daemon binary on a Base, install the new signed release and restart the service:

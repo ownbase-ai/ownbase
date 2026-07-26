@@ -143,6 +143,80 @@ ownbasectl backup status mybase    # last snapshot, restorable?, last verify dri
 
 Credentials are stored age-encrypted on the Base; the repo URL and cadence are committed to `ownbase.yaml` client-side (see `config set` below) and applied via a reconcile. No daemon restart needed.
 
+### `db status <name>`
+
+`backup status` answers whether the restic snapshot is good. `db status` answers the question underneath it: how far back this Postgres can be recovered, and whether that window is still moving.
+
+```bash
+ownbasectl db status mybase
+```
+
+```
+─────────────────────── Postgres Recovery Status ───────────────────────
+  Stanza:        main  (PostgreSQL 17)
+  Repository:    ✓ ok
+  Backups held:  3
+      20260724-020000F             full   412.0 MiB  Jul 24 02:07:11
+      20260725-020000F_20260725-140000I incr   18.4 MiB  Jul 25 14:00:22
+
+  Recovery window: Jul 24 02:07:11  →  Jul 25 18:04:11
+  WAL archive:     000000010000000000000002 → 00000001000000000000001F
+
+  Archiving:     ✓ 74 segments, last Jul 25 18:04:11
+────────────────────────────────────────────────────────────────────────
+```
+
+The line to watch is `Archiving`. When `archive_command` starts failing, nothing else about the Base looks wrong — the database serves queries, the container is up, the disk is fine — while the recovery window quietly stops moving and every change since the last success becomes unrecoverable. `pg_stat_archiver.failed_count` is the only place that shows, so a failing archiver is reported as a failure rather than as a count:
+
+```
+  Archiving:     ✗ FAILING — 12 failures, last Jul 25 18:41:02
+                 stuck on segment 000000010000000000000020
+                 The database is fine, but the recovery window has stopped
+                 moving: changes since the last success cannot be recovered.
+```
+
+`--json` prints the raw payload (`GET /db/status`).
+
+### `db restore <name> [--to <timestamp>] [--into scratch|production]`
+
+Point-in-time recovery from the pgBackRest repository. It streams progress, since a restore takes minutes and all of its failure modes happen mid-flight.
+
+```bash
+# Look at yesterday's data. Production keeps serving throughout.
+ownbasectl db restore mybase --to "2026-07-25 14:00:00+00"
+
+# Take production back to just before a bad migration.
+ownbasectl db restore mybase --to "2026-07-25 14:00:00+00" --into production
+```
+
+| Flag | Meaning |
+|---|---|
+| `--to` | recovery target, e.g. `"2026-07-25 14:00:00+00"`. A timestamp without a zone is read as UTC. Omit it to recover everything the repository holds |
+| `--into` | `scratch` (default) or `production` |
+| `--scratch-port` | loopback port for the scratch instance (default `5433`) |
+| `-y`, `--yes` | skip the confirmation prompt for `--into production` |
+
+`--into scratch` brings up a second Postgres on `127.0.0.1:5433` on the Base and leaves it running to be inspected; production is untouched. This is how a recovery should normally start — look at what came back before deciding to keep it. The instance is a container, so `podman rm -f ownbase-db-scratch` is a complete teardown, and a second restore replaces it rather than accumulating instances.
+
+`--into production` stops the database and every service that `requires:` it (a client holding a connection through a data-directory swap sees corruption, not an outage), restores over the live data directory with `--delta`, replays the archive, and then **takes a full backup**. That last step is not optional: a promotion starts a new timeline, and no backup in the repository is on it, so until a full backup exists the database has recovery history but nothing to recover from.
+
+`--to` is checked against the repository before anything is stopped:
+
+```
+==> Checking 2026-07-25 18:30:00+00 against the repository
+error: 2026-07-25 18:30:00+00 is newer than the last WAL segment in the repository
+  (2026-07-25 18:04:11+00) — Postgres would replay everything it has and then abort
+  with "recovery ended before configured recovery target was reached", which looks
+  like data loss but is not.
+  The newest recoverable point is 2026-07-25 18:04:11+00 (segment 00000001000000000000001F).
+  Postgres archives WAL when a segment fills or archive_timeout elapses, so the newest
+  recoverable point normally trails now(). To bring it forward, force a segment switch:
+    select pg_switch_wal();
+  Or omit --to to recover everything the repository holds.
+```
+
+Asking to restore to "right now" is the most natural thing to do and the most likely to hit this: archiving is driven by WAL volume and `archive_timeout`, so on a quiet database the newest recoverable point routinely trails the present by minutes. Recovery completion is confirmed by polling `pg_is_in_recovery()` rather than by trusting `pg_ctl -w`, which returns while WAL replay is still running.
+
 ---
 
 ## Observability commands

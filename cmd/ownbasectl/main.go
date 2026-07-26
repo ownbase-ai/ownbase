@@ -82,6 +82,7 @@ Start here:
 		newUpdatesCmd(),
 		newSecurityCmd(),
 		newBackupCmd(),
+		newDBCmd(),
 		newSecretsCmd(),
 		newUpgradeCmd(),
 		newConfigCmd(),

@@ -95,6 +95,20 @@
 | Drill isolation | Recovery runs in `podman run --rm` with no network, `listen_addresses=''`, and `archive_mode=off`, against the restic-restored copy of the repository | The drill must be unable to affect production or write to a backup repository, even by accident |
 | Opting out | `core.backup.verify_postgres: false` | The recovery costs real CPU and minutes; operators who cannot spare them should have to say so explicitly, since the alternative is that the recovery path goes untested until the day it is needed |
 
+## Point-in-time recovery (`ownbasectl db`)
+
+| Decision | Choice | Why |
+|---|---|---|
+| Where it runs | `podman exec` inside the Postgres container, from the daemon | That is where the pgBackRest client, the stanza config, and the SSH identity live. An earlier version of `internal/backup/pgbackrest.go` assumed a host-installed `pgbackrest` and had no callers |
+| WAL archiving | Postgres's own `archive_command`; the daemon never pushes WAL | Archiving is driven by WAL volume and `archive_timeout`. A daemon polling `archive-push` was doing Postgres's job worse (`PGBackRestArchiveWAL`, deleted) |
+| Restore source | The repository Podman volume, mounted read-only | The repository is on the same machine; a restore that needs neither the network nor an SSH key is one less thing to fail when it is needed most. Read-only means a restore cannot damage what it restores from |
+| Default destination | `--into scratch`: a second Postgres on `127.0.0.1:5433`, left running | A recovery should start by looking at what came back. Defaulting to production would make the destructive path the easy one |
+| Scratch lifecycle | Postgres is the container's own process, under a fixed container name | The instance then lives exactly as long as the container, so `podman rm -f` is a complete teardown and a second restore replaces the first. Backgrounding Postgres instead left podman waiting on a process nobody watched, and `podman exec` failed with "container state improper" |
+| Target validation | `--to` is checked against the archive range before anything is stopped | A target past the end of the archive fails with `recovery ended before configured recovery target was reached`, which reads like data loss and is not. On a quiet database the newest recoverable point routinely trails `now()` by minutes, so "restore to right now" hits this constantly |
+| Recovery completion | Poll `pg_is_in_recovery()` with a bound | `pg_ctl -w` and systemd readiness both return once the postmaster accepts connections, which happens while WAL replay is still running |
+| After a production restore | Stop dependants first; take a **full backup** immediately after promotion | A client holding a connection through a data-directory swap sees corruption, not an outage. A promotion starts a new timeline that no existing backup is on, so until a full backup exists the database has recovery history but nothing to recover from |
+| Archiver health | Surfaced as a failure, not a count, when `last_failed_time` is newer than `last_archived_time` | A failing `archive_command` is invisible from every other angle — queries serve, the container is up, the disk is fine — while the recovery window stops moving. `pg_stat_archiver.failed_count` is the only place it shows |
+
 ## Updates and drift
 
 | Decision | Choice | Why |
