@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // resticEnv returns the environment variables needed for restic commands.
@@ -133,9 +134,16 @@ func pruneOld(ctx context.Context, cfg Config) error {
 }
 
 // latestSnapshotID returns the ID of the most recent restic snapshot.
+//
+// The newest snapshot is selected by timestamp rather than with restic's
+// --latest, which returns the newest snapshot *per group* (host and paths by
+// default). Changing which volumes are backed up changes the path set and so
+// starts a new group, at which point --latest returns one snapshot per group
+// and taking the first yields an older one. That made the verified-restore
+// drill certify a stale snapshot — the worst possible failure for a check whose
+// whole purpose is proving the current backup is restorable.
 func latestSnapshotID(ctx context.Context, cfg Config) (string, error) {
-	// Use --latest 1 (replaces deprecated --last in restic ≥ 0.16).
-	out, err := resticRun(ctx, cfg, "snapshots", "--json", "--latest", "1")
+	out, err := resticRun(ctx, cfg, "snapshots", "--json")
 	if err != nil {
 		return "", fmt.Errorf("restic snapshots: %w\n%s", err, out)
 	}
@@ -144,7 +152,8 @@ func latestSnapshotID(ctx context.Context, cfg Config) (string, error) {
 	// stdout by older restic builds).
 	jsonLine := extractJSONArray(out)
 	var snapshots []struct {
-		ID string `json:"id"`
+		ID   string    `json:"id"`
+		Time time.Time `json:"time"`
 	}
 	if err := json.Unmarshal([]byte(jsonLine), &snapshots); err != nil {
 		return "", fmt.Errorf("parse restic snapshots: %w", err)
@@ -152,7 +161,14 @@ func latestSnapshotID(ctx context.Context, cfg Config) (string, error) {
 	if len(snapshots) == 0 {
 		return "", fmt.Errorf("no snapshots found in repository")
 	}
-	return snapshots[0].ID, nil
+
+	newest := snapshots[0]
+	for _, s := range snapshots[1:] {
+		if s.Time.After(newest.Time) {
+			newest = s
+		}
+	}
+	return newest.ID, nil
 }
 
 // extractJSONArray returns the first line that starts with '[' from s.

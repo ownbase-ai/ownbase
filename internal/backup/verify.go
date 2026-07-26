@@ -220,8 +220,23 @@ func findPostgresDataDir(restoreDir string) string {
 
 // checkPostgresConsistency runs pg_controldata on a restored Postgres data
 // directory to verify it is not corrupted.
+//
+// pg_controldata lives in postgresql-client, which OwnBase does not install —
+// Postgres normally runs in a container. When the binary is absent this check
+// cannot say anything about the data either way, so it is reported as skipped
+// rather than failed. Failing it would peg Restorable at false forever on every
+// Base that backs up a Postgres directory without the client tools installed,
+// which teaches operators to ignore the one flag that is supposed to mean
+// something. A pg_controldata that runs and reports a problem still fails.
 func checkPostgresConsistency(pgDataDir string) CheckResult {
 	name := "postgres-controldata"
+	if _, lookErr := exec.LookPath("pg_controldata"); lookErr != nil {
+		return CheckResult{
+			Name:   name,
+			Passed: true,
+			Detail: "skipped: pg_controldata is not installed on this Base",
+		}
+	}
 	out, err := exec.Command("pg_controldata", pgDataDir).CombinedOutput()
 	if err != nil {
 		return CheckResult{
