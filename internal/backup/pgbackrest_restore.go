@@ -300,9 +300,14 @@ func restoreIntoProduction(ctx context.Context, pb PGBackRest, opts RestoreOptio
 		// Not fatal: the database is up and serving, which was the point. But
 		// say so clearly, because the gap it leaves is exactly the kind that
 		// goes unnoticed until it matters.
+		// Naming the pgBackRest command matters here: `ownbasectl backup run`
+		// takes a restic snapshot, which copies a repository that has no base
+		// backup on this timeline and would look like the gap was closed.
 		progressf(opts.Progress, "    WARNING: the post-promote full backup failed: %v\n"+
 			"    This database is running but has no base backup on its new timeline.\n"+
-			"    Run 'ownbasectl backup run' or investigate before relying on recovery.\n", err)
+			"    Take one on the Base before relying on recovery:\n"+
+			"      podman exec %s pgbackrest --stanza=%s --type=full backup\n",
+			err, pb.Container(), pb.Stanza)
 		return out, nil
 	}
 	out.BackupAfterPromote = true
