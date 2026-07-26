@@ -51,7 +51,10 @@ func runBaseCheckup(base string, jsonOut, doVerify bool) error {
 		return err
 	}
 	defer conn.close()
+	return checkup(conn, base, jsonOut, doVerify)
+}
 
+func checkup(conn *connection, base string, jsonOut, doVerify bool) error {
 	// The drill is what sets Restorable, so it must finish before /status is
 	// read or the report would show the previous drill's verdict. A failed
 	// drill is not fatal to the checkup: the report that follows is exactly
@@ -71,7 +74,10 @@ func runBaseCheckup(base string, jsonOut, doVerify bool) error {
 
 	if jsonOut {
 		fmt.Println(string(body))
-		return nil
+		// Same verdict as the formatted path below: a failed drill exits
+		// non-zero. Its message went to stderr rather than into the payload so
+		// that stdout stays parseable.
+		return verifyErr
 	}
 
 	fmt.Println("╔════════════════════════════════════════════════════════════════════╗")
