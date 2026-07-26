@@ -11,21 +11,73 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"golang.org/x/crypto/ssh"
+
+	"github.com/ownbase/ownbase/internal/serverconfig"
 )
 
-// defaultOwnerSSHKey reads the caller's default SSH public key, matching the
-// convention used throughout OwnBase for registering owner access
-// (~/.ssh/id_ed25519.pub, falling back to id_rsa.pub). Returns "" if neither
-// is found — callers should treat that as "no key to register" rather than
-// a hard failure.
-func defaultOwnerSSHKey() string {
+// ownerKeyPath returns the conventional location of the per-Base owner key
+// that `ownbasectl keygen <name>` writes. One key per Base means retiring a
+// Base revokes exactly one credential.
+func ownerKeyPath(name string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("locate home dir: %w", err)
+	}
+	return filepath.Join(home, ".ssh", "ownbase_"+name), nil
+}
+
+// resolveOwnerKey picks the private key ownbasectl uses to reach the Base
+// named name, in precedence order: an explicit --ssh-key, then the per-Base
+// key from `keygen`, then the user's default key. The returned path keeps its
+// ~ prefix so it stays portable when written into ~/.ownbase/config; callers
+// that need a real path expand it via ServerProfile.EffectiveSSHKey.
+func resolveOwnerKey(name, flagValue string) string {
+	if flagValue != "" {
+		return flagValue
+	}
+	if path, err := ownerKeyPath(name); err == nil && fileExists(path) {
+		return filepath.Join("~", ".ssh", "ownbase_"+name)
+	}
+	return serverconfig.DefaultSSHKey
+}
+
+// expandKeyPath resolves a possibly ~-prefixed key path to a real filesystem
+// path.
+func expandKeyPath(path string) string {
+	return serverconfig.ServerProfile{SSHKey: path}.EffectiveSSHKey()
+}
+
+// ownerPublicKey returns the authorized_keys line for the private key at
+// privKeyPath — the key ownbasectl will actually authenticate with. It is
+// derived from the private key itself wherever possible, so the key we
+// install into the server's authorized_keys can never drift from the key we
+// connect with.
+//
+// Falls back to the adjacent .pub file (needed when the private key is
+// passphrase-protected and cannot be parsed unattended), then to the
+// historical ~/.ssh/id_ed25519.pub / id_rsa.pub scan. Returns "" when no key
+// can be found, which callers treat as "nothing to register" rather than a
+// hard failure — SSH-agent-only setups legitimately have no key file here.
+func ownerPublicKey(privKeyPath string) string {
+	path := expandKeyPath(privKeyPath)
+
+	if data, err := os.ReadFile(path); err == nil {
+		if signer, perr := ssh.ParsePrivateKey(data); perr == nil {
+			return authorizedKeyLine(signer.PublicKey(), filepath.Base(path))
+		}
+	}
+	if data, err := os.ReadFile(path + ".pub"); err == nil {
+		return string(trimSpaceBytes(data))
+	}
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
 	for _, name := range []string{"id_ed25519.pub", "id_rsa.pub"} {
-		path := filepath.Join(home, ".ssh", name)
-		if data, err := os.ReadFile(path); err == nil {
+		if data, err := os.ReadFile(filepath.Join(home, ".ssh", name)); err == nil {
 			return string(trimSpaceBytes(data))
 		}
 	}

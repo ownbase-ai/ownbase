@@ -39,6 +39,10 @@ reconstruction drill as one command.`,
 	creds.register(cmd)
 	cmd.Flags().BoolVar(&forceRebuild, "force", false, "restore even if the latest snapshot was never verified restorable")
 	target.register(cmd)
+	// Rebuilding onto a fresh machine is meant to move the Base to a new
+	// host, so the guard that stops `create` from silently repointing a name
+	// does not apply here.
+	target.repointOK = true
 	return cmd
 }
 
@@ -71,17 +75,21 @@ func runBaseRestore(name, backupRepo string, creds backupCredFlags, forceRebuild
 		env["B2_ACCOUNT_KEY"] = creds.b2AccountKey
 	}
 
-	fmt.Printf("==> Restoring Base %q from %s\n", name, backupRepo)
-	fmt.Println("    current = restore(backups); running = reconcile(compile(repo, secrets), current)")
-	fmt.Println()
+	if !target.jsonOut {
+		fmt.Printf("==> Restoring Base %q from %s\n", name, backupRepo)
+		fmt.Println("    current = restore(backups); running = reconcile(compile(repo, secrets), current)")
+		fmt.Println()
+	}
 
 	if err := target.provision(name, env); err != nil {
 		return fmt.Errorf("restore failed: %w", err)
 	}
 
-	fmt.Println()
-	fmt.Println("Restore complete. The daemon is now reconciling from the restored")
-	fmt.Println("bare repo + secrets — give it a minute, then check:")
-	fmt.Printf("  ownbasectl checkup %s\n", name)
+	if !target.jsonOut {
+		fmt.Println()
+		fmt.Println("Restore complete. The daemon is now reconciling from the restored")
+		fmt.Println("bare repo + secrets — give it a minute, then check:")
+		fmt.Printf("  ownbasectl checkup %s\n", name)
+	}
 	return nil
 }

@@ -14,16 +14,23 @@ Key claims are deliberately repeated across documents so each is self-contained 
 
 | Claim | Canonical source | Also restated in |
 |---|---|---|
-| The hard constraints (six) | [MISSION.md](../../MISSION.md) | README, AGENTS.md |
-| `reconstructable = (repo, secrets, backups)`; four ops, one reconcile | [reconstruction-model.md](reconstruction-model.md) | README, architecture-principles §1, this file |
+| The hard constraints (six) | [MISSION.md](../../MISSION.md) | README "Why build here", AGENTS.md |
+| `reconstructable = (repo, secrets, backups)`; four ops, one reconcile | [reconstruction-model.md](reconstruction-model.md) | architecture-principles §1, this file |
 | Secrets model (age-encrypted, key never leaves, injected at start) | [ownbase-yaml.md](../ownbase-yaml.md) "Secrets" | decisions, api, cli, reconstruction-model, architecture-principles §13 |
 | `ref:` update model + explicit `ownbasectl deploy` | [ownbase-yaml.md](../ownbase-yaml.md) "Updates" | architecture-principles §9, decisions, cli, operating |
-| Verified restore ("restorable" is measured, not claimed) | [reconstruction-model.md](reconstruction-model.md) | README, architecture-principles §12, decisions, cli, lexicon |
+| Verified restore ("restorable" is measured, not claimed) | [reconstruction-model.md](reconstruction-model.md) | architecture-principles §12, decisions, cli, lexicon |
 | The five service rules (removable, forkable, replaceable, data accessible, standalone) | [service-constitution.md](service-constitution.md) | integration-contract, lexicon, MISSION.md |
 | No-registry rule + core-package exception | [ownbase-yaml.md](../ownbase-yaml.md) "The no-registry rule" | integration-contract, decisions, architecture-principles §6 |
 | Isolation / blast-radius model | [architecture-principles.md](architecture-principles.md) §13 | integration-contract |
 | Action taxonomy + risk tiers, all autonomous today | [architecture-principles.md](architecture-principles.md) §14 | decisions, lexicon |
-| Operating rules (read the config repo first; mutate only via `ownbase.yaml` + commit) | [operating.md](../operating.md) | AGENTS.md, README "How a Base works", the seeded config-repo README |
-| Tier-1 / Tier-2 test workflow | [development.md](../development.md) | README "Testing" |
+| Operating rules (read the config repo first; mutate only via `ownbase.yaml` + commit) | [operating.md](../operating.md) | AGENTS.md, README "Operating a Base", the seeded config-repo README |
+| Tier-1 / Tier-2 test workflow | [development.md](../development.md) | INSTALL.md "Contributors" |
+| Setup flow (keygen → user creates server → create --remote) | [README.md](../../README.md#setting-up-a-base) | INSTALL.md, AGENTS.md job 1, base-lifecycle §1 |
+| Provisioning design (key resolution, preflight, `--wait`, exit codes) | [decisions.md](../decisions.md) "Provisioning a Base" | INSTALL.md, cli |
+| Tunnel design (`.localhost` scheme, port allocation, no code-sync) | [decisions.md](../decisions.md) "SSH tunnel bridge" | cli |
+| Postgres PITR behaviour (recovery window, archiver health, what to do) | [troubleshooting.md](../troubleshooting.md) "Postgres point-in-time recovery" | cli, api, decisions "Point-in-time recovery" |
+| Machine sizing and measured capacity | [README.md](../../README.md#how-big-a-machine) | INSTALL.md, troubleshooting |
 
 When editing a canonical source, check the "Also restated in" docs for the same claim and update them to stay consistent — or add a forward reference and trim the restatement if it is now redundant.
+
+The split between the last four rows is worth stating: **decisions.md owns *why* a mechanism is shaped as it is, cli.md owns *what the flags do*, and troubleshooting.md owns *what to do when it misbehaves*.** A page that finds itself explaining a mechanism's rationale is usually restating one of the other two.

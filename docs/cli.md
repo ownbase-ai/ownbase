@@ -1,68 +1,99 @@
 # `ownbasectl` command reference
 
-> The complete CLI surface. Every command also has `--help`; this page adds context the terse help text can't.
-
-## Installing
-
-```bash
-brew install --cask ownbase-ai/tap/ownbasectl
-```
-
-Or download the archive for your platform from [GitHub Releases](https://github.com/ownbase-ai/ownbase/releases) and put `ownbasectl` on your `PATH`. Verify with `ownbasectl version`.
+> The complete CLI surface: what each command does, its flags, and its defaults. Every command also has `--help`. For *why* the CLI is shaped this way see [decisions.md](decisions.md); for setting up a Base see [README.md](../README.md#setting-up-a-base).
 
 ## Design
 
-Every command that targets a Base takes its name as a required first argument — there is no `--server`/`--vm` flag and no default Base to fall back to:
+Every command that targets a Base takes its name as a required first argument. There is no `--server` flag and no default Base:
 
 ```bash
 ownbasectl status mybase
 ownbasectl secrets list mybase
 ```
 
-`--help`, `-h`, and `--version` work everywhere. Shell completions: `ownbasectl completion bash|zsh|fish|powershell` (see `ownbasectl completion --help` for install instructions per shell).
+`--help`, `-h`, and `--version` work everywhere. Shell completions: `ownbasectl completion bash|zsh|fish|powershell`.
+
+**Only `tunnel` is ever interactive.** Everything else runs unattended, which is what makes the CLI safe for an AI agent to drive. `create`, `restore`, `delete`, and `db restore --into production` have confirmation prompts that apply solely to destructive local-VM or production operations, and each is skipped by `--yes` or by a non-TTY stdin.
 
 ## How commands reach a Base
 
-Commands that talk to a Base (`status`, `updates`, `security`, `secrets`, `config`, `service`, `deploy`, `ssh-key`, `upgrade`, `backup`, `checkup`) open an SSH tunnel to the host in the named profile (`~/.ownbase/config`) and call the daemon's HTTP API through it (see [api.md](api.md)). The API port is never exposed to the network. Host keys are verified against `~/.ownbase/known_hosts` (trust-on-first-use, like the `ssh` CLI). Mutating config commands additionally clone/push the external config repo directly from your machine using your own git credentials.
+Commands that talk to a Base open an SSH tunnel to the host in the named profile (`~/.ownbase/config`) and call the daemon's HTTP API through it ([api.md](api.md)). The API port is never exposed to the network. Host keys are verified against `~/.ownbase/known_hosts`, trust-on-first-use, like the `ssh` CLI.
+
+Mutating config commands additionally clone and push the external config repo directly from your machine with your own git credentials. The Base only ever reads that repo.
+
+## Exit codes
+
+`create` and `restore` classify failures so an unattended caller can react to them:
+
+| Code | Meaning |
+|---|---|
+| 0 | Success |
+| 1 | Unclassified failure |
+| 2 | Bad flags or arguments |
+| 3 | Preflight failed — target unreachable or unfit. Nothing was changed |
+| 4 | The installer ran and failed |
+| 5 | Installed, but not healthy within `--wait-timeout` |
+
+Every other command uses 0 for success and 1 for failure.
 
 ---
 
-## Lifecycle: create, adopt, list, delete, restore
+## Lifecycle
+
+### `keygen <name>`
+
+Create the SSH keypair **you** use to reach a Base, at `~/.ssh/ownbase_<name>`, and print the public half to paste into a provider's SSH key field. Run it before `create --remote`, because providers authorize a key when the machine is created.
+
+```bash
+ownbasectl keygen mybase
+ownbasectl keygen mybase --json    # {"public_key", "private_key_path", "created"}
+```
+
+Idempotent: an existing key is printed, never regenerated. `create` finds the key automatically, so `--ssh-key` is not needed.
+
+This is not the same as [`ssh-key`](#ssh-key-addlist-base), which provisions the key the *Base* uses to clone your git repos.
 
 ### `create <name> [--remote <ssh-host>]`
 
 Provision a Base end to end and register it in `~/.ownbase/config`.
 
 ```bash
-# Local Multipass VM (the default when --remote is omitted)
-ownbasectl create mybase
-
-# Fresh remote Ubuntu 22.04/24.04 server
-ownbasectl create mybase --remote root@mybase.example.com \
-  --caddy-email you@example.com
+ownbasectl create mybase                                         # local Multipass VM
+ownbasectl create mybase --remote root@203.0.113.10 --wait       # fresh Ubuntu server
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--remote <host>` | — | SSH host of a fresh Ubuntu server; accepts `user@host` (omit for a local VM) |
-| `--ssh-user` | `root` | SSH login user for `--remote` (ignored for a VM) |
-| `--ssh-key` | `~/.ssh/id_ed25519` | SSH private key for `--remote` |
-| `--ssh-port` | `22` | SSH port for `--remote` (persisted in the profile) |
-| `--cpus` / `--memory` / `--disk` | `2` / `2` GB / `15` GB | VM sizing (local VM only) |
-| `--caddy-email` | — | ACME contact email for automatic TLS on public domains |
-| `--yes`, `-y` | `false` | Skip confirmation prompts (e.g. overwriting an existing local VM) |
+| `--remote <host>` | — | SSH host of a fresh Ubuntu server; accepts `user@host`. Omit for a local VM |
+| `--wait` | `false` | Block until the daemon reports healthy, meaning host hardening has finished |
+| `--json` | `false` | Machine-readable result instead of the banner |
+| `--caddy-email` | — | ACME contact for automatic TLS on public domains |
+| `--ssh-user` | `root` | SSH login user for `--remote`. Needs passwordless sudo if not root |
+| `--ssh-key` | the `keygen` key for this Base, else `~/.ssh/id_ed25519` | SSH private key |
+| `--ssh-port` | `22` | SSH port. Also tells the daemon which port to open in UFW and jail in fail2ban |
+| `--wait-for-ssh` | `5m` | How long to wait for a booting server to accept SSH |
+| `--wait-timeout` | `10m` | How long `--wait` blocks before giving up |
+| `--replace` | `false` | Allow an existing Base name to be repointed at a different machine |
+| `--cpus` / `--memory` / `--disk` | `2` / `2` GB / `15` GB | VM sizing, local VM only |
+| `--yes`, `-y` | `false` | Skip the prompt before deleting an existing local VM |
 
-If a local VM with the same name already exists, `create` asks before deleting it (`--yes` skips the prompt; non-interactive runs proceed as before). Every other step of `create` (and of `vm start|stop|restart`) is guaranteed to never prompt for anything, ever — this is what makes it safe for an AI agent to run unattended. A freshly created Base has no domain configured anywhere, so it exposes nothing but SSH externally (Caddy publishes no ports, the firewall opens no web ports); once a service has a `domain:` (or `domains:`), reach it locally over trusted HTTPS with `ownbasectl tunnel` (below), or reach it in production once its domain's DNS points at the Base.
+On the `--remote` path, `create` waits for SSH, then verifies passwordless sudo, the Ubuntu version, the architecture, and that the machine meets the memory and disk floor — all **before** it changes anything. See [INSTALL.md](../INSTALL.md#installing-on-a-server).
+
+Without `--wait`, `create` returns while the daemon is still hardening the host for another minute or two. The daemon runs pass zero before it binds its API port, so "the API answers" is exactly the signal that hardening finished.
+
+`create` refuses to repoint an existing Base name at a different host without `--replace`, because overwriting the profile discards the old server's API token and orphans it.
+
+A freshly created Base has no domain configured, so it exposes nothing but SSH. Once a service has a `domain:`, reach it with [`tunnel`](#tunnel-name), or through Caddy once DNS points at the Base.
 
 ### `adopt <name> --host <host> --token <token>`
 
-Register a Base that was installed some other way (e.g. `install.sh` run by hand). Verifies SSH connectivity before saving. Bases created with `create` are registered automatically — `adopt` is only needed for an already-installed Base.
+Register a Base installed some other way, e.g. `install.sh` run by hand. Verifies SSH connectivity before saving. Bases made with `create` are registered automatically.
 
 ```bash
 ownbasectl adopt prod --host mybase.example.com --token <token>
 ```
 
-Flags: `--host` (required), `--token` (required — printed at install time, stored at `/opt/ownbase/api-token` on the Base), `--ssh-user` (default `root`; local VMs use `ubuntu`), `--ssh-key` (default `~/.ssh/id_ed25519`), `--ssh-port` (default `22`), `--api-port` (default `7070`).
+Flags: `--host` and `--token` (required; the token is printed at install time and stored at `/opt/ownbase/api-token`), `--ssh-user` (default `root`; local VMs use `ubuntu`), `--ssh-key` (default `~/.ssh/id_ed25519`), `--ssh-port` (default `22`), `--api-port` (default `7070`).
 
 ### `list` / `delete <name>`
 
@@ -70,12 +101,12 @@ Flags: `--host` (required), `--token` (required — printed at install time, sto
 ownbasectl list                       # profiles + local VMs, unregistered VMs flagged
 ownbasectl delete mybase              # destroy the local VM (if any) + remove the profile; asks y/N
 ownbasectl delete mybase --keep-vm    # remove only the profile
-ownbasectl delete mybase --yes        # skip the confirmation prompt
+ownbasectl delete mybase --yes        # skip the confirmation
 ```
 
-`delete` never destroys a remote server — for a profile known to be remote it only removes the local profile.
+`delete` never destroys a remote server. For a profile known to be remote it removes only the local profile.
 
-### `restore <name> --repo <restic-url> --password <pw> [--remote <host>]`
+### `restore <name> --repo <restic-url> --password <pw>`
 
 Reconstruct a Base from backups onto a fresh VM or server — the disaster-recovery drill as one command.
 
@@ -85,12 +116,14 @@ ownbasectl restore mybase \
   --password <the-restic-password>
 ```
 
-Takes all the provisioning flags of `create`, plus the credential flags of `backup setup`, plus:
+Takes every provisioning flag of `create` plus the credential flags of `backup setup`, plus:
 
 | Flag | Meaning |
 |---|---|
-| `--repo` | restic repository URL to restore from (required; same flag as `backup setup`) |
+| `--repo` | restic repository URL to restore from (required) |
 | `--force` | restore even if the latest snapshot was never verified restorable |
+
+Restore expects to point the Base's name at a new machine, so `--replace` is not needed. This is also how you move to a bigger server.
 
 ---
 
@@ -98,13 +131,9 @@ Takes all the provisioning flags of `create`, plus the credential flags of `back
 
 ### `checkup <name> [--verify]`
 
-One aggregated health report: intrusion/access monitoring, network exposure, CVE scan results, service update drift, and backup health — each finding paired with the exact command that fixes it. Run it regularly (weekly is reasonable). `--json` prints the raw status payload.
+One aggregated health report — intrusion and access monitoring, network exposure, CVE results, service update drift, backup health — each finding paired with the command that fixes it. Weekly is a reasonable cadence.
 
-`--verify` runs the verified-restore drill before reporting: the Base restores its newest snapshot into an isolated directory, checks it, and — when Postgres is in the backup — starts a real database from it and waits for recovery to finish. That takes minutes, so progress streams as it goes and each check's outcome is printed:
-
-```bash
-ownbasectl checkup mybase --verify
-```
+`--verify` runs the verified-restore drill first: the Base restores its newest snapshot into an isolated directory, checks it, and when Postgres is in the backup starts a real database from it and waits for recovery. That takes minutes, so progress streams:
 
 ```
 Verified-restore drill
@@ -117,40 +146,41 @@ Verified-restore drill
   ✓ Restore verified — every check passed.
 ```
 
-Without `--verify` the report shows the last drill the Base ran on its own `core.backup.verify_interval` schedule, which may be up to a day old. A drill that fails names the check that failed and exits non-zero, and the report still prints.
+Without `--verify`, the report shows the last drill the Base ran on its own schedule, which may be up to a day old. A failed drill names the failing check and exits non-zero; the report still prints.
 
-`--json` is one document either way. On its own it is the `/status` payload unchanged; with `--verify` it is `{"verify": {…}, "status": {…}}`, since two payloads printed in sequence is not something a JSON reader accepts. A failed drill still exits non-zero, with its message on stderr so stdout stays a document.
+`--json` is one document either way: the `/status` payload on its own, or `{"verify": {…}, "status": {…}}` with `--verify`. A failed drill still exits non-zero with its message on stderr, so stdout stays parseable.
 
 ### `backup setup|run|status <name>`
 
 ```bash
 ownbasectl backup setup mybase --repo s3:s3.amazonaws.com/my-bucket/ownbase \
-  --password <a-strong-restic-password> \
+  --password <a-strong-password> \
   --aws-access-key-id AKIA... --aws-secret-access-key ...
 
-ownbasectl backup run mybase       # trigger an immediate snapshot ("save now")
-ownbasectl backup status mybase    # last snapshot, restorable?, last verify drill (--json for raw)
+ownbasectl backup run mybase       # trigger an immediate snapshot
+ownbasectl backup status mybase    # last snapshot, restorable?, last verify drill
 ```
-
-`setup` is lifecycle step 2 — right after `create` — for local VMs and remote servers alike.
 
 | Flag (setup) | Meaning |
 |---|---|
 | `--repo` | restic repository URL — `s3:`, `b2:`, or `sftp:` (required) |
-| `--password` | restic repository encryption password (required; **save it — it is never recoverable from OwnBase**) |
+| `--password` | repository encryption password (required; **save it — it is never recoverable from OwnBase**) |
 | `--aws-access-key-id` / `--aws-secret-access-key` | credentials for `s3:` repos |
 | `--b2-account-id` / `--b2-account-key` | credentials for `b2:` repos |
 | `--interval` | snapshot cadence (default `1h`) |
 | `--verify-interval` | verified-restore drill cadence (default `24h`) |
 
-Credentials are stored age-encrypted on the Base; the repo URL and cadence are committed to `ownbase.yaml` client-side (see `config set` below) and applied via a reconcile. No daemon restart needed.
+Credentials are stored age-encrypted on the Base; the repo URL and cadence are committed to `ownbase.yaml` client-side and applied by a reconcile, with no daemon restart.
+
+`backup status --json` prints the **full** `/status` payload, not just the backup section.
 
 ### `db status <name>`
 
-`backup status` answers whether the restic snapshot is good. `db status` answers the question underneath it: how far back this Postgres can be recovered, and whether that window is still moving.
+`backup status` answers whether the restic snapshot is good. `db status` answers the question underneath: how far back this Postgres can be recovered, and whether that window is still moving.
 
 ```bash
 ownbasectl db status mybase
+ownbasectl db status mybase --json    # raw GET /db/status
 ```
 
 ```
@@ -158,8 +188,6 @@ ownbasectl db status mybase
   Stanza:        main  (PostgreSQL 17)
   Repository:    ✓ ok
   Backups held:  3
-      20260724-020000F             full   412.0 MiB  Jul 24 02:07:11
-      20260725-020000F_20260725-140000I incr   18.4 MiB  Jul 25 14:00:22
 
   Recovery window: Jul 24 02:07:11  →  Jul 25 18:04:11
   WAL archive:     000000010000000000000002 → 00000001000000000000001F
@@ -168,25 +196,14 @@ ownbasectl db status mybase
 ────────────────────────────────────────────────────────────────────────
 ```
 
-The far end of the recovery window is when the last WAL segment finished archiving, not the last change inside it, so it is an upper bound rather than a target that is guaranteed reachable: asking for exactly that instant makes Postgres replay everything, never reach it, and refuse to start. That is why the suggested commands under the report offer a restore with no `--to` — "as recent as possible", which cannot miss — alongside the form that takes a timestamp.
-
-The line to watch is `Archiving`. When `archive_command` starts failing, nothing else about the Base looks wrong — the database serves queries, the container is up, the disk is fine — while the recovery window quietly stops moving and every change since the last success becomes unrecoverable. `pg_stat_archiver.failed_count` is the only place that shows, so a failing archiver is reported as a failure rather than as a count:
-
-```
-  Archiving:     ✗ FAILING — 12 failures, last Jul 25 18:41:02
-                 stuck on segment 000000010000000000000020
-                 The database is fine, but the recovery window has stopped
-                 moving: changes since the last success cannot be recovered.
-```
-
-`--json` prints the raw payload (`GET /db/status`).
+The line to watch is `Archiving`. When it fails, nothing else about the Base looks wrong while the recovery window quietly stops moving. See [troubleshooting.md](troubleshooting.md#postgres-point-in-time-recovery) for what that means and how to fix it.
 
 ### `db restore <name> [--to <timestamp>] [--into scratch|production]`
 
-Point-in-time recovery from the pgBackRest repository. It streams progress, since a restore takes minutes and all of its failure modes happen mid-flight.
+Point-in-time recovery from the pgBackRest repository. Streams progress, because a restore takes minutes and its failure modes happen mid-flight.
 
 ```bash
-# Look at yesterday's data. Production keeps serving throughout.
+# Look at yesterday's data. Production keeps serving.
 ownbasectl db restore mybase --to "2026-07-25 14:00:00+00"
 
 # Take production back to just before a bad migration.
@@ -195,176 +212,170 @@ ownbasectl db restore mybase --to "2026-07-25 14:00:00+00" --into production
 
 | Flag | Meaning |
 |---|---|
-| `--to` | recovery target, e.g. `"2026-07-25 14:00:00+00"`. A timestamp without a zone is read as UTC. Omit it to recover everything the repository holds |
+| `--to` | recovery target, e.g. `"2026-07-25 14:00:00+00"`. No zone means UTC. Omit to recover everything the repository holds |
 | `--into` | `scratch` (default) or `production` |
 | `--scratch-port` | loopback port for the scratch instance (default `5433`) |
 | `-y`, `--yes` | skip the confirmation prompt for `--into production` |
+| `--json` | suppress the progress stream and print only the final result |
 
-`--into scratch` brings up a second Postgres on `127.0.0.1:5433` on the Base and leaves it running to be inspected; production is untouched. This is how a recovery should normally start — look at what came back before deciding to keep it. The instance is a container, so `podman rm -f ownbase-db-scratch` is a complete teardown, and a second restore replaces it rather than accumulating instances.
+`--into scratch` brings up a second Postgres on `127.0.0.1:5433` and leaves it running to be inspected; production is untouched. This is how a recovery should normally start. Teardown is `podman rm -f ownbase-db-scratch`, and a second restore replaces it rather than accumulating instances.
 
-`--into production` stops the database and every service that `requires:` it (a client holding a connection through a data-directory swap sees corruption, not an outage), restores over the live data directory with `--delta`, replays the archive, and then **takes a full backup**. That last step is not optional: a promotion starts a new timeline, and no backup in the repository is on it, so until a full backup exists the database has recovery history but nothing to recover from. The data directory is found from the service's own volume mounts (`PGBACKREST_PG1_PATH`, then `PGDATA`, then the image default), so a Postgres that keeps its cluster somewhere other than the usual path is restored correctly rather than not at all; if no volume is mounted there, the command says so before stopping anything.
+`--into production` stops the database and every service that `requires:` it, restores over the live data directory, replays the archive, and then **takes a full backup** — not optional, since a promotion starts a new timeline that no existing backup is on.
 
-`--to` is checked against the repository before anything is stopped:
-
-```
-==> Checking 2026-07-25 18:30:00+00 against the repository
-error: 2026-07-25 18:30:00+00 is newer than the last WAL segment in the repository
-  (2026-07-25 18:04:11+00) — Postgres would replay everything it has and then abort
-  with "recovery ended before configured recovery target was reached", which looks
-  like data loss but is not.
-  The newest recoverable point is 2026-07-25 18:04:11+00 (segment 00000001000000000000001F).
-  Postgres archives WAL when a segment fills or archive_timeout elapses, so the newest
-  recoverable point normally trails now(). To bring it forward, force a segment switch:
-    select pg_switch_wal();
-  Or omit --to to recover everything the repository holds.
-```
-
-Asking to restore to "right now" is the most natural thing to do and the most likely to hit this: archiving is driven by WAL volume and `archive_timeout`, so on a quiet database the newest recoverable point routinely trails the present by minutes. Recovery completion is confirmed by polling `pg_is_in_recovery()` rather than by trusting `pg_ctl -w`, which returns while WAL replay is still running. A long replay is not treated as a failure — the wait gives up only when the replay position stops moving, and prints where it has got to while it works — because abandoning a recovery that is still progressing would report a failure that is not one.
+`--to` is validated against the repository before anything is stopped. Asking for "right now" usually fails, for a reason worth understanding: see [troubleshooting.md](troubleshooting.md#postgres-point-in-time-recovery).
 
 ---
 
-## Observability commands
+## Observability
 
 ### `status <name>`
 
-Summary of services, security posture, and recent daemon actions.
+Services, security posture, and recent daemon actions.
 
 ```bash
-ownbasectl status mybase              # formatted summary
-ownbasectl status mybase --json       # full BaseStatus JSON (schema v3 — see api.md)
+ownbasectl status mybase
+ownbasectl status mybase --json       # full BaseStatus JSON (see api.md)
 ```
 
 ### `updates <name>`
 
-Per-service drift table: pinned `ref:`, commits behind the default branch, newest semver tag. Updates are explicit — move a service with `ownbasectl deploy <base> <service> --ref <ref>`.
+Per-service drift: pinned `ref:`, commits behind the default branch, newest semver tag. Move a service with [`deploy`](#deploy-name-service---ref-shatagbranch).
 
 ```bash
 ownbasectl updates mybase
-ownbasectl updates mybase --json      # only the "updates" section of the status payload
+ownbasectl updates mybase --json      # only the "updates" section
 ```
 
-### `security <name>` / `security scan <name>` / `security fix <name>`
+### `security <name>` / `security scan` / `security fix`
 
 ```bash
 ownbasectl security mybase            # exposure + SSH access + CVE report
-ownbasectl security mybase --json     # only the "security" section of the status payload
-ownbasectl security scan mybase       # trigger an immediate CVE rescan (~2–5 min)
-ownbasectl security fix mybase        # apt-get upgrade on the Base; prints a notice, then streams output
+ownbasectl security mybase --json     # only the "security" section
+ownbasectl security scan mybase       # immediate CVE rescan (~2–5 min)
+ownbasectl security fix mybase        # apt-get upgrade on the Base, streamed
 ```
 
-Fixing CVEs by location:
-
-| Location | Command | What it does |
-|---|---|---|
-| Host OS packages | `ownbasectl security fix <name>` | `apt-get upgrade` on the Base; auto-rescans after |
-| Caddy image | `ownbasectl upgrade <name> --apply` | Pulls latest pinned image, restarts container; auto-rescans after |
-| Image CVE with no fix | — | Wait for the upstream maintainer to release an updated image |
+| CVE location | Command |
+|---|---|
+| Host OS packages | `ownbasectl security fix <name>` — auto-rescans after |
+| Caddy image | `ownbasectl upgrade <name> --apply` — auto-rescans after |
+| Image CVE with no fix available | Wait for the upstream maintainer |
 
 ### `upgrade <name>`
 
-Check or apply updates to the OwnBase core package (Caddy). The core package is managed by OwnBase — not by `ownbase.yaml` — and this command is the only supported way to update it.
+Check or apply updates to the OwnBase core package (Caddy) — the one package managed outside `ownbase.yaml`.
 
 ```bash
-ownbasectl upgrade mybase             # check: image + digest + running state
-ownbasectl upgrade mybase --apply     # pull latest pinned image, restart the container (streams progress)
+ownbasectl upgrade mybase             # check: image, digest, running state
+ownbasectl upgrade mybase --apply     # pull and restart, streaming progress
 ```
 
 ---
 
-## Config repo, ssh-key, deploy, and services
+## Config repo, deploy, and services
 
-OwnBase's config lives in an **external git repo** (e.g. on GitHub) that holds `ownbase.yaml`. All mutating commands (`config set`, `service *`, `deploy`, `backup setup`) run client-side: `ownbasectl` clones the config repo, edits `ownbase.yaml`, commits, and pushes with **your** git credentials, then asks the Base to pull and reconcile. The Base itself needs only **read** access.
+`ownbase.yaml` lives in an **external git repo you own**. Mutating commands (`config set`, `service *`, `deploy`, `backup setup`) run client-side: `ownbasectl` clones the repo, edits, commits, and pushes with **your** credentials, then asks the Base to pull and reconcile. The Base needs only **read** access.
 
-### `ssh-key <name> {add,list}`
+### `ssh-key add|list <base>`
 
-Provision the Base's read-only git deploy identity. `add` generates an ed25519 key under `/opt/ownbase/ssh` (if none exists), optionally records a host's SSH host keys, and prints the public key to register as a **read-only deploy key** on your config and service repos. `list` prints the current public key.
+Provision the Base's read-only git deploy identity — the key the *Base* uses to clone your repos, as distinct from the [`keygen`](#keygen-name) key you use to reach the Base.
+
+`add` generates an ed25519 key under `/opt/ownbase/ssh` if none exists, records the given host's SSH host keys, and prints the public key. Register it as a **read-only deploy key** on the config repo and every service repo.
 
 ```bash
-ownbasectl ssh-key mybase add --host github.com    # generate + print the deploy key
-ownbasectl ssh-key mybase list                     # show the current public key
+ownbasectl ssh-key add mybase --host github.com
+ownbasectl ssh-key list mybase
 ```
+
+Both accept `--json`, which emits `{"public_key": "..."}`.
 
 ### `config setup <name> --repo <url> [--ref <branch>] [--init]`
 
-Point the Base at its external config repo. Persists the URL/ref to the local profile and tells the Base to clone it read-only and reconcile. With `--init`, seeds an **empty** existing remote with a default `ownbase.yaml` (client-side clone → seed → push); it never creates the remote itself.
+Point the Base at its config repo. Persists the URL and ref to the local profile, then tells the Base to clone read-only and reconcile. `--ref` defaults to `main`.
 
 ```bash
-ownbasectl config setup mybase --repo git@github.com:org/ownbase-config.git
-ownbasectl config setup mybase --repo git@github.com:org/ownbase-config.git --init  # seed an empty repo
+ownbasectl config setup mybase --repo git@github.com:org/mybase-config.git --init
 ```
 
-The seed is a working **Postgres 17 with point-in-time recovery** — a `postgres` service plus the `pgbackrest` repository host that owns its WAL archive and base backups — rather than an empty `services:` map. Almost every Base needs a database, and the settings that make one recoverable (the AppArmor exception Postgres will not start without, the capabilities `sshd` needs, backing up the pgBackRest repository instead of the live data directory) are exactly the ones nobody discovers on their own. Each is spelled out in the seeded file with a comment on what breaks if it is removed. The SSH keypair and the Postgres password are declared as [`generated_secrets:`](ownbase-yaml.md#generated-secrets-generated_secrets) and created by the Base on its first reconcile, so there is no `ssh-keygen` and no password to invent. Delete both services if this Base needs no database; nothing else depends on them.
+`--init` seeds an **empty existing** remote with a default `ownbase.yaml`. It never creates the remote itself.
+
+That seed is a working **Postgres 17 with point-in-time recovery** — a `postgres` service plus the `pgbackrest` repository host that owns its WAL archive — rather than an empty `services:` map. Almost every Base needs a database, and the settings that make one recoverable (the AppArmor exception Postgres will not start without, the capabilities `sshd` needs, backing up the pgBackRest repository rather than the live data directory) are exactly the ones nobody discovers unaided. Each is commented in the seeded file with what breaks if removed. The SSH keypair and Postgres password are [`generated_secrets:`](ownbase-yaml.md#generated-secrets-generated_secrets), created by the Base on its first reconcile. Delete both services if this Base needs no database.
 
 ### `config get|set <name>`
 
-Read `ownbase.yaml` (from the Base's checkout) or atomically replace it (client-side commit to the config repo).
-
 ```bash
-ownbasectl config get mybase                       # print the current ownbase.yaml (reads the Base checkout)
+ownbasectl config get mybase                       # current ownbase.yaml, from the Base's checkout
 ownbasectl config get mybase --json                # same, decoded to JSON
 
-ownbasectl config set mybase --file ./ownbase.yaml # validate locally, commit + push to the config repo
-cat ownbase.yaml | ownbasectl config set mybase    # or read from stdin
+ownbasectl config set mybase --file ./ownbase.yaml # validate, commit, push
+cat ownbase.yaml | ownbasectl config set mybase    # or from stdin
+ownbasectl config set mybase --file x.yaml --message "add worker"
 ```
 
-`set` validates the whole document locally before committing, then clones the config repo, writes `ownbase.yaml`, commits, pushes, and triggers a reconcile. Exit code is non-zero on validation failure or transport error, so this is safe to call unattended from a script or an AI agent.
+`set` validates the whole document locally before committing. Non-zero exit on validation failure or transport error, so it is safe to call from a script.
 
 ### `deploy <name> <service> [--ref <sha|tag|branch>]`
 
-The single, explicit way to move a service to new code. Resolves `--ref` to a concrete commit SHA against the service's `repo:` (via `git ls-remote`), commits that SHA to the config repo, and triggers a reconcile. Defaults to the service's current `ref:` (else `HEAD`) when `--ref` is omitted.
+The single, explicit way to move a service to new code. Resolves `--ref` to a concrete commit SHA against the service's `repo:` using `git ls-remote`, commits that SHA to the config repo, and triggers a reconcile. Defaults to the service's current `ref:`, else `HEAD`.
 
 ```bash
 ownbasectl deploy mybase crm --ref v2.3.0
-ownbasectl deploy mybase crm --ref main            # pins main's current tip SHA
+ownbasectl deploy mybase crm --ref main     # pins main's current tip SHA
+ownbasectl deploy mybase crm --json         # {"status", "service", "ref"}
 ```
+
+Because the committed ref is always a concrete SHA, a branch-named ref never silently redeploys when the branch moves.
 
 ### `service add|remove|update <name> <service> ...`
 
-Structured, non-interactive edits to the `services:` map — a thin, scriptable layer over the same client-side commit path.
+Structured, non-interactive edits to the `services:` map — a scriptable layer over the same client-side commit path. All three accept `--json`.
 
 ```bash
 ownbasectl service add mybase crm --repo git@github.com:org/crm.git --port 3000 --domain crm.example.com
-ownbasectl service update mybase crm --port 4000 --domain crm.example.com
-ownbasectl service update mybase crm --domains crm.example.com,crm.example.org  # serve two hostnames
-ownbasectl service add mybase hello --repo https://github.com/traefik/whoami --port 80 --domain hello.example.com --add-capabilities NET_BIND_SERVICE
+ownbasectl service update mybase crm --port 4000
+ownbasectl service update mybase crm --domains crm.example.com,crm.example.org
 ownbasectl service remove mybase crm
 ```
 
-`add` requires `--repo` (the external git URL). To pin or move the service to a specific ref, run `ownbasectl deploy` afterwards. `update` only touches the fields whose flags were explicitly passed — every other field of the service keeps its current value. `--env` merges into the existing list (new values win on a duplicate key); `--requires`, `--domains`, and `--add-capabilities` replace their respective lists entirely when passed. `--domain` (singular) still works and is combined with `--domains`, deduplicated. All subcommands accept `--json` for structured output.
+| Flag | Meaning |
+|---|---|
+| `--repo` | external git URL (required for `add`) |
+| `--ref` | build ref; prefer `deploy` for version moves |
+| `--dockerfile` / `--context` | Dockerfile path and build context subdirectory |
+| `--port` | the port the container listens on |
+| `--domain` / `--domains` | public hostname(s) |
+| `--internal` | reachable only through `tunnel`, no Caddy route |
+| `--data-path` | mount point for the service's data volume (default `/data`) |
+| `--database` | `<provider-service>/<dbname>` to provision Postgres |
+| `--requires` | capability dependencies |
+| `--env` | `KEY=VALUE`, repeatable |
+| `--add-capabilities` | Linux capabilities to restore |
 
-`--add-capabilities` restores Linux capabilities after the compiler's default `DropCapability=ALL` — every container starts with none. Only needed by the minority of images that bind directly to a port below 1024 (e.g. `traefik/whoami` on port 80), which requires `NET_BIND_SERVICE`; most images listen on an unprivileged port (3000, 8080, ...) and never need this.
+`update` touches only the fields whose flags were passed. `--env` merges, with new values winning on a duplicate key; `--requires`, `--domains`, and `--add-capabilities` replace their lists entirely.
 
-`--database` asks the Base to create a Postgres database for the service and hand it the URL:
+`--add-capabilities` restores capabilities after the compiler's default `DropCapability=ALL`. Only the minority of images that bind a port below 1024 need it — `NET_BIND_SERVICE` for something like `traefik/whoami` on port 80. Most images listen on 3000 or 8080 and never do.
+
+`--database` asks the Base to create a Postgres database and hand the service its URL:
 
 ```bash
 ownbasectl service add mybase api --repo git@github.com:org/api.git --port 8080 \
   --requires postgres --database postgres/revolve
 ```
 
-The value is `<provider-service>/<dbname>`; the provider must also be in `--requires`. On the next reconcile the daemon creates the database if it is missing and writes a `DATABASE_URL` into the service's secrets, composed from the provider's user and password — so the credential is in neither the config repo nor the unit file. See [ownbase-yaml.md](ownbase-yaml.md#databases-database).
+The provider must also be in `--requires`. On the next reconcile the daemon creates the database if missing and writes `DATABASE_URL` into the service's secrets, so the credential is in neither the config repo nor the unit file. See [ownbase-yaml.md](ownbase-yaml.md#databases-database).
 
 ---
 
-## Local HTTPS tunnel: `tunnel <name>`
+## `tunnel <name>`
 
-The one command in `ownbasectl` that is allowed to prompt interactively — starting it is itself a human's explicit "I am sitting here, ready" signal (see [decisions.md](decisions.md)). `create`/`vm` never prompt for anything; this command is the only exception, and only for a one-time `mkcert -install` (trusting a local certificate authority in this machine's OS/browser trust store).
+Reach a Base's services at trusted local HTTPS URLs over SSH.
 
 ```bash
 ownbasectl tunnel mybase
-ownbasectl tunnel mybase --port 9443   # override the local bind port (default 8443)
+ownbasectl tunnel mybase --port 9443   # local bind port, default 8443
 ```
 
-It reads the Base's live `ownbase.yaml` over SSH, opens one SSH tunnel per service that has both a `port:` and a domain configured (`domain:` or `domains:`) directly to that service's dedicated loopback port — bypassing Caddy entirely, so no port is firewalled on the Base — and serves each at its real domain with `.localhost` appended, e.g. a service with `domain: myapp.example.com` is served at `https://myapp.example.com.localhost:8443`. Per RFC 6761 any hostname ending in `.localhost` always resolves to loopback, with no `/etc/hosts` entry and no DNS lookup, so the URL never changes across a `vm restart` or IP change. A service with **no** domain configured is never bridged — not tunneled, not exposed, not printed.
-
-Services marked `internal: true` are included even though they have no Caddy route — the tunnel is the only access path for those services, which is precisely the point. Use `internal: true` for private admin UIs, dashboards, or any service that should be reachable over an authenticated SSH tunnel but never exposed to the internet.
-
-Each bridged service's loopback port is deliberately a different number than its own `port:` — assigned deterministically starting at 41000 by sorted service name (`schema.OwnbaseConfig.TunnelPorts()`) — so a service can declare `port: 80`/`443` without colliding with Caddy's own machine-wide bind, and two services can share the same `port:` without colliding with each other. `tunnel` computes this the same way the daemon's compiler does, straight from `ownbase.yaml`, with no daemon call needed to agree on the number.
-
 ```
-ownbasectl: reading ownbase.yaml from "mybase" ...
-ownbasectl: opening 1 SSH tunnel(s) to "mybase" ...
-ownbasectl: generating local HTTPS certificate for 1 hostname(s) ...
-
 Tunneling:
   https://myapp.example.com.localhost:8443
 
@@ -372,22 +383,26 @@ No code-sync — push to your git host and deploy a ref to roll out changes.
 Press Ctrl+C to stop.
 ```
 
-**There is no code-sync mechanism.** `ownbasectl tunnel` only tunnels and proxies traffic to whatever is currently deployed — no bind mount, file watcher, or hot-reload. To iterate on a service's code, use the same push-then-deploy flow as production:
+It reads the Base's live `ownbase.yaml`, opens one SSH tunnel per service that has both a `port:` and a domain, and serves each at its real domain with `.localhost` appended. Per RFC 6761 any `.localhost` hostname resolves to loopback with no `/etc/hosts` entry and no DNS, so the URL survives IP changes and works offline. Traffic bypasses Caddy, so no port is opened on the Base.
+
+Services marked `internal: true` are included even though they have no Caddy route — the tunnel is their only access path, which is the point. A service with no domain at all is never bridged.
+
+This is the one command allowed to prompt: starting it is itself a human saying "I am sitting here", and the prompt is a one-time `mkcert -install` to trust a local certificate authority. The design rationale is in [decisions.md](decisions.md).
+
+**There is no code-sync.** No bind mount, file watcher, or hot reload. Iterate the same way production does:
 
 ```bash
-git push origin my-branch                       # push to the service's repo: on your git host
+git push origin my-branch
 ownbasectl deploy mybase <service> --ref my-branch
 ```
 
-The daemon fetches/builds/restarts the service exactly as it would for any other `ref:` change; the tunnel, if still running, picks up the new container transparently since it tunnels to the service's port, not to a specific container instance.
+The tunnel picks up the new container transparently, since it tunnels to the service's port rather than to a container instance.
 
 ---
 
 ## Secrets
 
-### `secrets list|get|set|delete <name> ...`
-
-Per-service secrets, age-encrypted on the Base, injected into the service's container as environment variables at start.
+Per-service secrets, age-encrypted on the Base, injected as environment variables at container start.
 
 ```bash
 ownbasectl secrets list mybase                  # services that have secrets
@@ -401,28 +416,19 @@ Plaintext travels only inside the SSH tunnel; the age private key never leaves t
 
 ---
 
-## Local commands (no Base connection)
+## Local commands
 
-These operate on a checkout of a Base config repo and are mostly used for development and previews. They take no Base name.
+These operate on a checkout of a config repo and take no Base name. Mostly for development and previews.
 
-### `compile --dir <path>`
-
-Compile `ownbase.yaml` into runtime files (Quadlet units, Caddyfile, docker-compose.yml) under `runtime/`.
-
-### `plan --dir <path>`
-
-Show what would change: the diff between the compiled desired state and what is currently running.
+| Command | Purpose | Flags |
+|---|---|---|
+| `compile` | Compile `ownbase.yaml` into `runtime/` (Quadlet units, Caddyfile, docker-compose.yml) | `--dir` (default `.`), `--out` (default `<dir>`) |
+| `plan` | Show the diff between compiled desired state and what is running | `--dir`, `--fake-current` |
+| `apply` | Apply the plan. A real apply needs Ubuntu + Podman | `--dir`, `--dry-run`, `--fake-current`, `--audit-log` |
+| `version` | Print version, commit, and build date | — |
 
 ```
 + start  ownbase-auth
 + start  ownbase-crm
   skip   ownbase-postgres  (already running)
 ```
-
-### `apply --dir <path> [--dry-run]`
-
-Apply the plan. `--dry-run` previews with no side effects; a real apply requires Ubuntu + Podman (it is what the daemon runs on the Base).
-
-### `version`
-
-Print the version, commit, and build date (release builds) or `dev (built from source)`.

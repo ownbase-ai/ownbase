@@ -31,31 +31,32 @@ Prefer decisions a user can undo. The user controls updates by editing `ref:` an
 
 ### 5. Legible layout over magical locations
 
-The system lives where you would look for it, organized so a human or AI can understand it at a glance. Representative on-machine layout:
+The system lives where you would look for it, organized so a human or AI can understand it at a glance. On-machine layout:
 
 ```text
 /opt/ownbase/
-  repo/        # bare git remote — the irreducible source of truth
-  checkout/    # working checkout the daemon reconciles from
-  runtime/     # generated runtime files — never hand-edited
-  data/        # persistent application and service data
-  backups/     # local backup staging
-  logs/        # service and daemon logs, structured health
-  bin/         # the OwnBase daemon (supervisor)
-  age/         # the secret decryption key
+  checkout/    # read-only clone of the user's config repo — what the daemon reconciles from
+    ownbase.yaml   # the control file
+    runtime/       # generated units, networks, Caddyfile — never hand-edited
+  repos/       # bare mirrors of each service's external git repo, built from at a pinned ref
+  bin/         # the ownbased daemon
+  age/         # the secret decryption key — never leaves the machine
+  ssh/         # the Base's read-only git deploy key
+  logs/        # daemon logs and the audit log
+  api-token    # bearer token for the local status API
 ```
 
-And a representative user-owned repo:
+Service data lives in Podman volumes under `/var/lib/containers/storage/volumes/`, which is where standard tooling expects it — see [uninstall.md](../uninstall.md) for exporting it.
+
+And the user-owned config repo:
 
 ```text
-ownbase/
-  system/      # hardening, firewall, monitoring, backups, caddy, container runtime
-  services/    # every service — default capability providers (auth, jobs, the on-Base git host, ...)
-               # and the user's own software — declared and built the same way
-  secrets/     # never committed in plaintext — see ownbase-yaml.md, "Secrets"
-  ownbase.yaml # the control file
-  README.md    # the operating guide, seeded at install — how to work on this Base safely
+mybase-config/
+  ownbase.yaml # the control file — every service, capability, and secret reference
+  README.md    # the operating guide, seeded at setup — how to work on this Base safely
 ```
+
+The config repo is deliberately flat. Service *code* lives in its own repos, referenced by `repo:` in `ownbase.yaml`, never vendored here.
 
 ### 6. One control file is the contract
 
@@ -71,23 +72,24 @@ Services depend on capabilities (`auth`, `jobs`, `storage`) rather than on speci
 
 ### 8. Compose-shaped, systemd-owned; never Kubernetes
 
-A single-machine container primitive is the right one for this user: simple, inspectable, AI-editable, widely understood, easy to recover. The runtime is **Compose-shaped, systemd-owned via Podman Quadlet** — rootless, daemonless containers whose lifecycle (restart, dependency ordering, health) systemd owns.
+A single-machine container primitive is the right one for this user: simple, inspectable, AI-editable, widely understood, easy to recover. The runtime is **Compose-shaped, systemd-owned via Podman Quadlet** — daemonless containers whose lifecycle (restart, dependency ordering, health) systemd owns.
+
+The daemon runs as root because host hardening requires it, so on a real Base the units are rootful, in `/etc/containers/systemd`. A rootless path (`~/.config/containers/systemd` with `systemctl --user`) is detected at runtime and used when the daemon is not root. Isolation between services does not come from rootlessness — see principle 13.
 
 The human or AI never edits the generated units — they edit `ownbase.yaml` (principle 6). Kubernetes and general-purpose orchestrators are explicitly out of scope; this prohibition is absolute.
 
 ### 9. The user drives updates; the daemon reports drift
 
-The user (or their AI) updates a service by editing `ref:` in `ownbase.yaml` and committing. No service changes without a commit they authored. The daemon never opens unsolicited update PRs.
+The user (or their AI) updates a service by moving `ref:` in `ownbase.yaml`. No service changes without a commit they authored. The daemon never opens unsolicited update PRs.
 
-The daemon does two things to support this:
+**Resolution happens client-side, never on the Base.** `ownbasectl deploy` resolves the requested branch, tag, or SHA to a concrete commit with `git ls-remote`, commits *that SHA* to the config repo, and then asks the Base to reconcile. The committed `ref:` is therefore always a concrete commit, so what will build is never ambiguous. A branch-named ref does not silently redeploy when the branch moves, and the daemon never writes a ref back into the repo — it only ever has read access.
 
-1. **Resolve blank refs.** When a service has no `ref:`, the daemon commits the default-branch HEAD SHA back to `ownbase.yaml` — a concrete, reproducible pin. After that, the ref is frozen until the user changes it.
-2. **Report drift.** On its update interval, the daemon computes how far behind each service's pinned ref is from its source and surfaces this in `ownbasectl updates`. The daemon does not act on this information — it only informs.
+The daemon's one job here is to **report drift**: on its update interval it computes how far behind each pinned ref is from its source and surfaces that in `ownbasectl updates`. It informs; it does not act.
 
 ```text
-user edits ref: -> commits -> hook -> reconcile -> BUILD from repo@ref -> deploy
-                                                  daemon: resolve blank -> commit -> hook -> reconcile -> deploy
-daemon (periodic):  compute drift -> report via ownbasectl updates
+ownbasectl deploy -> resolve ref -> SHA -> commit + push -> POST /reconcile
+                                                              -> BUILD from repo@SHA -> deploy
+daemon (periodic): compute drift -> report via ownbasectl updates
 ```
 
 ### 10. The daemon has four jobs
@@ -124,7 +126,7 @@ A Base is one machine, and one machine is a single point of failure: a disk, a p
 
 Every service the user deploys — especially AI-generated code — runs with the minimum surface area necessary. Colocation on one machine is a performance and cost advantage, but it also means a compromised or misbehaving service could reach the database, the secrets vault, or other services if left unchecked. We manage that risk structurally, not by trusting the code:
 
-- **Rootless, per-service containers, least privilege.** Each service runs in its own rootless container (no privileged daemon, no shared runtime socket) with no more Linux capabilities than it needs. No service mounts volumes from another service or from system directories.
+- **Per-service containers, least privilege.** Each service runs in its own container with **every Linux capability dropped by default** — a service that needs one back must declare it (`add_capabilities:`), which is why binding a privileged port is an explicit, visible decision. No privileged daemon, no shared runtime socket, and no service mounts volumes from another service or from system directories.
 - **Scoped secrets.** Each service receives only the secrets it is declared to need. No service can enumerate or read another service's secrets. Secrets are age-encrypted and injected at start — see [ownbase-yaml.md](../ownbase-yaml.md), "Secrets".
 - **Internal network segmentation.** Services reach declared capabilities (auth, jobs, database) over per-capability networks only; they cannot reach the host runtime, the daemon, or other services' private ports by default.
 

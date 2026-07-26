@@ -229,7 +229,7 @@ Runs `pgbackrest info` and reads `pg_stat_archiver`, both inside the Postgres co
 }
 ```
 
-`earliest_recovery` is the end of the oldest backup still held; WAL older than it has nothing to be applied to. `latest_recovery` is bounded by the **last WAL segment archived**, not by `now()` — a change committed after that segment is on disk but not in the repository. `archiver.failed_count` climbing while `last_failed_time` is newer than `last_archived_time` is the one silent failure here: the database is healthy and the recovery window has stopped moving.
+`earliest_recovery` is the end of the oldest backup still held; WAL older than it has nothing to be applied to. `latest_recovery` is bounded by the **last WAL segment archived**, not by `now()` — a change committed after that segment is on disk but not in the repository, so `latest_recovery` is an upper bound rather than a reachable recovery target. `archiver.failed_count` climbing while `last_failed_time` is newer than `last_archived_time` is the one silent failure here. What to do about either is in [troubleshooting.md](troubleshooting.md#postgres-point-in-time-recovery).
 
 If Postgres itself is unreachable the repository half is still returned, as a `500` whose body is `{"error": "…", "status": {…}}` — a database that is down is exactly when what can be restored matters. `ownbasectl db status` renders that half and marks the archiver unknown rather than reporting it as idle.
 

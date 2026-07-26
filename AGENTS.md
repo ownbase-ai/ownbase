@@ -1,6 +1,6 @@
 # AGENTS.md
 
-> Dispatch for AI agents working with OwnBase. Two jobs come through here: **operating** a user's Base, and **modifying** the OwnBase code itself (the daemon and `ownbasectl`). Find your job below and follow the doc that owns it.
+> Dispatch for AI agents working with OwnBase. Three jobs come through here: **setting up** a Base, **operating** one, and **modifying** the OwnBase code itself. Find your job below and follow the doc that owns it.
 
 ## One sentence
 
@@ -8,17 +8,33 @@
 
 OwnBase turns a user-controlled Ubuntu machine (their **Base**) into a secure, self-maintaining home for AI-built services. The full why — and the hard constraints every change must respect (user owns everything, nothing is mysterious, operations disappear, every service is ownable, boring technology, no pre-built images) — lives in [MISSION.md](MISSION.md). Do not violate a hard constraint without the user's explicit direction.
 
-When in doubt: does the change make the user **more of an owner** and **less of a sysadmin**? If not, it is probably the wrong change.
+When in doubt: does this make the user **more of an owner** and **less of a sysadmin**? If not, it is probably the wrong move.
 
-## Job 1: Operating a Base
+## Job 1: Setting up a new Base
 
-You have SSH/CLI access to a running Base and are asked to change what's deployed, diagnose a problem, or check health.
+The user has no Base yet, or wants another one.
 
-**Start with [docs/operating.md](docs/operating.md)** — the order of operations (read the config repo first; the only mutation path is `ownbase.yaml` + a commit to the Base's own local config repo, via `ownbasectl` or a direct SSH push; never hand-edit `runtime/`). Then:
+**Follow the walkthrough in [README.md](README.md#setting-up-a-base)** — it is written to be executed top to bottom. The shape of it: `ownbasectl keygen` produces a public key, you ask the user to create an Ubuntu server with that key pasted in, they give you the IP, and `ownbasectl create --remote root@<ip> --wait` does everything else unattended.
+
+Two things to get right:
+
+- **Creating the machine is the user's step.** Providers need a human with a credit card. Give them the key, the OS version, and the size ([sizing](README.md#how-big-a-machine)); ask for the IP.
+- **The owner key and the deploy key are different things.** `keygen` makes the key *you* use to reach the Base. `ssh-key add` makes the key the *Base* uses to clone git repos read-only. Both are in [INSTALL.md](INSTALL.md#two-different-ssh-keys).
 
 | Need | Doc |
 |---|---|
-| What's deployed on *this* Base | `ownbase.yaml` + README in the Base's config repo; `ownbasectl status` for live state |
+| Install reference, unusual servers, exit codes | [INSTALL.md](INSTALL.md) |
+| Setup failed | [docs/troubleshooting.md](docs/troubleshooting.md) |
+
+## Job 2: Operating a Base
+
+You have CLI access to a running Base and are asked to change what is deployed, diagnose a problem, or check health.
+
+**Start with [docs/operating.md](docs/operating.md)** for the order of operations. The rule that matters most: `ownbase.yaml` lives in an **external Git repo the user owns**, and the Base only ever reads it. Every change is committed client-side by `ownbasectl` and the Base is then told to reconcile. Never hand-edit anything on the Base, and never write to `runtime/`.
+
+| Need | Doc |
+|---|---|
+| What's deployed on *this* Base | `ownbase.yaml` in its config repo; `ownbasectl status` for live state |
 | `ownbase.yaml` schema, `ref:` updates, secrets | [docs/ownbase-yaml.md](docs/ownbase-yaml.md) |
 | CLI command reference | [docs/cli.md](docs/cli.md) |
 | Daemon HTTP API | [docs/api.md](docs/api.md) |
@@ -26,11 +42,11 @@ You have SSH/CLI access to a running Base and are asked to change what's deploye
 | Something failed | [docs/troubleshooting.md](docs/troubleshooting.md) |
 | Removing OwnBase / exporting everything | [docs/uninstall.md](docs/uninstall.md) |
 
-## Job 2: Modifying the OwnBase code itself
+## Job 3: Modifying the OwnBase code itself
 
 You are changing `cmd/ownbased`, `cmd/ownbasectl`, or `internal/` — the Go source that becomes the daemon and the CLI.
 
-**Start with [docs/development.md](docs/development.md)** — build/test workflow (Tier-1 anywhere, Tier-2 on the Ubuntu VM), the invariants to preserve (idempotency, deterministic compiler, single writer to `runtime/`, taxonomy-audited actions, no plaintext secrets on disk, honest dry-runs), and the merge gate. Then:
+**Start with [docs/development.md](docs/development.md)** — build/test workflow (Tier-1 anywhere, Tier-2 on the Ubuntu VM), the invariants to preserve (idempotency, deterministic compiler, single writer to `runtime/`, taxonomy-audited actions, no plaintext secrets on disk, honest dry-runs), and the merge gate.
 
 | Need | Doc |
 |---|---|

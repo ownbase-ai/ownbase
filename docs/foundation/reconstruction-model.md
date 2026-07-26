@@ -56,7 +56,7 @@ flowchart LR
 | Operation | `current` at reconcile time | backups used? | CLI |
 |---|---|---|---|
 | **Install** | empty machine | no | `ownbasectl create <base>` |
-| **Update** | running machine + changed repo | no | commit to the repo (push) |
+| **Update** | running machine + changed repo | no | `ownbasectl deploy <base> <service> --ref ...` |
 | **Recover (same machine)** | running machine + drift | no | automatic, or `ownbasectl checkup <base>` to see it |
 | **Rebuild (new machine)** | `restore(backups)` → initial state | yes, as prerequisite | `ownbasectl restore <base> --repo ... --password ...` |
 
@@ -69,12 +69,12 @@ A reconciler is a **thermostat for a server.** The repo declares the target — 
 ### The trigger is a commit, not a clock
 
 ```text
-   commit -> hook -> compile -> diff -> apply
-                                          |
-   timer (drift backstop) -----> diff -> heal <-+
+   commit -> push -> reconcile -> compile -> diff -> apply
+                                                       |
+   timer (drift backstop) --------------> diff -> heal <-+
 ```
 
-1. A commit lands in the Base's local source of truth. A hook signals the daemon — no polling, near-zero latency.
+1. A commit lands in the user's external config repo, pushed client-side by `ownbasectl`, which then asks the daemon to reconcile. No polling and no webhook — the daemon is told explicitly, so latency is near zero and the Base never needs to be internet-reachable. See [decisions.md](../decisions.md).
 2. **Compile** `ownbase.yaml` into runtime artifacts.
 3. **Diff** the desired runtime against what is actually running.
 4. **Apply** the diff transactionally, health-checked, with rollback.
