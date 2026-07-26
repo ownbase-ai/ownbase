@@ -12,6 +12,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -84,6 +85,11 @@ type dbStatus struct {
 	} `json:"archiver"`
 	EarliestRecovery time.Time `json:"earliest_recovery"`
 	LatestRecovery   time.Time `json:"latest_recovery"`
+
+	// archiverUnreadable is set when the daemon could report the repository but
+	// not Postgres, so the report says so instead of rendering the zero
+	// archiver as "nothing archived yet".
+	archiverUnreadable string
 }
 
 func runDBStatus(base string, jsonOut bool) error {
@@ -97,7 +103,19 @@ func runDBStatus(base string, jsonOut bool) error {
 	// container, which on a large repository is slower than a status call.
 	body, err := apiCallWithTimeout(conn, http.MethodGet, "/db/status", nil, 2*time.Minute)
 	if err != nil {
-		return fmt.Errorf("db status: %w", err)
+		// A failed read still reports whatever half it managed — normally the
+		// repository, since the usual cause is a database that is down. Print
+		// it: "what can I restore" is the question being asked at that moment.
+		partial, raw, reason, ok := partialDBStatus(err)
+		if !ok {
+			return fmt.Errorf("db status: %w", err)
+		}
+		if jsonOut {
+			fmt.Println(strings.TrimSpace(string(raw)))
+		} else {
+			printDBStatus(base, partial)
+		}
+		return fmt.Errorf("%s", reason)
 	}
 	if jsonOut {
 		fmt.Println(string(body))
@@ -110,6 +128,28 @@ func runDBStatus(base string, jsonOut bool) error {
 	}
 	printDBStatus(base, s)
 	return nil
+}
+
+// partialDBStatus unpacks the half-status the daemon returns with a failed
+// /db/status, along with the reason the rest is missing. Reports false for any
+// other error, including a daemon too old to send one.
+func partialDBStatus(err error) (s dbStatus, raw []byte, reason string, ok bool) {
+	var apiErr *apiError
+	if !errors.As(err, &apiErr) {
+		return s, nil, "", false
+	}
+	var payload struct {
+		Error  string          `json:"error"`
+		Status json.RawMessage `json:"status"`
+	}
+	if json.Unmarshal(apiErr.Body, &payload) != nil || len(payload.Status) == 0 {
+		return s, nil, "", false
+	}
+	if json.Unmarshal(payload.Status, &s) != nil || s.Stanza == "" {
+		return s, nil, "", false
+	}
+	s.archiverUnreadable = orElse(payload.Error, "could not be read")
+	return s, apiErr.Body, s.archiverUnreadable, true
 }
 
 func printDBStatus(base string, s dbStatus) {
@@ -142,11 +182,16 @@ func printDBStatus(base string, s dbStatus) {
 	// arrives with, so it is stated as a span rather than left to be inferred
 	// from two timestamps.
 	fmt.Println()
-	if s.EarliestRecovery.IsZero() || s.LatestRecovery.IsZero() {
-		fmt.Println("  Recovery window: unknown — no backup or no archived WAL yet")
-	} else {
+	switch {
+	case !s.EarliestRecovery.IsZero() && !s.LatestRecovery.IsZero():
 		fmt.Printf("  Recovery window: %s  →  %s\n",
 			localTime(s.EarliestRecovery), localTime(s.LatestRecovery))
+	case !s.EarliestRecovery.IsZero():
+		// The far end is the last archived WAL, which comes from Postgres. The
+		// near end is the repository and still worth stating on its own.
+		fmt.Printf("  Recovery window: %s  →  unknown\n", localTime(s.EarliestRecovery))
+	default:
+		fmt.Println("  Recovery window: unknown — no backup or no archived WAL yet")
 	}
 	if s.ArchiveMinWAL != "" {
 		fmt.Printf("  WAL archive:     %s → %s\n", s.ArchiveMinWAL, s.ArchiveMaxWAL)
@@ -156,6 +201,12 @@ func printDBStatus(base string, s dbStatus) {
 	a := s.Archiver
 	broken := a.FailedCount > 0 && (a.LastArchivedTime.IsZero() || a.LastFailedTime.After(a.LastArchivedTime))
 	switch {
+	case s.archiverUnreadable != "":
+		// Saying "nothing archived yet" here would be a claim about archiving
+		// made from a database nobody could reach.
+		fmt.Printf("  Archiving:     ? unknown — %s\n", s.archiverUnreadable)
+		fmt.Println("                 The repository above is what can be restored; whether")
+		fmt.Println("                 the window is still moving needs Postgres to answer.")
 	case broken:
 		// This is the failure worth interrupting for. The database keeps
 		// serving queries while its recovery window silently stops moving, so

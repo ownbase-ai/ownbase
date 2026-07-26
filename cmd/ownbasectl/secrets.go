@@ -268,7 +268,22 @@ func apiCallWithTimeout(conn *connection, method, path string, body []byte, time
 		return nil, fmt.Errorf("%s", strings.TrimSpace(string(respBody)))
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API returned %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+		return nil, &apiError{
+			StatusCode: resp.StatusCode,
+			Body:       respBody,
+			msg:        fmt.Sprintf("API returned %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody))),
+		}
 	}
 	return respBody, nil
 }
+
+// apiError is a non-200 response that still carried a body. Most callers only
+// print it, but an endpoint whose error body is structured — /db/status returns
+// the half it could read — lets its caller reach the payload with errors.As.
+type apiError struct {
+	StatusCode int
+	Body       []byte
+	msg        string
+}
+
+func (e *apiError) Error() string { return e.msg }

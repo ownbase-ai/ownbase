@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"strings"
@@ -60,6 +61,63 @@ func TestDBStatus_DecodesTheDaemonPayload(t *testing.T) {
 	}
 	if s.EarliestRecovery.IsZero() || s.LatestRecovery.IsZero() {
 		t.Errorf("recovery window not decoded: %s → %s", s.EarliestRecovery, s.LatestRecovery)
+	}
+}
+
+// When Postgres cannot be read the daemon answers 500 with the repository half
+// it did read. That half is the answer to "what can I restore", which is the
+// question being asked precisely when the database is down.
+func TestPartialDBStatus_RendersTheHalfThatWasReadable(t *testing.T) {
+	body := []byte(`{"error":"db status: read pg_stat_archiver: psql in ownbase-postgres: exit status 2",
+		"status":{"stanza":"main","stanza_ok":true,
+			"backups":[{"label":"20260725-000000F","type":"full","repo_size_bytes":1024,
+				"stopped":"2026-07-25T00:10:00Z"}],
+			"earliest_recovery":"2026-07-25T00:10:00Z"}}`)
+	err := &apiError{StatusCode: 500, Body: body, msg: "API returned 500: …"}
+
+	s, raw, reason, ok := partialDBStatus(err)
+	if !ok {
+		t.Fatal("partialDBStatus did not recognise the daemon's error body")
+	}
+	if s.Stanza != "main" || len(s.Backups) != 1 {
+		t.Errorf("repository half not decoded: %+v", s)
+	}
+	if !strings.Contains(reason, "pg_stat_archiver") {
+		t.Errorf("reason does not name what failed: %q", reason)
+	}
+	if len(raw) == 0 {
+		t.Error("raw payload is empty; --json would print nothing")
+	}
+
+	out := captureStdout(t, func() { printDBStatus("mybase", s) })
+	// "nothing archived yet" would be a claim about archiving made from a
+	// database nobody could reach.
+	if strings.Contains(out, "nothing archived yet") {
+		t.Errorf("report claims archiving state it could not read:\n%s", out)
+	}
+	if !strings.Contains(out, "Archiving:     ? unknown") {
+		t.Errorf("report does not mark archiving unknown:\n%s", out)
+	}
+	if !strings.Contains(out, "→  unknown") {
+		t.Errorf("recovery window should state its known end and stop there:\n%s", out)
+	}
+	if !strings.Contains(out, "20260725-000000F") {
+		t.Errorf("report drops the backups it could read:\n%s", out)
+	}
+}
+
+// Any other failure — a daemon too old to send a half, an unreachable agent —
+// stays an ordinary error rather than being rendered as an empty report.
+func TestPartialDBStatus_IgnoresEverythingElse(t *testing.T) {
+	for name, err := range map[string]error{
+		"plain error":  errors.New("connection refused"),
+		"no status":    &apiError{StatusCode: 500, Body: []byte(`{"error":"db status: boom"}`), msg: "…"},
+		"not json":     &apiError{StatusCode: 500, Body: []byte("db status: boom"), msg: "…"},
+		"empty stanza": &apiError{StatusCode: 500, Body: []byte(`{"error":"x","status":{}}`), msg: "…"},
+	} {
+		if _, _, _, ok := partialDBStatus(err); ok {
+			t.Errorf("%s: partialDBStatus claimed a usable half", name)
+		}
 	}
 }
 

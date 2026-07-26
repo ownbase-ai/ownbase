@@ -103,6 +103,15 @@ type DBRestoreRequest struct {
 	ScratchPort int `json:"scratch_port,omitempty"`
 }
 
+// DBStatusError is the 500 body of GET /db/status. It carries whatever was
+// readable with the reason the rest was not: the repository is read first and
+// from the filesystem, so a Postgres that is down still has a recovery window
+// worth reporting.
+type DBStatusError struct {
+	Error  string `json:"error"`
+	Status any    `json:"status,omitempty"`
+}
+
 // CorePackageStatus is the JSON-friendly state of one core package as
 // returned by GET /core/status.
 type CorePackageStatus struct {
@@ -553,7 +562,16 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 		}
 		status, err := cfg.DBStatus()
 		if err != nil {
-			http.Error(w, "db status: "+err.Error(), http.StatusInternalServerError)
+			// The repository half is read before Postgres is, and the usual
+			// reason this fails is a database that is down — which is exactly
+			// when what can be restored is the thing worth knowing. Return that
+			// half alongside the error rather than only the error text.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(DBStatusError{
+				Error:  "db status: " + err.Error(),
+				Status: status,
+			})
 			return
 		}
 		writeJSON(w, status)

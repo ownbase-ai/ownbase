@@ -853,6 +853,72 @@ func TestAPI_BackupVerify_401WithoutToken(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// /db/status
+// ---------------------------------------------------------------------------
+
+// mountDBStatusAPI wires /db/status around a stub reader.
+func mountDBStatusAPI(t *testing.T, status func() (any, error)) *httptest.Server {
+	t.Helper()
+	srv := explain.NewStatusServer()
+	mux := http.NewServeMux()
+	mux.Handle("/status", srv.Handler("test-api-token"))
+	explain.MountAPI(mux, explain.APIConfig{StatusSrv: srv, DBStatus: status})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+// The repository is read from the filesystem and Postgres over a socket, so the
+// common failure — a database that is down — still knows what can be restored.
+// Dropping that half would withhold the answer at the moment it is wanted.
+func TestAPI_DBStatus_ErrorStillCarriesWhatWasReadable(t *testing.T) {
+	partial := map[string]any{"stanza": "main", "stanza_ok": true, "earliest_recovery": "2026-07-24T02:07:11Z"}
+	ts := mountDBStatusAPI(t, func() (any, error) {
+		return partial, fmt.Errorf("read pg_stat_archiver: psql in ownbase-postgres: exit status 2")
+	})
+
+	resp := authedGet(t, ts, "/db/status")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 — the read did fail", resp.StatusCode)
+	}
+
+	var got explain.DBStatusError
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if !strings.Contains(got.Error, "pg_stat_archiver") {
+		t.Errorf("error does not name what failed: %q", got.Error)
+	}
+	half, ok := got.Status.(map[string]any)
+	if !ok {
+		t.Fatalf("status half missing from the error body: %#v", got.Status)
+	}
+	if half["stanza"] != "main" {
+		t.Errorf("status half = %v, want the repository fields", half)
+	}
+}
+
+func TestAPI_DBStatus_ReturnsStatusOnSuccess(t *testing.T) {
+	ts := mountDBStatusAPI(t, func() (any, error) {
+		return map[string]any{"stanza": "main", "stanza_ok": true}, nil
+	})
+
+	resp := authedGet(t, ts, "/db/status")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var got map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if got["stanza"] != "main" {
+		t.Errorf("body = %v, want the status payload", got)
+	}
+}
+
 func parseVerifyTrailer(t *testing.T, body string) explain.VerifyDrillResult {
 	t.Helper()
 	for _, line := range strings.Split(body, "\n") {
