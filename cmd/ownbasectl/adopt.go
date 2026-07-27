@@ -22,11 +22,12 @@ func newAdoptCmd() *cobra.Command {
 		token   string
 	)
 	cmd := &cobra.Command{
-		Use:   "adopt <name> --host <host> --token <token>",
+		Use:   "adopt <name> --host <host>",
 		Short: "Register an already-installed Base (verifies SSH connectivity before saving)",
 		Long: `Register a Base that was installed without ownbasectl create — for
-example a server someone else provisioned. The token was printed at
-install time and is stored at /opt/ownbase/api-token on the Base.
+example a server someone else provisioned. The API token is fetched over
+SSH automatically (it lives at /opt/ownbase/api-token on the Base); pass
+--token explicitly only if SSH access can't read that file itself.
 
 The Base needs an owner key in your vault to reach it. Either run
 'ownbasectl keygen <name> --import <file>' first with the key that machine
@@ -46,7 +47,8 @@ this command is only needed to connect to an already-installed Base.`,
 	fl.StringVar(&sshKey, "ssh-key", "", "import this existing private key file into the vault as the Base's owner key")
 	fl.IntVar(&sshPort, "ssh-port", 22, "SSH port on the Base")
 	fl.IntVar(&apiPort, "api-port", vault.DefaultAPIPort, "agent API port on the Base")
-	fl.StringVar(&token, "token", "", "Bearer token printed by install.sh (required)")
+	fl.StringVar(&token, "token", "",
+		"Bearer token for the daemon API (default: fetched over SSH from /opt/ownbase/api-token)")
 	return cmd
 }
 
@@ -55,9 +57,6 @@ this command is only needed to connect to an already-installed Base.`,
 func runAdopt(name, host, sshUser, sshKey string, sshPort, apiPort int, token string) error {
 	if host == "" {
 		return fmt.Errorf("--host is required")
-	}
-	if token == "" {
-		return fmt.Errorf("--token is required\n  The token was printed at install time; run `sudo cat /opt/ownbase/api-token` on the Base to retrieve it")
 	}
 
 	profile, err := loadProfile(name)
@@ -68,7 +67,6 @@ func runAdopt(name, host, sshUser, sshKey string, sshPort, apiPort int, token st
 	profile.SSHUser = sshUser
 	profile.SSHPort = sshPort
 	profile.APIPort = apiPort
-	profile.Token = token
 
 	// A signer to verify with, resolved without writing anything to the vault
 	// yet: a mistyped host or an unauthorized key must not cost the Base its
@@ -116,6 +114,24 @@ func runAdopt(name, host, sshUser, sshKey string, sshPort, apiPort int, token st
 		return fmt.Errorf("SSH connection to %s failed: %w\n  Check that the host is reachable and this Base's owner key is authorized on it", host, err)
 	}
 	fmt.Fprintf(os.Stderr, "ownbasectl: connected to %s (hostname: %s)\n", host, out)
+
+	profile.Token = token
+	if profile.Token == "" {
+		// Same fetch connectToServer already does for any profile with no
+		// cached token — over the same connection just verified, so there is
+		// no reason to make the operator paste in what SSH can already read.
+		if fetched, ferr := tunnel.RunCommand(target,
+			"sudo cat /opt/ownbase/api-token 2>/dev/null || cat /opt/ownbase/api-token 2>/dev/null"); ferr == nil && fetched != "" {
+			profile.Token = fetched
+			fmt.Fprintln(os.Stderr, "ownbasectl: fetched the API token from the Base.")
+		} else {
+			// Not a failure: connectToServer bootstraps a missing token the
+			// same way on first real use, so adopt succeeding without one
+			// just defers that to the next command instead of blocking here.
+			fmt.Fprintln(os.Stderr, "ownbasectl: could not read the API token automatically — "+
+				"'ownbasectl status' will fetch it on first use, or pass --token to set it now.")
+		}
+	}
 
 	if err := putProfile(name, profile); err != nil {
 		return err

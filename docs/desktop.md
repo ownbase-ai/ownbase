@@ -27,14 +27,27 @@ If you already have a vault — from another machine, or from the CLI — point 
 
 ## Setting up a Base
 
-**Set up a Base** in the sidebar starts a four-step wizard. It takes about ten minutes, most of it waiting.
+**Set up a Base** in the sidebar starts with one choice: a new server, or one that already runs OwnBase.
+
+### A new server
+
+The common path — four steps, about ten minutes, most of it waiting.
 
 1. **Name it.** How you will refer to the machine from here on, in the app and in commands like `ownbasectl status mybase`. It stays on your computer; the server never learns it.
-2. **Your key.** The app generates an ed25519 key into your vault and shows you the public half. The private half never touches disk. Copy the public key now — the next step needs it.
+2. **Your key.** The app generates an ed25519 key into your vault and shows you the public half. The private half never touches disk. If you'd rather use a key you already have, choose *I already have a key* and pick the private key file — its comment and any provider console it's already pasted into stay yours to manage. Copy the public key now — the next step needs it.
 3. **The server.** This is the step the app cannot do for you: providers need a human with a payment method, and OwnBase has no provider integration to skip it with. Create an Ubuntu 24.04 machine with at least 2 GB RAM and 20 GB disk, paste your public key into the provider's *SSH key* field **as you create it** (most providers cannot add one afterwards without a rebuild), and bring back the IP address.
 4. **Install.** The app runs `ownbasectl create` and streams the output. Roughly ten minutes: hardening the host, installing the daemon, bringing up Caddy. Nothing to answer.
 
-The wizard is a front end for `keygen` and `create`. Doing it in a terminal instead is [the same four steps](../README.md#setting-up-a-base).
+This path is a front end for `keygen` and `create`. Doing it in a terminal instead is [the same four steps](../README.md#setting-up-a-base).
+
+### A server that already runs OwnBase
+
+For a machine someone else provisioned, or one you're registering on a second computer that shares your vault. This is a front end for `ownbasectl adopt`, and it's fast — seconds, not minutes, because there's no install to run.
+
+1. **Name it.** Same as above.
+2. **Your key.** No key is generated here: the server already trusts a specific key, so the only option is to pick that private key's file. Nothing is written to your vault yet — the key is only committed once the next step proves it actually works.
+3. **The server.** Its host, SSH login user, and port. There's no provider console step and no TLS email — the server is already configured.
+4. **Register.** The app verifies SSH connectivity with the key you picked, fetches the API token over SSH automatically, and saves the profile. If verification fails, nothing is written — a mistyped host costs you nothing.
 
 ### How big a machine
 

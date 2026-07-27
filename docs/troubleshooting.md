@@ -141,12 +141,13 @@ SSH_AUTH_SOCK="$(ownbasectl vault status --json | jq -r .ssh_agent_socket)" ssh 
 
 ### "unauthorized — check that your token is correct"
 
-The API token in your profile no longer matches the Base (e.g. someone ran `POST /token/reset`). Fetch the current token and update the profile:
+The API token in your profile no longer matches the Base (e.g. someone ran `POST /token/reset`). Re-registering fetches the current one over SSH automatically:
 
 ```bash
-ownbasectl ssh <name> -- sudo cat /opt/ownbase/api-token
-ownbasectl adopt <name> --host <host> --token <token>
+ownbasectl adopt <name> --host <host>
 ```
+
+If SSH can't read `/opt/ownbase/api-token` itself (a login user without sudo, say), fetch it by hand and pass it explicitly: `ownbasectl ssh <name> -- sudo cat /opt/ownbase/api-token`, then `ownbasectl adopt <name> --host <host> --token <token>`.
 
 ---
 
@@ -168,7 +169,7 @@ If it's missing, restart `ownbased` (`systemctl restart ownbased` on the Base) �
 
 ### Lost API token
 
-It never left the Base: `sudo cat /opt/ownbase/api-token` (root, 0600). Re-register with `ownbasectl adopt` as above. To rotate it, `POST /token/reset` on the daemon API ([api.md](api.md)) — the daemon hot-swaps it, no restart.
+It never left the Base: `sudo cat /opt/ownbase/api-token` (root, 0600), or just re-register — `ownbasectl adopt <name> --host <host>` fetches it over SSH itself. To rotate it, `POST /token/reset` on the daemon API ([api.md](api.md)) — the daemon hot-swaps it, no restart.
 
 ---
 

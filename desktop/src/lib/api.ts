@@ -76,6 +76,15 @@ export function keygen(base: string): Promise<KeygenResult> {
 }
 
 /**
+ * Import a private key file you already have as a Base's owner key, instead
+ * of generating one. The file is read once and copied into the vault; it is
+ * left alone on disk.
+ */
+export function keygenImport(base: string, path: string): Promise<KeygenResult> {
+  return cli.json<KeygenResult>(["keygen", base, "--import", path]);
+}
+
+/**
  * Provision a Base, streaming progress.
  *
  * `--wait` is not optional here: the whole point of showing this in a window is
@@ -92,6 +101,38 @@ export function createBase(
   if (opts.caddyEmail) args.push("--caddy-email", opts.caddyEmail);
   if (opts.sshUser) args.push("--ssh-user", opts.sshUser);
   if (opts.sshPort) args.push("--ssh-port", String(opts.sshPort));
+  return cli.stream(args, onEvent);
+}
+
+/**
+ * Register a Base that already has OwnBase running on it — someone else
+ * provisioned it, or it's already known to another copy of this vault.
+ *
+ * Streamed rather than a single call because `adopt` prints its own progress
+ * ("verifying SSH connection...", "connected to..."), and that is worth
+ * showing even though the whole thing takes seconds, not the minutes `create`
+ * does. `sshKeyPath` is the private key file already authorized on that
+ * server; nothing is written to the vault unless the connection it proves
+ * actually works.
+ */
+export function adoptBase(
+  base: string,
+  opts: { host: string; sshUser: string; sshPort: number; sshKeyPath: string; apiPort?: number },
+  onEvent: (event: cli.StreamEvent) => void,
+): cli.StreamHandle {
+  const args = [
+    "adopt",
+    base,
+    "--host",
+    opts.host,
+    "--ssh-user",
+    opts.sshUser,
+    "--ssh-port",
+    String(opts.sshPort),
+    "--ssh-key",
+    opts.sshKeyPath,
+  ];
+  if (opts.apiPort) args.push("--api-port", String(opts.apiPort));
   return cli.stream(args, onEvent);
 }
 

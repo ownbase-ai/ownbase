@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
 
 import { CopyButton } from "../components/CopyButton";
 import {
@@ -19,20 +20,24 @@ import type { KeygenResult } from "../lib/types";
 /**
  * The setup walkthrough, in the same order as the README.
  *
- * The shape of setting up a Base is fixed by something outside OwnBase: a
- * provider authorizes an SSH key when the machine is created, and only a human
- * with a payment method can create the machine. So this cannot be one button.
- * It is a key, a pause while the user goes to their provider, and then an
- * install that takes minutes and is worth watching.
+ * There are two shapes, both fixed by something outside OwnBase. A new server
+ * needs a provider to authorize a key before the machine boots, so this
+ * cannot be one button: it is a key, a pause while the user goes to their
+ * provider, and then an install that takes minutes and is worth watching. A
+ * server that already runs OwnBase needs none of that — it already has a key
+ * it trusts, so the whole thing is a connectivity check.
  */
-type Step = "name" | "key" | "server" | "install" | "done";
+type Mode = "create" | "adopt";
+type Step = "path" | "name" | "key" | "server" | "finish" | "done";
 
-const steps: Array<{ id: Step; label: string }> = [
-  { id: "name", label: "Name" },
-  { id: "key", label: "SSH key" },
-  { id: "server", label: "Server" },
-  { id: "install", label: "Install" },
-];
+function stepsFor(mode: Mode): Array<{ id: Step; label: string }> {
+  return [
+    { id: "name", label: "Name" },
+    { id: "key", label: "SSH key" },
+    { id: "server", label: "Server" },
+    { id: "finish", label: mode === "create" ? "Install" : "Register" },
+  ];
+}
 
 export function SetupWizard({
   existingNames,
@@ -44,11 +49,16 @@ export function SetupWizard({
   onFinished: (base: string) => void;
   onCancel: () => void;
 }) {
-  const [step, setStep] = useState<Step>("name");
+  const [step, setStep] = useState<Step>("path");
+  const [mode, setMode] = useState<Mode>("create");
   const [name, setName] = useState("");
   const [key, setKey] = useState<KeygenResult | null>(null);
+  const [keySource, setKeySource] = useState<"generated" | "imported" | null>(null);
+  const [sshKeyPath, setSSHKeyPath] = useState(""); // adopt mode only
   const [address, setAddress] = useState("");
   const [sshUser, setSSHUser] = useState("root");
+  const [sshPort, setSSHPort] = useState(22); // adopt mode only
+  const [apiPort, setAPIPort] = useState(7070); // adopt mode only
   const [caddyEmail, setCaddyEmail] = useState("");
 
   return (
@@ -56,12 +66,25 @@ export function SetupWizard({
       <header>
         <h1 className="text-lg font-medium text-zinc-100">Set up a Base</h1>
         <p className="mt-1 text-sm leading-relaxed text-zinc-500">
-          About ten minutes, most of it waiting. One step needs you to visit your
-          server provider; the rest happens here.
+          {step === "path"
+            ? "Every Base starts one of two ways: a server you want OwnBase to set up, or one that already runs it."
+            : mode === "create"
+              ? "About ten minutes, most of it waiting. One step needs you to visit your server provider; the rest happens here."
+              : "A few seconds — verify the connection, and it's registered."}
         </p>
       </header>
 
-      <Progress step={step} />
+      {step !== "path" && <Progress steps={stepsFor(mode)} step={step} />}
+
+      {step === "path" && (
+        <PathStep
+          onChoose={(m) => {
+            setMode(m);
+            setStep("name");
+          }}
+          onCancel={onCancel}
+        />
+      )}
 
       {step === "name" && (
         <NameStep
@@ -69,21 +92,34 @@ export function SetupWizard({
           name={name}
           onName={setName}
           onNext={() => setStep("key")}
-          onCancel={onCancel}
+          onBack={() => setStep("path")}
         />
       )}
 
-      {step === "key" && (
+      {step === "key" && mode === "create" && (
         <KeyStep
           base={name}
           result={key}
-          onResult={setKey}
+          source={keySource}
+          onResult={(result, source) => {
+            setKey(result);
+            setKeySource(source);
+          }}
           onBack={() => setStep("name")}
           onNext={() => setStep("server")}
         />
       )}
 
-      {step === "server" && (
+      {step === "key" && mode === "adopt" && (
+        <AdoptKeyStep
+          path={sshKeyPath}
+          onPath={setSSHKeyPath}
+          onBack={() => setStep("name")}
+          onNext={() => setStep("server")}
+        />
+      )}
+
+      {step === "server" && mode === "create" && (
         <ServerStep
           publicKey={key?.public_key ?? ""}
           address={address}
@@ -93,11 +129,26 @@ export function SetupWizard({
           caddyEmail={caddyEmail}
           onCaddyEmail={setCaddyEmail}
           onBack={() => setStep("key")}
-          onNext={() => setStep("install")}
+          onNext={() => setStep("finish")}
         />
       )}
 
-      {step === "install" && (
+      {step === "server" && mode === "adopt" && (
+        <AdoptServerStep
+          address={address}
+          onAddress={setAddress}
+          sshUser={sshUser}
+          onSSHUser={setSSHUser}
+          sshPort={sshPort}
+          onSSHPort={setSSHPort}
+          apiPort={apiPort}
+          onAPIPort={setAPIPort}
+          onBack={() => setStep("key")}
+          onNext={() => setStep("finish")}
+        />
+      )}
+
+      {step === "finish" && mode === "create" && (
         <InstallStep
           base={name}
           address={address}
@@ -108,12 +159,31 @@ export function SetupWizard({
         />
       )}
 
-      {step === "done" && <DoneStep base={name} onOpen={() => onFinished(name)} />}
+      {step === "finish" && mode === "adopt" && (
+        <RegisterStep
+          base={name}
+          address={address}
+          sshUser={sshUser}
+          sshPort={sshPort}
+          apiPort={apiPort}
+          sshKeyPath={sshKeyPath}
+          onBack={() => setStep("server")}
+          onDone={() => setStep("done")}
+        />
+      )}
+
+      {step === "done" && <DoneStep base={name} mode={mode} onOpen={() => onFinished(name)} />}
     </div>
   );
 }
 
-function Progress({ step }: { step: Step }) {
+function Progress({
+  steps,
+  step,
+}: {
+  steps: Array<{ id: Step; label: string }>;
+  step: Step;
+}) {
   const index = step === "done" ? steps.length : steps.findIndex((s) => s.id === step);
   return (
     <ol className="flex items-center gap-2 text-xs">
@@ -142,6 +212,63 @@ function Footer({ children }: { children: React.ReactNode }) {
 }
 
 // ---------------------------------------------------------------------------
+// 0. Path — new server, or one that already runs OwnBase
+// ---------------------------------------------------------------------------
+
+function PathStep({
+  onChoose,
+  onCancel,
+}: {
+  onChoose: (mode: Mode) => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div>
+      <div className="space-y-3">
+        <PathOption
+          title="Set up a new server"
+          description="A machine with no OwnBase on it yet. You'll generate a key, paste it into your provider when you create the server, and OwnBase installs itself."
+          onClick={() => onChoose("create")}
+        />
+        <PathOption
+          title="Add a server that's already running OwnBase"
+          description="Someone else provisioned it, or it's already known to another copy of your vault. You'll point at it with the key it already trusts — nothing to install."
+          onClick={() => onChoose("adopt")}
+        />
+      </div>
+
+      <Footer>
+        <Button variant="ghost" onClick={onCancel}>
+          Cancel
+        </Button>
+        <span />
+      </Footer>
+    </div>
+  );
+}
+
+function PathOption({
+  title,
+  description,
+  onClick,
+}: {
+  title: string;
+  description: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="w-full rounded-xl border border-zinc-800 bg-zinc-900/60 p-5 text-left transition-colors hover:border-emerald-500/40 hover:bg-zinc-900"
+    >
+      <h3 className="text-base font-medium text-zinc-100">{title}</h3>
+      <p className="mt-1.5 text-sm leading-relaxed text-zinc-500">{description}</p>
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // 1. Name
 // ---------------------------------------------------------------------------
 
@@ -150,13 +277,13 @@ function NameStep({
   name,
   onName,
   onNext,
-  onCancel,
+  onBack,
 }: {
   existingNames: string[];
   name: string;
   onName: (value: string) => void;
   onNext: () => void;
-  onCancel: () => void;
+  onBack: () => void;
 }) {
   const trimmed = name.trim();
   const taken = existingNames.includes(trimmed);
@@ -195,8 +322,8 @@ function NameStep({
         </Field>
 
         <Footer>
-          <Button type="button" variant="ghost" onClick={onCancel}>
-            Cancel
+          <Button type="button" variant="ghost" onClick={onBack}>
+            Back
           </Button>
           <Button type="submit" variant="primary" disabled={!trimmed || Boolean(error)}>
             Continue
@@ -208,19 +335,21 @@ function NameStep({
 }
 
 // ---------------------------------------------------------------------------
-// 2. Key
+// 2. Key — new server (generate, or import one you already have)
 // ---------------------------------------------------------------------------
 
 function KeyStep({
   base,
   result,
+  source,
   onResult,
   onBack,
   onNext,
 }: {
   base: string;
   result: KeygenResult | null;
-  onResult: (result: KeygenResult) => void;
+  source: "generated" | "imported" | null;
+  onResult: (result: KeygenResult, source: "generated" | "imported") => void;
   onBack: () => void;
   onNext: () => void;
 }) {
@@ -231,7 +360,7 @@ function KeyStep({
     setBusy(true);
     setError(null);
     try {
-      onResult(await api.keygen(base.trim()));
+      onResult(await api.keygen(base.trim()), "generated");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -239,13 +368,31 @@ function KeyStep({
     }
   }, [base, onResult]);
 
-  // Runs on arrival rather than behind a button: there is no decision to make
-  // here, and re-running keygen prints the existing key instead of replacing
-  // it, so arriving twice is harmless.
-  useEffect(() => {
-    if (!result) void generate();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const importFile = useCallback(async () => {
+    const chosen = await open({
+      multiple: false,
+      directory: false,
+      title: "Choose the private key file",
+    });
+    if (typeof chosen !== "string") return;
+    setBusy(true);
+    setError(null);
+    try {
+      onResult(await api.keygenImport(base.trim(), chosen), "imported");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [base, onResult]);
+
+  const badge =
+    result &&
+    (source === "imported"
+      ? { tone: "info" as const, label: "Key imported" }
+      : result.created
+        ? { tone: "good" as const, label: "New key created" }
+        : { tone: "info" as const, label: "Existing key reused" });
 
   return (
     <Card>
@@ -256,18 +403,27 @@ function KeyStep({
         Base gets its own key, so retiring one Base revokes exactly one credential.
       </p>
 
-      {error && (
-        <div className="mt-4">
-          <ErrorNote title="Could not create the key" detail={error} onRetry={generate} />
+      {!result && (
+        <div className="mt-4 flex flex-col gap-2.5 sm:flex-row">
+          <Button variant="primary" busy={busy} onClick={generate}>
+            Generate a new key
+          </Button>
+          <Button variant="secondary" busy={busy} onClick={importFile}>
+            I already have a key
+          </Button>
         </div>
       )}
 
-      {result && (
+      {error && (
+        <div className="mt-4">
+          <ErrorNote title="Could not set up the key" detail={error} />
+        </div>
+      )}
+
+      {result && badge && (
         <div className="mt-4">
           <div className="flex items-center justify-between gap-3">
-            <Badge tone={result.created ? "good" : "info"}>
-              {result.created ? "New key created" : "Existing key reused"}
-            </Badge>
+            <Badge tone={badge.tone}>{badge.label}</Badge>
             <CopyButton value={result.public_key} label="Copy public key" />
           </div>
           <pre className="selectable mt-3 max-h-32 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-zinc-800 bg-zinc-950 p-3 font-mono text-xs leading-relaxed text-zinc-300">
@@ -293,7 +449,66 @@ function KeyStep({
 }
 
 // ---------------------------------------------------------------------------
-// 3. Server — the human step
+// 2 (adopt). Key — the file this server already trusts
+// ---------------------------------------------------------------------------
+
+function AdoptKeyStep({
+  path,
+  onPath,
+  onBack,
+  onNext,
+}: {
+  path: string;
+  onPath: (path: string) => void;
+  onBack: () => void;
+  onNext: () => void;
+}) {
+  async function choose() {
+    const chosen = await open({
+      multiple: false,
+      directory: false,
+      title: "Choose the private key already authorized on this server",
+    });
+    if (typeof chosen === "string") onPath(chosen);
+  }
+
+  return (
+    <Card>
+      <h2 className="text-base font-medium text-zinc-100">The key this server already trusts</h2>
+      <p className="mt-1.5 text-sm leading-relaxed text-zinc-500">
+        This has to be the private key already in that server's{" "}
+        <code className="font-mono text-zinc-400">authorized_keys</code> — there is
+        nothing to generate here, because a server that already exists has no way to
+        learn about a brand new key. The file is only read to copy it into your
+        vault; ownbasectl does that directly, so the key itself never passes through
+        this window.
+      </p>
+
+      <div className="mt-4">
+        <Button variant="secondary" onClick={choose}>
+          {path ? "Choose a different file" : "Choose private key file…"}
+        </Button>
+        {path && (
+          <div className="mt-3 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
+            <span className="selectable break-all font-mono text-xs text-zinc-300">{path}</span>
+          </div>
+        )}
+      </div>
+
+      <Footer>
+        <Button variant="ghost" onClick={onBack}>
+          Back
+        </Button>
+        <Button variant="primary" disabled={!path} onClick={onNext}>
+          Continue
+        </Button>
+      </Footer>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 3. Server — the human step (new server)
 // ---------------------------------------------------------------------------
 
 function ServerStep({
@@ -428,6 +643,129 @@ function ServerStep({
   );
 }
 
+// ---------------------------------------------------------------------------
+// 3 (adopt). Server — where it already is
+// ---------------------------------------------------------------------------
+
+function AdoptServerStep({
+  address,
+  onAddress,
+  sshUser,
+  onSSHUser,
+  sshPort,
+  onSSHPort,
+  apiPort,
+  onAPIPort,
+  onBack,
+  onNext,
+}: {
+  address: string;
+  onAddress: (value: string) => void;
+  sshUser: string;
+  onSSHUser: (value: string) => void;
+  sshPort: number;
+  onSSHPort: (value: number) => void;
+  apiPort: number;
+  onAPIPort: (value: number) => void;
+  onBack: () => void;
+  onNext: () => void;
+}) {
+  const [showOptions, setShowOptions] = useState(false);
+  const ready = address.trim().length > 0;
+
+  return (
+    <Card>
+      <h2 className="text-base font-medium text-zinc-100">Where is it?</h2>
+      <p className="mt-1.5 text-sm leading-relaxed text-zinc-500">
+        Nothing is installed here. The next step only verifies the connection and,
+        once that works, saves it — a mistyped host costs you nothing.
+      </p>
+
+      <ul className="mt-4 space-y-2.5 text-sm leading-relaxed text-zinc-300">
+        <Requirement>
+          <strong className="font-medium text-zinc-100">OwnBase already installed and running</strong>{" "}
+          on it, however that happened.
+        </Requirement>
+        <Requirement>
+          <strong className="font-medium text-zinc-100">Reachable over SSH</strong> with
+          the key you just picked already in its <code className="font-mono text-zinc-400">authorized_keys</code>.
+        </Requirement>
+      </ul>
+
+      <form
+        className="mt-6 space-y-4"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (ready) onNext();
+        }}
+      >
+        <Field label="Host" hint="The hostname or IP address you'd SSH into.">
+          <Input
+            autoFocus
+            value={address}
+            onChange={(e) => onAddress(e.target.value)}
+            placeholder="203.0.113.10"
+            spellCheck={false}
+          />
+        </Field>
+
+        <button
+          type="button"
+          onClick={() => setShowOptions((v) => !v)}
+          className="text-sm text-zinc-500 hover:text-zinc-300"
+        >
+          {showOptions ? "Hide" : "Show"} advanced options
+        </button>
+
+        {showOptions && (
+          <div className="space-y-4 rounded-lg border border-zinc-800 p-4">
+            <Field
+              label="SSH user"
+              hint="Root by default; use whatever this server already expects."
+            >
+              <Input
+                value={sshUser}
+                onChange={(e) => onSSHUser(e.target.value)}
+                spellCheck={false}
+              />
+            </Field>
+            <Field label="SSH port" hint="Only if sshd listens somewhere other than 22.">
+              <Input
+                type="number"
+                min={1}
+                max={65535}
+                value={sshPort}
+                onChange={(e) => onSSHPort(Number(e.target.value) || 22)}
+              />
+            </Field>
+            <Field
+              label="API port"
+              hint="Only if the daemon's status API was configured on a non-default port."
+            >
+              <Input
+                type="number"
+                min={1}
+                max={65535}
+                value={apiPort}
+                onChange={(e) => onAPIPort(Number(e.target.value) || 7070)}
+              />
+            </Field>
+          </div>
+        )}
+
+        <Footer>
+          <Button type="button" variant="ghost" onClick={onBack}>
+            Back
+          </Button>
+          <Button type="submit" variant="primary" disabled={!ready}>
+            Verify and register
+          </Button>
+        </Footer>
+      </form>
+    </Card>
+  );
+}
+
 function Requirement({ children }: { children: React.ReactNode }) {
   return (
     <li className="flex gap-2.5">
@@ -438,7 +776,7 @@ function Requirement({ children }: { children: React.ReactNode }) {
 }
 
 // ---------------------------------------------------------------------------
-// 4. Install
+// 4. Install (new server)
 // ---------------------------------------------------------------------------
 
 /**
@@ -613,18 +951,133 @@ function installFailure(code: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// 5. Done
+// 4 (adopt). Register
 // ---------------------------------------------------------------------------
 
-function DoneStep({ base, onOpen }: { base: string; onOpen: () => void }) {
+function RegisterStep({
+  base,
+  address,
+  sshUser,
+  sshPort,
+  apiPort,
+  sshKeyPath,
+  onBack,
+  onDone,
+}: {
+  base: string;
+  address: string;
+  sshUser: string;
+  sshPort: number;
+  apiPort: number;
+  sshKeyPath: string;
+  onBack: () => void;
+  onDone: () => void;
+}) {
+  const [lines, setLines] = useState<string[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [running, setRunning] = useState(true);
+  const handle = useRef<StreamHandle | null>(null);
+
+  useEffect(() => {
+    const onEvent = (event: StreamEvent) => {
+      if (event.kind === "stdout" || event.kind === "stderr") {
+        setLines((prev) => [...prev, event.line]);
+      }
+    };
+
+    const stream = api.adoptBase(
+      base.trim(),
+      { host: address.trim(), sshUser, sshPort, sshKeyPath, apiPort },
+      onEvent,
+    );
+    handle.current = stream;
+
+    stream.done
+      .then((code) => {
+        setRunning(false);
+        if (code === 0) onDone();
+        else setError(adoptFailure(code));
+      })
+      .catch((err: unknown) => {
+        setRunning(false);
+        setError(err instanceof Error ? err.message : String(err));
+      });
+
+    return () => {
+      void stream.cancel();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   return (
     <Card>
       <h2 className="text-base font-medium text-zinc-100">
-        {base} is up and hardened
+        {running ? "Verifying and registering" : error ? "Could not register" : "Registered"}
       </h2>
       <p className="mt-1.5 text-sm leading-relaxed text-zinc-500">
-        Nothing but SSH is exposed, so there is no rush to the next step. When you
-        are ready, two things are worth doing.
+        The SSH connection is verified first — nothing is saved to your vault
+        unless that works, so a mistyped host or an unauthorized key costs you
+        nothing.
+      </p>
+
+      {error && (
+        <div className="mt-5">
+          <ErrorNote title="The registration did not finish" detail={error} />
+        </div>
+      )}
+
+      <div className="mt-5">
+        <p className="mb-2 text-xs uppercase tracking-wide text-zinc-500">Output</p>
+        <LogView lines={lines} className="max-h-64" />
+      </div>
+
+      <Footer>
+        <Button variant="ghost" onClick={onBack} disabled={running}>
+          Back
+        </Button>
+        {running ? (
+          <Button
+            variant="danger"
+            onClick={() => {
+              void handle.current?.cancel();
+            }}
+          >
+            Stop
+          </Button>
+        ) : null}
+      </Footer>
+    </Card>
+  );
+}
+
+/** What a non-zero exit from `adopt` means, in the user's terms. */
+function adoptFailure(code: number): string {
+  switch (code) {
+    case 3:
+      return "The server could not be verified, so nothing was saved. The output above says why — usually an unreachable host, or a key this server does not authorize.";
+    case 6:
+      return "A Base with this name already points at a different machine. Rename this one, or remove the existing Base first.";
+    case 7:
+      return "The vault locked while this was running. Unlock it and try again.";
+    default:
+      return `The command exited ${code}. The output above has the details.`;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 5. Done
+// ---------------------------------------------------------------------------
+
+function DoneStep({ base, mode, onOpen }: { base: string; mode: Mode; onOpen: () => void }) {
+  return (
+    <Card>
+      <h2 className="text-base font-medium text-zinc-100">
+        {mode === "create" ? `${base} is up and hardened` : `${base} is registered`}
+      </h2>
+      <p className="mt-1.5 text-sm leading-relaxed text-zinc-500">
+        {mode === "create"
+          ? "Nothing but SSH is exposed, so there is no rush to the next step. When you are ready, two things are worth doing."
+          : "It's in your vault now. Two things are worth checking, if this Base doesn't already have them."}
       </p>
 
       <ul className="mt-4 space-y-3 text-sm leading-relaxed text-zinc-300">

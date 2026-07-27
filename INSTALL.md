@@ -87,7 +87,7 @@ Multipass may assign a new IP on restart. If `ownbasectl status mybase` stops co
 
 ```bash
 multipass info mybase | grep IPv4
-ownbasectl adopt mybase --host <new-ip> --token <token>   # token: sudo cat /opt/ownbase/api-token
+ownbasectl adopt mybase --host <new-ip>
 ```
 
 ---

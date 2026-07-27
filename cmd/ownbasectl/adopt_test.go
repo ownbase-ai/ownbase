@@ -149,6 +149,81 @@ func TestRunAdopt_UnauthorizedKeyDoesNotOverwriteExistingProfile(t *testing.T) {
 	}
 }
 
+// adopt must not require the token to be pasted in when SSH can read it
+// itself — the same bootstrap connectToServer already does for any profile
+// with no cached token, just performed eagerly instead of on first use.
+func TestRunAdopt_FetchesTokenAutomatically(t *testing.T) {
+	// The in-process SSH server runs commands through `sh -c`, so a stub sudo
+	// earlier in PATH serves a fake api-token file, exactly like
+	// TestConnectToServer_BootstrapsTokenViaSSH does.
+	tokenFile := filepath.Join(t.TempDir(), "api-token")
+	if err := os.WriteFile(tokenFile, []byte("bootstrapped-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "sudo"),
+		[]byte("#!/bin/sh\ncat \""+tokenFile+"\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+	startTestAgent(t)
+	privPEM, _, clientPub := newTestOwnerKey(t)
+	sshSrv := startTestSSHServer(t, clientPub)
+	keyFile := writeKeyFile(t, privPEM)
+
+	if err := runAdopt("mybase", "127.0.0.1", "testuser", keyFile, sshSrv.port(), 7070, ""); err != nil {
+		t.Fatalf("adopt without --token: %v", err)
+	}
+
+	p, err := loadProfile("mybase")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Token != "bootstrapped-token" {
+		t.Errorf("token = %q, want bootstrapped-token", p.Token)
+	}
+}
+
+// When SSH cannot read the token file (no sudo, non-standard setup, whatever
+// the reason), adopt must still succeed rather than force the operator to go
+// find the token by hand — the first real command against this Base
+// bootstraps it exactly the same way connectToServer always has.
+func TestRunAdopt_SucceedsWithoutTokenWhenFetchFails(t *testing.T) {
+	// A "sudo" that always fails, ahead of the real one on PATH: the fallback
+	// `cat` then fails too, since /opt/ownbase/api-token genuinely does not
+	// exist on the machine running this test. That gives a deterministic
+	// failure without depending on whatever the real sudo on this machine
+	// would do (which, run non-interactively, could otherwise hang asking for
+	// a password on some systems). Everything else `hostname` and the shell
+	// itself need stays on PATH, so the earlier SSH verification is unaffected.
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "sudo"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+	startTestAgent(t)
+	privPEM, _, clientPub := newTestOwnerKey(t)
+	sshSrv := startTestSSHServer(t, clientPub)
+	keyFile := writeKeyFile(t, privPEM)
+
+	if err := runAdopt("mybase", "127.0.0.1", "testuser", keyFile, sshSrv.port(), 7070, ""); err != nil {
+		t.Fatalf("adopt without --token and without a way to fetch one: %v", err)
+	}
+
+	p, err := loadProfile("mybase")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Token != "" {
+		t.Errorf("token = %q, want empty (no way to have fetched one)", p.Token)
+	}
+	if p.Host != "127.0.0.1" {
+		t.Errorf("host = %q, want 127.0.0.1 — adopt must still register the Base", p.Host)
+	}
+}
+
 func TestRunAdopt_NoKeyAnywhereFails(t *testing.T) {
 	startTestAgent(t)
 

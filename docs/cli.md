@@ -153,7 +153,7 @@ ownbasectl create mybase --remote root@203.0.113.10 --wait       # fresh Ubuntu 
 | `--json` | `false` | Machine-readable result instead of the banner |
 | `--caddy-email` | — | ACME contact for automatic TLS on public domains |
 | `--ssh-user` | `root` | SSH login user for `--remote`. Needs passwordless sudo if not root |
-| `--ssh-key` | the `keygen` key for this Base, else `~/.ssh/id_ed25519` | SSH private key |
+| `--ssh-key` | the `keygen` key for this Base | import this private key file into the vault instead |
 | `--ssh-port` | `22` | SSH port. Also tells the daemon which port to open in UFW and jail in fail2ban |
 | `--wait-for-ssh` | `5m` | How long to wait for a booting server to accept SSH |
 | `--wait-timeout` | `10m` | How long `--wait` blocks before giving up |
@@ -173,15 +173,15 @@ Without `--wait`, `create` returns while the daemon is still hardening the host 
 
 A freshly created Base has no domain configured, so it exposes nothing but SSH. Once a service has a `domain:`, reach it with [`tunnel`](#tunnel-name), or through Caddy once DNS points at the Base.
 
-### `adopt <name> --host <host> --token <token>`
+### `adopt <name> --host <host>`
 
 Register a Base installed some other way, e.g. `install.sh` run by hand. Verifies SSH connectivity before saving. Bases made with `create` are registered automatically.
 
 ```bash
-ownbasectl adopt prod --host mybase.example.com --token <token>
+ownbasectl adopt prod --host mybase.example.com
 ```
 
-Flags: `--host` and `--token` (required; the token is printed at install time and stored at `/opt/ownbase/api-token`), `--ssh-user` (default `root`; local VMs use `ubuntu`), `--ssh-key` (default `~/.ssh/id_ed25519`), `--ssh-port` (default `22`), `--api-port` (default `7070`).
+Flags: `--host` (required), `--token` (optional — fetched over SSH from `/opt/ownbase/api-token` if not given; pass it explicitly only when SSH can't read that file itself), `--ssh-user` (default `root`; local VMs use `ubuntu`), `--ssh-key` (import this private key file into the vault instead of using one already there), `--ssh-port` (default `22`), `--api-port` (default `7070`).
 
 ### `list` / `delete <name>`
 
