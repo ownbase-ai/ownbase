@@ -147,6 +147,38 @@ func TestRunKeygen_ImportRefusesToReplaceDifferentKey(t *testing.T) {
 	}
 }
 
+// Importing the exact key material a Base already has must succeed even when
+// the two copies are spelled differently: a key `keygen` generated carries an
+// "ownbase_<name>" comment (visible to anyone who opens the vault directly in
+// KeePassXC, by design), while readPrivateKeyFile — reading that same key back
+// out of a file — emits no comment at all. That difference alone must not
+// read as "a different key".
+func TestRunKeygen_ImportMatchesKeyStoredWithDifferentComment(t *testing.T) {
+	startTestAgent(t)
+
+	// Stand in for a key `keygen` created directly: PublicKey carries a
+	// comment, exactly as entryFromProfile / profileFromEntry round-trip it.
+	privPEM, commentedLine, _ := newTestOwnerKey(t)
+	putTestProfile(t, "mybase", vault.Profile{PrivateKey: privPEM, PublicKey: commentedLine})
+
+	// The same key, as if copied out of the vault file by hand — no comment.
+	keyFile := filepath.Join(t.TempDir(), "id_ed25519")
+	if err := os.WriteFile(keyFile, []byte(privPEM), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runKeygen("mybase", keyFile, true); err != nil {
+		t.Fatalf("re-importing identical key material was refused: %v", err)
+	}
+	after, err := loadProfile("mybase")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !vault.SameAuthorizedKey(after.PublicKeyLine(), commentedLine) {
+		t.Errorf("key changed across re-import: %q -> %q", commentedLine, after.PublicKeyLine())
+	}
+}
+
 func TestReadPrivateKeyFile_RejectsUnparseable(t *testing.T) {
 	keyFile := filepath.Join(t.TempDir(), "broken")
 	if err := os.WriteFile(keyFile, []byte("-----BEGIN OPENSSH PRIVATE KEY-----\nnot parseable\n"), 0o600); err != nil {

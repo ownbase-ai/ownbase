@@ -5,7 +5,9 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/crypto/ssh"
 
+	"github.com/ownbase/ownbase/internal/agentd"
 	"github.com/ownbase/ownbase/internal/tunnel"
 	"github.com/ownbase/ownbase/internal/vault"
 )
@@ -68,10 +70,19 @@ func runAdopt(name, host, sshUser, sshKey string, sshPort, apiPort int, token st
 	profile.APIPort = apiPort
 	profile.Token = token
 
+	// A signer to verify with, resolved without writing anything to the vault
+	// yet: a mistyped host or an unauthorized key must not cost the Base its
+	// previously working profile or owner key, and nothing here is undoable
+	// once it lands in the vault.
+	var verifySigner ssh.Signer
 	if sshKey != "" {
 		priv, pub, ierr := readPrivateKeyFile(sshKey)
 		if ierr != nil {
 			return ierr
+		}
+		verifySigner, ierr = ssh.ParsePrivateKey([]byte(priv))
+		if ierr != nil {
+			return fmt.Errorf("parse %s: %w", sshKey, ierr)
 		}
 		profile.PrivateKey, profile.PublicKey = priv, pub
 	}
@@ -82,23 +93,33 @@ func runAdopt(name, host, sshUser, sshKey string, sshPort, apiPort int, token st
 			name, host, name))
 	}
 
-	// The key must be in the vault before the connectivity check, because the
-	// check authenticates through the agent's ssh-agent socket, which serves
-	// only what the vault holds.
-	if err := putProfile(name, profile); err != nil {
-		return err
+	target := tunnel.Target{Host: host, User: sshUser, Port: sshPort}
+	if verifySigner != nil {
+		// A freshly imported key: test it directly, in memory, rather than
+		// staging it into the vault first.
+		target.Signers = []ssh.Signer{verifySigner}
+	} else {
+		// No new key offered — the Base's existing key is already in the
+		// vault and unaffected either way, so testing through the agent
+		// needs no write first.
+		sock, serr := agentd.SSHAgentSocketPath()
+		if serr != nil {
+			return serr
+		}
+		target.AgentSocket = sock
+		target.PublicKey = profile.PublicKeyLine()
 	}
 
-	target, err := sshTarget(profile)
-	if err != nil {
-		return err
-	}
 	fmt.Fprintf(os.Stderr, "ownbasectl: verifying SSH connection to %s ...\n", target.Destination())
 	out, err := tunnel.RunCommand(target, "hostname")
 	if err != nil {
 		return fmt.Errorf("SSH connection to %s failed: %w\n  Check that the host is reachable and this Base's owner key is authorized on it", host, err)
 	}
 	fmt.Fprintf(os.Stderr, "ownbasectl: connected to %s (hostname: %s)\n", host, out)
+
+	if err := putProfile(name, profile); err != nil {
+		return err
+	}
 
 	fmt.Printf("Base %q adopted.\n", name)
 	fmt.Printf("  Run: ownbasectl status %s\n", name)

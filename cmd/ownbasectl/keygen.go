@@ -77,7 +77,7 @@ func runKeygen(name, importPath string, jsonOut bool) error {
 		if ierr != nil {
 			return ierr
 		}
-		if profile.PublicKeyLine() != "" && profile.PublicKeyLine() != pub {
+		if line := profile.PublicKeyLine(); line != "" && !vault.SameAuthorizedKey(line, pub) {
 			return withExitCode(exitConflict, fmt.Errorf(
 				"Base %q already has a different owner key in the vault; importing would lock you out of the machine that authorized the old one.\n"+
 					"       Remove the Base first with 'ownbasectl delete %s --keep-vm' if you really mean to replace its key", name, name))

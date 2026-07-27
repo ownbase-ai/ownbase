@@ -42,3 +42,20 @@ func AuthorizedKeyLine(pub ssh.PublicKey, comment string) string {
 	}
 	return line
 }
+
+// SameAuthorizedKey reports whether two authorized_keys lines name the same
+// key, ignoring the trailing comment. NewKeyPair embeds "ownbase_<name>";
+// readPrivateKeyFile (importing a key the user already had) embeds none — so a
+// caller re-importing the exact key material a Base already has must not see
+// that as a conflict just because the two lines are spelled differently.
+// Falls back to a literal comparison for a line that fails to parse, so an
+// unparseable line is still handled the way it always was rather than
+// silently treated as equal to everything.
+func SameAuthorizedKey(a, b string) bool {
+	aKey, _, _, _, aErr := ssh.ParseAuthorizedKey([]byte(a))
+	bKey, _, _, _, bErr := ssh.ParseAuthorizedKey([]byte(b))
+	if aErr != nil || bErr != nil {
+		return a == b
+	}
+	return string(aKey.Marshal()) == string(bKey.Marshal())
+}
