@@ -247,15 +247,19 @@ func checkProfileConflict(name, host string, allowRepoint bool) error {
 // compare against. The question it answers instead: would launching a VM under
 // this name discard a profile for a machine that is not this VM?
 //
-// vmExists means a Multipass VM of this name is already there, which is the
-// ordinary "re-create my VM" case — it has its own delete confirmation, and
-// the profile being overwritten belongs to the VM being replaced.
+// What settles it is the profile's own local_vm marker, not the presence of a
+// VM. A same-named Multipass VM can exist alongside a remote profile purely by
+// coincidence — the case ServerProfile.LocalVM's tri-state exists to guard —
+// so "a VM is here" is not evidence that this profile describes it.
 //
-// Anything that is not a known local VM is refused, including a legacy profile
-// with LocalVM unset. Being wrong in that direction costs one --replace flag;
-// being wrong in the other orphans a paid server.
+// vmExists breaks the tie for one case only: a legacy profile written before
+// local_vm existed, which might be either. Falling back to Multipass there is
+// what `delete` does, and it keeps `create` working for local VMs registered
+// by older versions. Everything else that is not a known local VM is refused;
+// being wrong that way costs one --replace flag, being wrong the other way
+// orphans a paid server.
 func checkLocalVMProfileConflict(name string, vmExists, allowRepoint bool) error {
-	if allowRepoint || vmExists {
+	if allowRepoint {
 		return nil
 	}
 	cfgPath, err := serverconfig.DefaultConfigPath()
@@ -268,6 +272,9 @@ func checkLocalVMProfileConflict(name string, vmExists, allowRepoint bool) error
 	}
 	existing, ok := cfg.Servers[name]
 	if !ok || existing.KnownLocalVM() || existing.Host == "" {
+		return nil
+	}
+	if !existing.KnownRemote() && vmExists {
 		return nil
 	}
 	return withExitCode(exitUsage, fmt.Errorf(

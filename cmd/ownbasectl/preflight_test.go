@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ownbase/ownbase/internal/serverconfig"
 )
 
 func TestParseOSRelease(t *testing.T) {
@@ -138,22 +140,57 @@ func TestCheckLocalVMProfileConflict(t *testing.T) {
 		t.Errorf("conflict exit code = %d, want %d", code, exitUsage)
 	}
 
+	// A same-named Multipass VM can exist next to a remote profile by
+	// coincidence, so it is not evidence that the profile describes it.
+	if err := checkLocalVMProfileConflict("mybase", true, false); err == nil {
+		t.Error("a coincidentally same-named VM must not bypass the guard on a remote profile")
+	}
+
 	// Opting in (create --replace, or restore) proceeds.
 	if err := checkLocalVMProfileConflict("mybase", false, true); err != nil {
 		t.Errorf("allowRepoint should permit the change: %v", err)
 	}
-	// So does an existing VM of that name: that path already confirms the
-	// delete, and the profile belongs to the VM being replaced.
-	if err := checkLocalVMProfileConflict("mybase", true, false); err != nil {
-		t.Errorf("an existing VM is the ordinary re-create case: %v", err)
-	}
 
-	// Re-creating a VM whose profile says local is a normal retry.
+	// Re-creating a VM whose profile says local is a normal retry, whether
+	// or not the VM is still around.
 	if err := registerProfile("vmbase", "192.168.64.5", "ubuntu", "~/.ssh/id_ed25519", 22, 7070, "tok", true); err != nil {
 		t.Fatal(err)
 	}
-	if err := checkLocalVMProfileConflict("vmbase", false, false); err != nil {
-		t.Errorf("re-creating a known local VM must be allowed: %v", err)
+	for _, vmExists := range []bool{false, true} {
+		if err := checkLocalVMProfileConflict("vmbase", vmExists, false); err != nil {
+			t.Errorf("re-creating a known local VM (vmExists=%v) must be allowed: %v", vmExists, err)
+		}
+	}
+
+	// A legacy profile predating local_vm could be either, so Multipass
+	// breaks the tie — the same fallback `delete` uses.
+	writeLegacyProfile(t, "legacy", "192.168.64.9")
+	if err := checkLocalVMProfileConflict("legacy", true, false); err != nil {
+		t.Errorf("a legacy profile with its VM present must still be re-creatable: %v", err)
+	}
+	if err := checkLocalVMProfileConflict("legacy", false, false); err == nil {
+		t.Error("a legacy profile with no VM to vouch for it must be refused")
+	}
+}
+
+// writeLegacyProfile registers a profile with local_vm unset, as versions
+// before that field existed wrote them. registerProfile cannot produce one.
+func writeLegacyProfile(t *testing.T, name, host string) {
+	t.Helper()
+	cfgPath, err := serverconfig.DefaultConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := serverconfig.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Servers == nil {
+		cfg.Servers = map[string]serverconfig.ServerProfile{}
+	}
+	cfg.Servers[name] = serverconfig.ServerProfile{Host: host, Token: "tok"}
+	if err := serverconfig.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
 	}
 }
 
