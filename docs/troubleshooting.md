@@ -39,7 +39,7 @@ The image is wrong for OwnBase. Rebuild the server with a stock Ubuntu 22.04 or 
 
 The machine is too small to build a service from source. See [sizing](../README.md#how-big-a-machine) — the floor is set by build peaks, not by what the services use at rest.
 
-### "already points at <host> in ~/.ownbase/config"
+### "already points at <host> in ~/.ownbase/config" (exit code 6)
 
 That Base name is registered against a different machine, and overwriting it would discard the old server's API token, leaving it running and unreachable. Use a different name, remove the stale profile with `ownbasectl delete <name> --keep-vm`, or pass `--replace` if you really are moving the name.
 

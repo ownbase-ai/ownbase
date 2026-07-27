@@ -237,7 +237,7 @@ func checkProfileConflict(name, host string, allowRepoint bool) error {
 	if !ok || existing.Host == "" || sameHost(existing.Host, host) {
 		return nil
 	}
-	return withExitCode(exitUsage, fmt.Errorf(
+	return withExitCode(exitConflict, fmt.Errorf(
 		"Base %q already points at %s in ~/.ownbase/config; creating it at %s would discard that server's API token.\n"+
 			"       If that is the same machine under a different address, --replace is safe. Otherwise pick another name, or remove the old profile with 'ownbasectl delete %s --keep-vm'",
 		name, existing.Host, host, name))
@@ -308,7 +308,7 @@ func checkLocalVMProfileConflict(name string, vmExists, allowRepoint bool) error
 	if !existing.KnownRemote() && vmExists {
 		return nil
 	}
-	return withExitCode(exitUsage, fmt.Errorf(
+	return withExitCode(exitConflict, fmt.Errorf(
 		"Base %q already points at %s in ~/.ownbase/config; creating a local VM under that name would discard that Base's API token.\n"+
 			"       Pick another name, remove the old profile with 'ownbasectl delete %s --keep-vm', or pass --replace",
 		name, existing.Host, name))

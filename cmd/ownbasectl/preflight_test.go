@@ -108,8 +108,10 @@ func TestCheckProfileConflict(t *testing.T) {
 	if !strings.Contains(err.Error(), "203.0.113.10") {
 		t.Errorf("error should name the existing host, got: %v", err)
 	}
-	if code := exitCodeFor(err); code != exitUsage {
-		t.Errorf("conflict exit code = %d, want %d", code, exitUsage)
+	// A refusal, not a malformed command: a caller that maps exitUsage to
+	// "fix the flags and retry" must not see this.
+	if code := exitCodeFor(err); code != exitConflict {
+		t.Errorf("conflict exit code = %d, want %d", code, exitConflict)
 	}
 
 	// ...unless the caller opted in (create --replace, or restore).
@@ -169,8 +171,8 @@ func TestCheckLocalVMProfileConflict(t *testing.T) {
 	if !strings.Contains(err.Error(), "203.0.113.10") {
 		t.Errorf("error should name the existing host, got: %v", err)
 	}
-	if code := exitCodeFor(err); code != exitUsage {
-		t.Errorf("conflict exit code = %d, want %d", code, exitUsage)
+	if code := exitCodeFor(err); code != exitConflict {
+		t.Errorf("conflict exit code = %d, want %d", code, exitConflict)
 	}
 
 	// A same-named Multipass VM can exist next to a remote profile by
@@ -310,6 +312,22 @@ func TestExitCodeFor(t *testing.T) {
 	}
 	if withExitCode(exitUsage, nil) != nil {
 		t.Error("withExitCode(nil) must stay nil")
+	}
+
+	// The codes only earn their keep if a caller can tell them apart.
+	seen := map[int]string{}
+	for name, code := range map[string]int{
+		"exitError":     exitError,
+		"exitUsage":     exitUsage,
+		"exitPreflight": exitPreflight,
+		"exitInstall":   exitInstall,
+		"exitNotReady":  exitNotReady,
+		"exitConflict":  exitConflict,
+	} {
+		if prev, dup := seen[code]; dup {
+			t.Errorf("%s and %s share exit code %d", prev, name, code)
+		}
+		seen[code] = name
 	}
 }
 

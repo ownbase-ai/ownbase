@@ -47,6 +47,14 @@ const (
 	exitPreflight = 3 // target unreachable or unfit before any change was made
 	exitInstall   = 4 // the installer ran and failed
 	exitNotReady  = 5 // installed, but not healthy within the wait timeout
+	// exitConflict is a refusal, not a mistake: the command was well-formed
+	// and the machine was fine, but running it would have destroyed
+	// something that cannot be recovered. Distinct from exitUsage because
+	// the recoveries have nothing in common — argv is not wrong, so a caller
+	// cannot fix this by correcting flags and retrying. It needs a decision
+	// (repoint anyway with --replace, or pick a different name), which for
+	// an unattended caller usually means stopping to ask a human.
+	exitConflict = 6
 )
 
 // exitCodeError carries a process exit code alongside an error.

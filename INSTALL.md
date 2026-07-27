@@ -133,6 +133,7 @@ Without `--wait`, `create` returns after step 4 and the daemon keeps working in 
 | 3 | Preflight failed — the target was unreachable or unfit. Nothing was changed |
 | 4 | The installer ran and failed |
 | 5 | Installed, but not healthy within `--wait-timeout` |
+| 6 | Refused — valid command, but it would have discarded another Base's API token. Nothing was changed |
 
 ### Two different SSH keys
 
