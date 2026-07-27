@@ -142,11 +142,19 @@ func (f *baseTargetFlags) ensureOwnerKey(name string) (string, error) {
 	}
 
 	// An explicit --ssh-key is a statement of intent: import that key rather
-	// than substituting one of ours.
+	// than substituting one of ours. Same conflict guard as
+	// `keygen --import`: a Base that already has a different key means some
+	// machine out there was authorized with it, and overwriting the vault's
+	// copy would leave the operator unable to reconnect to it.
 	if f.sshKey != "" {
 		priv, pub, ierr := readPrivateKeyFile(f.sshKey)
 		if ierr != nil {
 			return "", withExitCode(exitPreflight, ierr)
+		}
+		if line := profile.PublicKeyLine(); line != "" && !vault.SameAuthorizedKey(line, pub) {
+			return "", withExitCode(exitConflict, fmt.Errorf(
+				"Base %q already has a different owner key in the vault; importing would lock you out of the machine that authorized the old one.\n"+
+					"       Remove the Base first with 'ownbasectl delete %s --keep-vm' if you really mean to replace its key", name, name))
 		}
 		profile.PrivateKey, profile.PublicKey = priv, pub
 		if perr := putProfile(name, profile); perr != nil {

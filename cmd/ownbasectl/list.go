@@ -64,6 +64,12 @@ func runBaseList(jsonOut bool) error {
 		if vmErr != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not list Multipass VMs: %v\n", vmErr)
 		}
+		if bases == nil {
+			// Same contract as `sessions list --json` and `checkup --json`:
+			// no Bases is `[]`, never `null`, so callers never need a nil
+			// check before ranging over the result.
+			bases = []listedBase{}
+		}
 		return printJSON(bases)
 	}
 

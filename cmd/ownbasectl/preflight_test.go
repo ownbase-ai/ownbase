@@ -282,6 +282,70 @@ func TestEnsureOwnerKey(t *testing.T) {
 			t.Fatal("expected a refusal for a missing --ssh-key")
 		}
 	})
+
+	// --ssh-key must refuse to overwrite a Base's owner key with a different
+	// one: a different key means some machine out there was authorized with
+	// the old one, and silently replacing it would leave the operator unable
+	// to reconnect. Mirrors keygen --import's own guard.
+	t.Run("ssh-key conflicting with an existing key is refused", func(t *testing.T) {
+		startTestAgent(t)
+		_, existingLine, _ := newTestOwnerKey(t)
+		putTestProfile(t, "mybase", vault.Profile{PublicKey: existingLine})
+
+		otherPriv, _, _ := newTestOwnerKey(t)
+		keyFile := writeKeyFile(t, otherPriv)
+
+		f := &baseTargetFlags{sshKey: keyFile}
+		if _, err := f.ensureOwnerKey("mybase"); err == nil {
+			t.Fatal("expected a conflict error, got none")
+		} else if code := exitCodeFor(err); code != exitConflict {
+			t.Errorf("exit code = %d, want %d (exitConflict)", code, exitConflict)
+		}
+
+		after, lerr := loadProfile("mybase")
+		if lerr != nil {
+			t.Fatal(lerr)
+		}
+		if !vault.SameAuthorizedKey(after.PublicKeyLine(), existingLine) {
+			t.Errorf("owner key changed despite the refused import: %q -> %q", existingLine, after.PublicKeyLine())
+		}
+	})
+
+	// Re-importing the exact key material a Base already has must still
+	// succeed, comment differences included — the same case keygen --import
+	// handles.
+	t.Run("ssh-key matching the existing key succeeds", func(t *testing.T) {
+		startTestAgent(t)
+		priv, existingLine, _ := newTestOwnerKey(t)
+		putTestProfile(t, "mybase", vault.Profile{PrivateKey: priv, PublicKey: existingLine})
+		keyFile := writeKeyFile(t, priv)
+
+		f := &baseTargetFlags{sshKey: keyFile}
+		pub, err := f.ensureOwnerKey("mybase")
+		if err != nil {
+			t.Fatalf("ensureOwnerKey: %v", err)
+		}
+		if !vault.SameAuthorizedKey(pub, existingLine) {
+			t.Errorf("returned key %q, want to match existing %q", pub, existingLine)
+		}
+	})
+
+	// A Base with no owner key yet accepts --ssh-key unconditionally — there
+	// is nothing to conflict with.
+	t.Run("ssh-key with no existing key succeeds", func(t *testing.T) {
+		startTestAgent(t)
+		priv, line, _ := newTestOwnerKey(t)
+		keyFile := writeKeyFile(t, priv)
+
+		f := &baseTargetFlags{sshKey: keyFile}
+		pub, err := f.ensureOwnerKey("mybase")
+		if err != nil {
+			t.Fatalf("ensureOwnerKey: %v", err)
+		}
+		if !vault.SameAuthorizedKey(pub, line) {
+			t.Errorf("returned key %q, want %q", pub, line)
+		}
+	})
 }
 
 func TestExitCodeFor(t *testing.T) {

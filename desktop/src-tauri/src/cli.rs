@@ -34,14 +34,19 @@ const SIDECAR: &str = "ownbasectl";
 /// an unrestricted bridge would let it run arbitrary commands as the user on
 /// every machine they own. So the bridge names what it allows.
 ///
-/// `ssh` and `tunnel` are absent on purpose. Both take an arbitrary command or
-/// hold an interactive session open, which is exactly the shape of thing this
-/// list exists to keep out of the webview's reach. The app reads *recordings*
-/// of sessions; it does not open them.
+/// This is exactly the set [desktop/src/lib/api.ts](../../src/lib/api.ts)
+/// calls today, not everything `ownbasectl` can do. The allowlist is the
+/// stated XSS boundary, so a subcommand the UI does not use yet — `delete`,
+/// `deploy`, `restore`, `secrets`, and the rest — stays out until some screen
+/// actually calls it; adding one here is one line, at the point a caller in
+/// `api.ts` needs it.
+///
+/// `ssh` and `tunnel` are absent for a second reason on top of that: both take
+/// an arbitrary command or hold an interactive session open, which is exactly
+/// the shape of thing this list exists to keep out of the webview's reach.
+/// The app reads *recordings* of sessions; it does not open them.
 const ALLOWED: &[&str] = &[
-    "adopt", "agent", "backup", "checkup", "config", "create", "db", "delete", "deploy", "keygen",
-    "list", "restore", "secrets", "security", "service", "sessions", "ssh-key", "status",
-    "updates", "upgrade", "vault", "version",
+    "adopt", "agent", "backup", "checkup", "create", "keygen", "list", "sessions", "vault",
 ];
 
 /// What one `ownbasectl` invocation produced.
@@ -210,4 +215,54 @@ pub fn cli_cancel(running: State<'_, Running>, id: String) -> Result<(), String>
         child.kill().map_err(|e| format!("stop the command: {e}"))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn allows_every_subcommand_api_ts_calls() {
+        for cmd in [
+            "adopt", "agent", "backup", "checkup", "create", "keygen", "list", "sessions", "vault",
+        ] {
+            assert!(
+                check_allowed(&args(&[cmd])).is_ok(),
+                "{cmd} should be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn refuses_high_impact_commands_the_ui_never_calls() {
+        // These exist in ownbasectl but no screen in the app calls them today;
+        // the allowlist is the XSS boundary, so they must stay out until one
+        // does — see the ALLOWED doc comment.
+        for cmd in [
+            "delete", "deploy", "config", "secrets", "restore", "service", "security", "status",
+            "updates", "upgrade", "ssh-key", "db", "version",
+        ] {
+            assert!(
+                check_allowed(&args(&[cmd])).is_err(),
+                "{cmd} should be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn refuses_ssh_and_tunnel() {
+        // Both take an arbitrary command or hold an interactive session open —
+        // exactly what this allowlist exists to keep out of the webview.
+        assert!(check_allowed(&args(&["ssh"])).is_err());
+        assert!(check_allowed(&args(&["tunnel"])).is_err());
+    }
+
+    #[test]
+    fn refuses_empty_argv() {
+        assert!(check_allowed(&[]).is_err());
+    }
 }
