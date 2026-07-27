@@ -1,22 +1,40 @@
 # OwnBase
 
-> AI makes it easy to build software. OwnBase makes it easy to own it.
+> Build faster with AI. Own everything.
 
-OwnBase turns a plain Ubuntu machine you rent or own into a **Base**: a hardened, self-maintaining home for everything you build. You own the server, the code, the data, the config, the secrets, and the backups. OwnBase is the operations engineer in between — it does the firewall, the patches, the certificates, the backups, and the recovery, and hands you the keys to all of it.
+**AI builds faster when it owns the whole machine.**
 
-Your server. Your software. No subscriptions, no platform in the middle.
+A coding agent can write an application in an afternoon, then lose the rest of the week to the parts it cannot see through: a provider console, a managed database's dashboard, a deploy service's API, a secrets store, a billing account. Behind each of those it can call the endpoints a vendor chose to expose and nothing else — it cannot read the log, restart the process, or check whether what it just did worked.
+
+A **Base** is one machine you own where none of that is true.
+
+```text
+Without a Base                    With a Base
+
+  agent                             agent
+    ├── deploy platform               │
+    ├── managed database              ▼
+    ├── DNS + TLS panel            one machine you own
+    ├── object storage                │
+    ├── secrets manager               ▼
+    └── a console for each         everything
+```
+
+OwnBase is open-source software that turns a machine you rent or own into that Base: a hardened, self-maintaining home for everything you build. A daemon on the machine does the firewall, the patches, the certificates, the backups, and the recovery, and hands you the keys to all of it.
+
+Your server. Your software. Your copy of OwnBase. No subscriptions, no platform in the middle.
 
 ## Why build here
 
-**Your AI gets a real computer, not a tenancy.** Behind a platform API, an AI agent is a guest: it can call the endpoints the vendor exposed and nothing else. On a Base it has the actual machine. It can read logs, inspect processes, run any open-source software, stand up its own Postgres, and check whether what it just did actually worked. Most of what makes agents unreliable in deployment is missing feedback and missing permission. A Base removes both.
+**Your AI gets a real computer, not a tenancy.** Behind a platform API, an AI agent is a guest. On a Base it has the actual machine. It can read logs, inspect processes, run any open-source software, stand up its own Postgres, and check whether what it just did actually worked. Most of what makes agents unreliable in deployment is missing feedback and missing permission. A Base removes both, which is the entire speed argument: the work lands in one session instead of coming back as a question.
 
-**Owning software used to be the expensive half.** Creating software got cheap; keeping it alive did not. Someone still has to secure it, patch it, renew its certificates, back it up, and recover it at 2 a.m. That is the work OwnBase absorbs, and the reason it exists — see [MISSION.md](MISSION.md).
-
-**Nothing here can be taken away from you.** Config is plain files in a Git repo you control. Every service is built from source, so there is no image registry to lose access to. Secrets decrypt on your machine with a key that never leaves it. Uninstalling OwnBase leaves a working, still-hardened Ubuntu box behind ([docs/uninstall.md](docs/uninstall.md)).
+**You own all of it, including OwnBase.** Config is plain files in a Git repo you control. Every service is built from source, so there is no image registry to lose access to. Secrets decrypt on your machine with a key that never leaves it. OwnBase itself is [MIT-licensed](LICENSE) — fork it, change it, run your own build. Uninstalling leaves a working, still-hardened Ubuntu box behind ([docs/uninstall.md](docs/uninstall.md)).
 
 **Backups are proven, not promised.** Encrypted off-machine snapshots on a schedule, plus a recurring drill that *actually restores* the latest snapshot and verifies it. `ownbasectl checkup` reports whether the Base is provably restorable, not merely "backed up".
 
-**One machine replaces a pile of subscriptions.** Auth, databases, job queues, cron, and every app you build share one modest box and one predictable bill.
+**One machine replaces a pile of subscriptions.** Auth, databases, job queues, cron, and every app you build share one modest box and one predictable bill — and one place for an agent to reason about, instead of six integrations to wire together.
+
+**Owning software used to be the expensive half.** Creating software got cheap; keeping it alive did not. Someone still has to secure it, patch it, renew its certificates, back it up, and recover it at 2 a.m. That is the work a Base absorbs, and the reason OwnBase exists — see [MISSION.md](MISSION.md).
 
 ---
 
@@ -110,7 +128,7 @@ ownbasectl backup setup mybase \
 
 Takes the first snapshot immediately, then schedules hourly snapshots and a daily verified-restore drill. B2 and SFTP repositories work too.
 
-**Save that password somewhere durable.** It is never recoverable from OwnBase — that is precisely what makes the backups yours rather than ours.
+**Save that password somewhere durable.** Nothing can recover it for you — no daemon, no project, no vendor. That is precisely what makes the backups yours alone.
 
 ### 7. Deploy something
 
@@ -200,3 +218,4 @@ Run `checkup` weekly. It is the one command that answers "is anything wrong?" in
 - [docs/foundation/](docs/foundation/): the durable rules of how a Base works — read once, in order.
 - [docs/decisions.md](docs/decisions.md): locked technical decisions, and why the code is the way it is.
 - [docs/development.md](docs/development.md): building, testing, and the invariants to preserve when changing OwnBase itself.
+- [LICENSE](LICENSE): MIT. Your copy of OwnBase is yours to read, change, fork, and ship.

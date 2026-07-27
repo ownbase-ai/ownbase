@@ -4,11 +4,13 @@
 
 ## One sentence
 
-> AI makes it easy to build software. OwnBase makes it easy to own it.
+> Build faster with AI. Own everything.
 
-OwnBase turns a user-controlled Ubuntu machine (their **Base**) into a secure, self-maintaining home for AI-built services. The full why — and the hard constraints every change must respect (user owns everything, nothing is mysterious, operations disappear, every service is ownable, boring technology, no pre-built images) — lives in [MISSION.md](MISSION.md). Do not violate a hard constraint without the user's explicit direction.
+AI builds faster when it owns the whole machine. A **Base** is one machine the user controls, running OwnBase, where an agent has root and can therefore read logs, inspect processes, and verify its own work — instead of calling whatever endpoints a vendor chose to expose. The user owns all of it: the server, the code, the data, the config, the secrets, the backups, the domains, and OwnBase itself, which is MIT-licensed and forkable.
 
-When in doubt: does this make the user **more of an owner** and **less of a sysadmin**? If not, it is probably the wrong move.
+The full why — and the hard constraints every change must respect (user owns everything, nothing is mysterious, operations disappear, every service is ownable, boring technology, no pre-built images) — lives in [MISSION.md](MISSION.md). Do not violate a hard constraint without the user's explicit direction.
+
+When in doubt: does this make the user **more of an owner** and **less of a sysadmin**? If not, it is probably the wrong move. Ownership is what produces the speed, so giving some of it up never buys velocity.
 
 ## Job 1: Setting up a new Base
 

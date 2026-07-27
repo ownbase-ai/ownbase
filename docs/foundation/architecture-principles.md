@@ -7,7 +7,7 @@ The mental model for the whole system:
 > A **managed GitOps installation**, not a black-box platform.
 > The user's server is the runtime.
 > The user's Git repo is the source of truth.
-> OwnBase is the operator that keeps it secure, updated, backed up, and understandable.
+> The daemon is the operator that keeps it secure, updated, backed up, and understandable.
 
 ## The principles
 
@@ -23,7 +23,7 @@ Where state could live in a vendor database or in the user's repo, it lives in t
 
 ### 3. Plain files over proprietary formats
 
-Configuration and state are human-readable files (YAML, plain text, standard formats) — never opaque blobs only our tools can open. A user (or their AI) should be able to open any file and understand what it does. See [service-constitution.md](service-constitution.md), rule 4.
+Configuration and state are human-readable files (YAML, plain text, standard formats) — never opaque blobs that only one specific tool can open. A user (or their AI) should be able to open any file and understand what it does. See [service-constitution.md](service-constitution.md), rule 4.
 
 ### 4. Reversible over irreversible
 
@@ -114,17 +114,17 @@ Any AI must be able to operate a Base without guessing, through two surfaces tha
 
 ### 12. Durable by design, not highly available
 
-A Base is one machine, and one machine is a single point of failure: a disk, a provider outage, or a bad kernel can take it offline. We are honest about this rather than implying uptime we do not provide. The commitment is **durability, not availability**:
+A Base is one machine, and one machine is a single point of failure: a disk, a provider outage, or a bad kernel can take it offline. Say that plainly rather than implying uptime a single box cannot deliver. The commitment is **durability, not availability**:
 
 - **Data is never lost.** Backups are continuous and off-machine, verified by actually restoring them, not just confirming they ran.
 - **Recovery is fast and rehearsed.** Restores are drilled so that when a machine dies, a new one comes up from the repo plus the latest verified backup quickly, with no data loss.
-- **Uptime is best-effort for a single Base.** We do not promise multi-nines on one machine.
+- **Uptime is best-effort for a single Base.** Multi-nines on one machine is not promised anywhere.
 
-"We will never lose your data" is a promise backed by a real, testable mechanism (`ownbasectl backup`, `ownbasectl restore`). "You will never be down" is a promise a single machine cannot make, and we do not make it.
+"Your data will not be lost" is a claim backed by a real, testable mechanism (`ownbasectl backup`, `ownbasectl restore`). "You will never be down" is a claim a single machine cannot support, so it is never made.
 
 ### 13. Isolation limits blast radius
 
-Every service the user deploys — especially AI-generated code — runs with the minimum surface area necessary. Colocation on one machine is a performance and cost advantage, but it also means a compromised or misbehaving service could reach the database, the secrets vault, or other services if left unchecked. We manage that risk structurally, not by trusting the code:
+Every service the user deploys — especially AI-generated code — runs with the minimum surface area necessary. Colocation on one machine is a performance and cost advantage, but it also means a compromised or misbehaving service could reach the database, the secrets vault, or other services if left unchecked. That risk is contained structurally, not by trusting the code:
 
 - **Per-service containers, least privilege.** Each service runs in its own container with **every Linux capability dropped by default** — a service that needs one back must declare it (`add_capabilities:`), which is why binding a privileged port is an explicit, visible decision. No privileged daemon, no shared runtime socket, and no service mounts volumes from another service or from system directories.
 - **Scoped secrets.** Each service receives only the secrets it is declared to need. No service can enumerate or read another service's secrets. Secrets are age-encrypted and injected at start — see [ownbase-yaml.md](../ownbase-yaml.md), "Secrets".
@@ -138,6 +138,6 @@ Every action the daemon takes is drawn from a closed taxonomy (`internal/schema/
 
 ## The standard against which to judge any design
 
-> If OwnBase disappeared tomorrow, the user would still have a working, understandable Ubuntu machine with all their code, data, and services intact — and could keep running everything without us.
+> If OwnBase disappeared tomorrow, the user would still have a working, understandable Ubuntu machine with all their code, data, and services intact — and could keep running everything without it.
 
 Any architecture that cannot honestly make that claim is wrong, no matter how convenient it is.

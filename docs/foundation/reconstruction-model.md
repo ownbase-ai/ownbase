@@ -4,7 +4,7 @@
 
 ## The one durable idea
 
-Most self-hosting tools are *push-based*: a human runs a deploy from a laptop and the box's true state is never written down in one place. OwnBase inverts this into a single invariant that everything else serves.
+Most deploy tooling is *push-based*: a human runs a deploy from a laptop and the box's true state is never written down in one place. A Base inverts this into a single invariant that everything else serves.
 
 **The ownership invariant.** Three artifacts are sufficient to reconstruct a working Base on any fresh machine, without OwnBase or any vendor:
 
