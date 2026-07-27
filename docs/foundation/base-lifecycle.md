@@ -20,11 +20,11 @@ flowchart LR
 
 ### 1. Create
 
-The user brings infrastructure they own (or a local VM for testing) and a Base comes into existence. A user-owned Git repo and the `ownbase.yaml` control file are established as the source of truth.
+The user brings infrastructure they own (or a local VM for testing) and a Base comes into existence. It is then pointed at a user-owned Git repo, where the `ownbase.yaml` control file becomes the source of truth.
 
-- **Driven by:** the user, one command.
+- **Driven by:** the user, or an AI acting for them.
 - **Daemon job:** reconcile (bootstrap the Base toward the repo).
-- **CLI:** `ownbasectl create <base> [--remote user@host]`
+- **CLI:** `ownbasectl keygen <base>` → the user creates the server → `ownbasectl create <base> --remote user@host --wait` → `ownbasectl config setup <base> --repo <url>`. Walkthrough in [README.md](../../README.md#setting-up-a-base).
 
 ### 2. Secure
 
@@ -48,7 +48,7 @@ A service goes live. The daemon generates the boring deployment details (Quadlet
 
 - **Driven by:** the commit; the daemon reconciles.
 - **Daemon job:** reconcile.
-- **CLI:** none directly — triggered by `git push` to the Base; `ownbasectl status <base>` to confirm it landed.
+- **CLI:** `ownbasectl deploy <base> <service> --ref <ref>` — it pushes the pinned commit to the external config repo and asks the Base to reconcile. `ownbasectl status <base>` to confirm it landed.
 
 ### 5. Observe
 
@@ -60,7 +60,7 @@ The everyday stage. The Base watches itself and reports in plain language: healt
 
 ### 6. Update
 
-The Base stays current without the user becoming a maintainer. User services update by editing `ref:` in `ownbase.yaml` and committing (or `ownbasectl service update --ref`). The core package (Caddy) updates via a dedicated command.
+The Base stays current without the user becoming a maintainer. User services update by moving `ref:` in `ownbase.yaml` — `ownbasectl deploy` is the command that resolves a branch or tag to a concrete commit and pins it. The core package (Caddy) updates via a dedicated command.
 
 - **Driven by:** the user or their AI (editing `ref:`); `ownbasectl` for core packages.
 - **Daemon job:** reconcile.

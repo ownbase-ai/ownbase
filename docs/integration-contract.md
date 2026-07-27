@@ -77,7 +77,8 @@ OwnBase enforces these unconditionally for every service:
 
 | Property | Mechanism |
 |---|---|
-| Rootless container | Podman rootless; no root process |
+| All Linux capabilities dropped | Every unit emits `DropCapability=ALL`; anything a service needs back must be declared in `add_capabilities:` |
+| No privilege escalation | Every unit emits `NoNewPrivileges=true` |
 | Per-service user namespace | Podman user namespace isolation |
 | Per-capability network | Service joins only the networks of its declared `requires:` |
 | Scoped secrets | Service receives only the secrets in `/opt/ownbase/secrets/<name>.yaml.age`; scoping is structural, not policy-based |

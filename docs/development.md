@@ -93,13 +93,13 @@ go run ./cmd/ownbasectl config get ownbase-fresh
 
 ## Local HTTPS via tunnel (`ownbasectl tunnel`)
 
-`create`/`vm start|stop|restart` are guaranteed to never prompt for anything — they must stay safe for an AI agent to run unattended — so they carry no TLS logic of any kind. A fresh local VM therefore has no domain, no public ports, and no real HTTPS. To see a service over trusted HTTPS locally, add a `domain:`/`domains:` to it in `ownbase.yaml` and run:
+`create` is guaranteed to never prompt on the remote path — it must stay safe for an AI agent to run unattended — so it carries no TLS logic of any kind. A fresh local VM therefore has no domain, no public ports, and no real HTTPS. To see a service over trusted HTTPS locally, add a `domain:`/`domains:` to it in `ownbase.yaml` and run:
 
 ```bash
 go run ./cmd/ownbasectl tunnel ownbase-fresh
 ```
 
-This is the one command allowed to prompt (a one-time `sudo mkcert -install`). It opens an SSH tunnel directly to the service's container port (bypassing Caddy) and serves it at `https://<domain>.localhost:8443`. See [ownbase-yaml.md](ownbase-yaml.md#local-https-during-development-ownbasectl-tunnel) and [decisions.md](decisions.md#ssh-tunnel-bridge-ownbasectl-tunnel) for the full design. There is no code-sync — iterate by pushing to the service's git host and running `ownbasectl deploy`, exactly as in production.
+This is the one command allowed to prompt (a one-time `sudo mkcert -install`). It opens an SSH tunnel directly to the service's container port (bypassing Caddy) and serves it at `https://<domain>.localhost:8443`. See [ownbase-yaml.md](ownbase-yaml.md#local-https-via-tunnel-ownbasectl-tunnel) and [decisions.md](decisions.md#ssh-tunnel-bridge-ownbasectl-tunnel) for the full design. There is no code-sync — iterate by pushing to the service's git host and running `ownbasectl deploy`, exactly as in production.
 
 ## Agent-level bootstrap tests
 

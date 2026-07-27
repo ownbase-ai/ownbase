@@ -27,7 +27,7 @@
 | Set a secret | `ownbasectl secrets set <base> <service> KEY=value` |
 | Full health check | `ownbasectl checkup <base>` |
 | Diagnose a failure | `journalctl -u ownbased -f` on the Base; see [troubleshooting.md](troubleshooting.md) |
-| Audit what the daemon did | `/opt/ownbase/logs/audit.jsonl` on the Base |
+| Audit what the daemon did | `/opt/ownbase/logs/audit.log` on the Base (newline-delimited JSON) |
 
 ## When something is broken
 

@@ -122,9 +122,9 @@ services:
 
 An `internal: true` service is reachable via `ownbasectl tunnel` at `https://admin.example.com.localhost:8443`, but the compiler emits no Caddy route for it, so it is never accessible from the internet even if DNS points at the Base.
 
-## Local HTTPS via tunnel (`ownbasectl tunnel`) {#local-https-during-development-ownbasectl-tunnel}
+## Local HTTPS via tunnel (`ownbasectl tunnel`)
 
-A fresh Base has no domain configured anywhere, so it never opens 80/443 and Caddy never gets a real Let's Encrypt certificate — there's no way to see it over trusted HTTPS the way a real deployed Base would be seen. `ownbasectl tunnel <name>` solves this without touching `create`/`vm` (which must stay perfectly agent-safe: zero prompts, ever):
+A fresh Base has no domain configured anywhere, so it never opens 80/443 and Caddy never gets a real Let's Encrypt certificate — there's no way to see it over trusted HTTPS the way a real deployed Base would be seen. `ownbasectl tunnel <name>` solves this without touching `create`, which must stay perfectly agent-safe: zero prompts, ever.
 
 ```bash
 ownbasectl tunnel mybase

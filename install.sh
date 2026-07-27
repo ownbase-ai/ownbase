@@ -273,9 +273,16 @@ grant_admin_group_access() {
 
 install_binary() {
     mkdir -p "$OWNBASE_DAEMON_DIR"
-    cp "${_DAEMON_TMPDIR}/ownbased" "$OWNBASE_DAEMON_BIN"
-    chown "${OWNBASE_USER}:${OWNBASE_GROUP}" "$OWNBASE_DAEMON_BIN"
-    chmod 0755 "$OWNBASE_DAEMON_BIN"
+    # Stage beside the target, then rename into place. Copying directly over
+    # the daemon fails with ETXTBSY whenever ownbased is already running,
+    # which is every re-run — and re-running the installer after a failure is
+    # the documented recovery. A rename swaps the directory entry instead;
+    # the running process keeps the old inode until it is restarted below.
+    local staged="${OWNBASE_DAEMON_BIN}.new"
+    cp "${_DAEMON_TMPDIR}/ownbased" "$staged"
+    chown "${OWNBASE_USER}:${OWNBASE_GROUP}" "$staged"
+    chmod 0755 "$staged"
+    mv -f "$staged" "$OWNBASE_DAEMON_BIN"
     rm -rf "${_DAEMON_TMPDIR}"
     info "Daemon binary installed to $OWNBASE_DAEMON_BIN"
 }
@@ -406,7 +413,11 @@ enable_service() {
     mkdir -p /etc/fail2ban/jail.d
 
     systemctl enable ownbased
-    systemctl start ownbased
+    # restart, not start: `start` is a no-op when the daemon is already
+    # running, which would leave a re-run still executing the old binary that
+    # install_binary just replaced. The daemon's reconcile is resumable, so
+    # restarting a healthy one is safe.
+    systemctl restart ownbased
     info "ownbased service enabled and started"
     info ""
     info "The daemon is now running. Follow its progress with:"

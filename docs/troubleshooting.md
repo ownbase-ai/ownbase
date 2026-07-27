@@ -11,7 +11,53 @@ multipass exec <name> -- journalctl -u ownbased -f # local VM
 
 ---
 
+## `create` preflight failures (exit code 3)
+
+Preflight runs before `create` changes anything on the target, so every failure here leaves the machine exactly as it was. Fix the cause and re-run the same command.
+
+### "did not accept SSH within 5m"
+
+The server never came up, or is not reachable at that address. Confirm it is running in the provider's console and that the IP is right. A machine still booting just needs longer: `--wait-for-ssh 10m`. A provider firewall or security group blocking port 22 produces the same symptom.
+
+### "rejected the key ... make sure this key was pasted into the provider's SSH key field"
+
+The server is up but does not recognise your key, and waiting will not fix it. The usual causes:
+
+- The key was not pasted in when the machine was created. Most providers cannot add a key to an existing machine without a rebuild — check yours before recreating it.
+- A *different* key was pasted. `ownbasectl keygen <name>` prints the right one; it is idempotent, so run it again to see it.
+- The login user is wrong. Provider images differ: `root` on most, `ubuntu` on some AWS and Azure images. Pass `--ssh-user ubuntu`.
+
+### "cannot run sudo without a password prompt"
+
+The login user needs passwordless sudo, because the installer configures the host. Either log in as root (`--ssh-user root`) or add the user to a NOPASSWD sudoers rule.
+
+### "runs Ubuntu X, but OwnBase requires 22.04 or newer" / "is armv7l"
+
+The image is wrong for OwnBase. Rebuild the server with a stock Ubuntu 22.04 or 24.04 image on x86_64 or aarch64. OwnBase does not support Debian, Alpine, or RHEL derivatives.
+
+### "has N MB of RAM, below the floor" / "has an N GB root disk"
+
+The machine is too small to build a service from source. See [sizing](../README.md#how-big-a-machine) — the floor is set by build peaks, not by what the services use at rest.
+
+### "already points at <host> in ~/.ownbase/config" (exit code 6)
+
+That Base name is registered against a different machine, and overwriting it would discard the old server's API token, leaving it running and unreachable. Use a different name, remove the stale profile with `ownbasectl delete <name> --keep-vm`, or pass `--replace` if you really are moving the name.
+
+You can also hit this when it *is* the same machine, reached by a different address — you created the Base by hostname and retried with the IP, or the other way round. The comparison is on the address as written (normalized for case, whitespace, a trailing dot, and IPv6 spelling), and it does not resolve DNS on purpose: a hostname that has since been repointed would resolve to the new server and silently approve discarding the old one's token. When you know both addresses are the same machine, `--replace` is the right answer and costs nothing.
+
+---
+
 ## `create` / install failures
+
+### "was installed but its daemon did not report healthy" (exit code 5)
+
+The install succeeded and the profile is registered; the daemon just did not finish pass zero within `--wait-timeout`. It is almost certainly still working — hardening a slow or small machine can take several minutes. Watch it:
+
+```bash
+ssh root@<host> journalctl -u ownbased -f
+```
+
+Then `ownbasectl status <name>` once it settles. Nothing needs re-running.
 
 ### The installer fails partway through (pass zero)
 
@@ -45,9 +91,10 @@ grep -v '<host>' ~/.ownbase/known_hosts > /tmp/kh && mv /tmp/kh ~/.ownbase/known
 
 ### "ssh: unable to authenticate" / connection refused
 
-- Check the profile: `ownbasectl list` shows host, and `~/.ownbase/config` holds `ssh_user`, `ssh_key`, and `ssh_port` per profile. Remote installs connect as `root` by default; local VMs use `ubuntu`.
-- Confirm the key works outside ownbasectl: `ssh -i ~/.ssh/id_ed25519 root@<host>`.
-- If sshd listens on a non-standard port, set `ssh_port` in the profile (or `--ssh-port` at create time so UFW allows it).
+- Check the profile: `ownbasectl list` shows the host, and `~/.ownbase/config` holds `ssh_user`, `ssh_key`, and `ssh_port` per profile. Remote installs connect as `root` by default; local VMs use `ubuntu`.
+- Confirm the key works outside ownbasectl: `ssh -i ~/.ssh/ownbase_<name> root@<host>`.
+- `create` uses `~/.ssh/ownbase_<name>` when it exists and `~/.ssh/id_ed25519` otherwise, and records the choice in the profile. If you created the server with a different key, point at it with `--ssh-key`.
+- If sshd listens on a non-standard port, set `ssh_port` in the profile, or pass `--ssh-port` at create time so UFW opens it and fail2ban jails the right port.
 
 ### "unauthorized — check that your token is correct"
 
@@ -131,4 +178,4 @@ systemctl restart ownbased
 
 ## Still stuck?
 
-`ownbasectl checkup <name>` aggregates most health signals with the command that fixes each finding. For anything the daemon did or refused to do, the audit log on the Base (`/opt/ownbase/logs/audit.jsonl`) records every action with its outcome.
+`ownbasectl checkup <name>` aggregates most health signals with the command that fixes each finding. For anything the daemon did or refused to do, the audit log on the Base (`/opt/ownbase/logs/audit.log`, newline-delimited JSON) records every action with its outcome.

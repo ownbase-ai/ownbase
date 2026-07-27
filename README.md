@@ -2,68 +2,117 @@
 
 > AI makes it easy to build software. OwnBase makes it easy to own it.
 
-Grab a server or VM (cloud, home lab, anywhere) and OwnBase turns it into a **Base**: a hardened, self-updating home for your entire application layer. Everything above the OS is yours: services, databases, data, all running on hardware you control, with no third-party platform standing in between.
+OwnBase turns a plain Ubuntu machine you rent or own into a **Base**: a hardened, self-maintaining home for everything you build. You own the server, the code, the data, the config, the secrets, and the backups. OwnBase is the operations engineer in between — it does the firewall, the patches, the certificates, the backups, and the recovery, and hands you the keys to all of it.
 
-🫵 Your server &nbsp; 🫵 Your software &nbsp; 🚫 No subscriptions
+Your server. Your software. No subscriptions, no platform in the middle.
 
-## Why you'd want this
+## Why build here
 
-- **You own everything.** The code, the server, the data, the config, the secrets, the backups, the domains. Nothing can be repriced, rate-limited, or shut down on you — and when you want to leave, you take all of it ([docs/uninstall.md](docs/uninstall.md)).
-- **Your AI builds faster here.** Behind a platform API, your AI is a tenant; on a Base, it has the real machine. It can debug like an engineer, run any open-source software, stand up its own databases, and operate everything without guessing — the config repo's README carries the full operating contract, and one command returns the live status.
-- **The sysadmin work disappears.** Firewall, intrusion protection, automatic security updates, TLS certificates, CVE scanning: set up during `create`, maintained by the daemon after. `ownbasectl checkup` tells you in plain language whether anything needs a glance.
-- **Your data is provably safe.** Encrypted off-machine snapshots every hour, and a daily drill that _actually restores_ the latest backup and checks it. "Restorable" is a measured fact, not a checkbox.
-- **One machine replaces a pile of subscriptions.** Auth, databases, job queues, and every app you build run together on one modest box — one predictable bill instead of a per-seat, per-usage sprawl.
-- **No lock-in, structurally.** Every service is removable, forkable, and replaceable; config is plain files in a Git repo you own; uninstalling OwnBase leaves a working, still-hardened Ubuntu machine behind.
+**Your AI gets a real computer, not a tenancy.** Behind a platform API, an AI agent is a guest: it can call the endpoints the vendor exposed and nothing else. On a Base it has the actual machine. It can read logs, inspect processes, run any open-source software, stand up its own Postgres, and check whether what it just did actually worked. Most of what makes agents unreliable in deployment is missing feedback and missing permission. A Base removes both.
+
+**Owning software used to be the expensive half.** Creating software got cheap; keeping it alive did not. Someone still has to secure it, patch it, renew its certificates, back it up, and recover it at 2 a.m. That is the work OwnBase absorbs, and the reason it exists — see [MISSION.md](MISSION.md).
+
+**Nothing here can be taken away from you.** Config is plain files in a Git repo you control. Every service is built from source, so there is no image registry to lose access to. Secrets decrypt on your machine with a key that never leaves it. Uninstalling OwnBase leaves a working, still-hardened Ubuntu box behind ([docs/uninstall.md](docs/uninstall.md)).
+
+**Backups are proven, not promised.** Encrypted off-machine snapshots on a schedule, plus a recurring drill that *actually restores* the latest snapshot and verifies it. `ownbasectl checkup` reports whether the Base is provably restorable, not merely "backed up".
+
+**One machine replaces a pile of subscriptions.** Auth, databases, job queues, cron, and every app you build share one modest box and one predictable bill.
 
 ---
 
-## Walkthrough: zero to a running, backed-up service
+## Setting up a Base
 
-Everything below is driven by `ownbasectl`, the CLI you run on your own machine. Each step builds on the last; a fresh Base with no services is safe (it exposes nothing but SSH), so nothing here is riskier than reading it. For the full reference and edge cases, see [INSTALL.md](INSTALL.md) and [docs/cli.md](docs/cli.md).
+This section is written to be executed top to bottom, by a person or by an AI agent working on their behalf. It takes about ten minutes, most of which is waiting.
 
-### 1. Install `ownbasectl`
+There is exactly one step a human must do, because server providers require a human with a credit card: **creating the machine**. Everything on either side of that is a command.
+
+### 1. Install the CLI
+
+`ownbasectl` runs on your own computer (macOS or Linux), not on the server.
 
 ```bash
 brew install --cask ownbase-ai/tap/ownbasectl
+ownbasectl version
 ```
 
-No Homebrew? A manual install script (verifies the release checksum, no Go toolchain needed) is in [INSTALL.md](INSTALL.md#install-ownbasectl). Verify either way with `ownbasectl version`.
+No Homebrew? [INSTALL.md](INSTALL.md#install-ownbasectl) has a checksum-verified install script.
 
-### 2. Create a Base
+### 2. Create the SSH key
+
+A provider authorizes an SSH key when the machine is created, so the key has to exist first.
 
 ```bash
-# Local VM, for trying things out (needs Multipass: brew install --cask multipass)
-ownbasectl create mybase
-
-# ...or a fresh Ubuntu 22.04/24.04 server you already provisioned
-ownbasectl create mybase --remote root@mybase.example.com \
-  --caddy-email you@example.com
+ownbasectl keygen mybase
 ```
 
-One command: provisions the target, hardens it (Podman, UFW, fail2ban, unattended-upgrades, CVE scanning), installs and verifies the signed `ownbased` daemon, and registers the Base in `~/.ownbase/config` — nothing to copy-paste. A freshly created Base has no domain configured anywhere, so it exposes nothing but SSH externally.
+This writes `~/.ssh/ownbase_mybase` and prints the public half. Re-running it is safe — an existing key is printed, never replaced. Each Base gets its own key, so retiring one Base revokes exactly one credential.
+
+### 3. Create the server
+
+This is the human step. In your provider's console, create a machine that is:
+
+- **Ubuntu 24.04** (22.04 also works)
+- **at least 2 GB RAM and 20 GB disk** — see [sizing](#how-big-a-machine) below
+- created with **the public key from step 2 pasted into the provider's "SSH key" field**
+- reachable as root over SSH, which is the default on nearly every provider image
+
+Any provider works: Hetzner, OVHcloud, DigitalOcean, Vultr, Scaleway, or a machine in a closet. OwnBase has no provider integration and needs none.
+
+The key must be pasted **when the machine is created**. Most providers cannot add one to an existing machine without rebuilding it.
+
+When it finishes booting, note its **IP address**.
+
+> **Agent:** you cannot do this step — it needs a human with a payment method. Show them the public key from step 2, the four requirements above, and ask for the IP address when the machine is up.
+
+### 4. Install OwnBase
 
 ```bash
-ownbasectl status mybase       # confirm it's up
+ownbasectl create mybase --remote root@<ip> --wait
 ```
 
-### 3. Point the Base at a config repo
+One command, unattended, no prompts. It waits for the new server to start accepting SSH, checks the machine is fit before changing anything on it, installs and signature-verifies the daemon, hardens the host (Podman, UFW, fail2ban, automatic security updates, CVE scanning), and registers the Base locally so every other command works immediately.
 
-`ownbase.yaml` — the single source of truth for the Base — lives in an **external git repo you own** (e.g. on GitHub). The Base only ever *reads* it; every change is committed client-side by `ownbasectl` with your git credentials. First give the Base a read-only deploy identity, then point it at the repo:
+`--wait` blocks until hardening has actually finished. Without it the command returns a minute or two early, while the daemon is still working.
+
+Add `--caddy-email you@example.com` if services will be on public domains — it is the ACME contact for automatic TLS certificates. Add `--json` for machine-readable output.
+
+A fresh Base exposes nothing but SSH, so there is nothing to secure yet and no rush to the next step.
+
+### 5. Point the Base at a config repo
+
+`ownbase.yaml` is the single source of truth for what runs on the Base. It lives in a **Git repo you own** (on GitHub or anywhere else). The Base only ever reads it; every change is committed from your machine with your credentials.
+
+The Base needs read access, so give it a deploy key first:
 
 ```bash
-ownbasectl ssh-key mybase add --host github.com   # prints an ed25519 public key
-# → register that key as a read-only deploy key on your config repo (and each service repo)
-
-ownbasectl config setup mybase \
-  --repo git@github.com:you/mybase-config.git --init   # --init seeds an empty repo with a starter ownbase.yaml
-ownbasectl config get mybase   # see the starter ownbase.yaml
+ownbasectl ssh-key add mybase --host github.com
 ```
 
-The starter config is a working **Postgres 17 with point-in-time recovery**, not an empty file: a `postgres` service plus the `pgbackrest` repository host that owns its WAL archive and base backups, with the SSH keypair and database password generated by the Base itself on the first reconcile. Delete both services if this Base needs no database. See [`config setup`](docs/cli.md#config-setup-name---repo-url---ref-branch---init) for what each setting does and why.
+Add the printed key as a **read-only deploy key** on the config repo, and on each service repo the Base will build from. (This is a human step too — it needs access to the repo's settings.) Then:
 
-### 4. Add and deploy a service
+```bash
+ownbasectl config setup mybase --repo git@github.com:you/mybase-config.git --init
+ownbasectl config get mybase
+```
 
-Declare a service, then deploy a ref — the daemon clones the external repo and builds it from source, health-gated. [`traefik/whoami`](https://github.com/traefik/whoami) is a good first service to try: a tiny, dependency-free Go web server (commonly used to smoke-test reverse proxies) that just echoes back request info, with a `Dockerfile` already at the repo root:
+`--init` seeds an empty repo with a working starter config: Postgres 17 with point-in-time recovery, plus the pgBackRest repository host that owns its WAL archive. The database password and its SSH keypair are generated by the Base itself on the first reconcile. Delete both services if this Base needs no database.
+
+### 6. Turn on backups
+
+Do this before there is data worth losing.
+
+```bash
+ownbasectl backup setup mybase \
+  --repo s3:s3.amazonaws.com/my-bucket/ownbase \
+  --password <a-strong-password> \
+  --aws-access-key-id AKIA... --aws-secret-access-key ...
+```
+
+Takes the first snapshot immediately, then schedules hourly snapshots and a daily verified-restore drill. B2 and SFTP repositories work too.
+
+**Save that password somewhere durable.** It is never recoverable from OwnBase — that is precisely what makes the backups yours rather than ours.
+
+### 7. Deploy something
 
 ```bash
 ownbasectl service add mybase hello \
@@ -71,159 +120,83 @@ ownbasectl service add mybase hello \
   --port 80 --domain hello.example.com \
   --add-capabilities NET_BIND_SERVICE
 
-ownbasectl deploy mybase hello --ref master   # resolve master -> SHA, commit it, reconcile
+ownbasectl deploy mybase hello --ref master
+ownbasectl status mybase
 ```
 
-`--repo` points at an external Git repo the daemon keeps a read-only clone of; there's no image registry involved — every user service is built locally on the Base from source at the pinned `ref:`. `deploy` resolves your ref (branch, tag, or SHA) to a concrete commit, commits it to your config repo, and asks the Base to pull and reconcile — the single, explicit way to move a service to a new version. See [docs/ownbase-yaml.md](docs/ownbase-yaml.md) for the full schema.
+`service add` declares the service; `deploy` resolves the ref to a commit, pins it in the config repo, and asks the Base to build and start it, health-gated. The daemon clones the repo and builds it from source on the Base — there is no image registry anywhere in this.
 
-`--add-capabilities` is only needed here because every container starts with every Linux capability dropped, and `whoami` listens directly on port 80 — a privileged port. Most images listen on an unprivileged port (3000, 8080, ...) by default and never need this flag at all.
+`--add-capabilities` appears here only because every container starts with all Linux capabilities dropped and `whoami` binds port 80, a privileged port. Most services listen on 3000 or 8080 and never need it.
 
-```bash
-ownbasectl status mybase   # confirm "hello" is running and healthy
-```
-
-### 5. Access the service locally
-
-On a local VM, services have no DNS records, so Caddy never gets a real certificate and there's no URL to browse to. `ownbasectl tunnel` solves this: it reaches the service directly over SSH and serves it at a locally-trusted HTTPS URL:
-
-```bash
-ownbasectl tunnel mybase
-```
-
-```
-ownbasectl: reading ownbase.yaml from "mybase" ...
-ownbasectl: opening 1 SSH tunnel(s) to "mybase" ...
-ownbasectl: generating local HTTPS certificate for 1 hostname(s) ...
-
-Tunneling:
-  https://hello.example.com.localhost:8443
-
-No code-sync — push to the service's git host and run `ownbasectl deploy` to roll out changes.
-Press Ctrl+C to stop.
-```
-
-Open that URL — it works fully offline, needs no `/etc/hosts` entry, and stays the same across VM restarts. `tunnel` also works for accessing internal services on a live server.
-
-To iterate, push new code to the service's git host and roll it out with `ownbasectl deploy mybase hello --ref <branch>` — the daemon rebuilds and restarts it, and the tunnel picks up the change automatically. Once DNS points at the Base, the service is reachable through Caddy with a real Let's Encrypt certificate.
-
-### 6. Set up backups
-
-Not optional — do this right after `create`, before you have data you'd miss:
-
-```bash
-ownbasectl backup setup mybase \
-  --repo s3:s3.amazonaws.com/my-bucket/ownbase \
-  --password <a-strong-restic-password> \
-  --aws-access-key-id AKIA... --aws-secret-access-key ...
-```
-
-This runs the first snapshot immediately and schedules hourly snapshots plus a daily verified-restore drill by default (`--interval`/`--verify-interval` to change either). B2 and SFTP repos work too — see [docs/cli.md](docs/cli.md#backup-setuprunstatus-name). **Save the password somewhere durable — it is never recoverable from OwnBase.**
-
-```bash
-ownbasectl backup run mybase       # trigger an extra snapshot on demand
-ownbasectl backup status mybase    # last snapshot, restorable?, last verify drill
-```
-
-If this Base has a Postgres, it also has point-in-time recovery, and two commands for it:
-
-```bash
-ownbasectl db status mybase        # how far back it can be recovered, and whether that window is still moving
-ownbasectl db restore mybase --to "2026-07-25 14:00:00+00"
-```
-
-`db restore` defaults to a scratch instance beside production, so a recovery starts by looking at what came back rather than by replacing anything. `--into production` does the replacement, and takes a fresh full backup afterwards. See [docs/cli.md](docs/cli.md#db-status-name).
-
-### 7. Restore from backups
-
-Whether the machine was lost or you tore it down yourself, rebuild onto a fresh VM or server with the same repo and password:
-
-```bash
-ownbasectl backup status mybase   # confirm "restorable: true" first — restore refuses an unverified snapshot without --force
-ownbasectl restore mybase \
-  --repo s3:s3.amazonaws.com/my-bucket/ownbase \
-  --password <the-restic-password>
-```
-
-This provisions a fresh target (add `--remote <host>` for a fresh server), installs the daemon, restores the latest verified snapshot — the Base's own Git repo included, not just service data — and lets the daemon's normal reconcile bring every service back up.
-
-### 7. Run a checkup
-
-A single, plain-language health report — run it regularly (weekly is reasonable):
-
-```bash
-ownbasectl checkup mybase
-```
-
-It combines intrusion/access monitoring, network exposure, CVE scan results, per-service update drift, and backup health into one report, with the exact fix command next to each finding.
+No DNS yet? `ownbasectl tunnel mybase` serves the Base's services at trusted local HTTPS URLs over SSH, which works offline and needs no `/etc/hosts` entry.
 
 ---
 
-## Other things you can do
+## How big a machine
 
-| Feature                  | Command                                                          | What it's for                                                                                                            |
-| ------------------------ | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| See what's deployed      | `ownbasectl status mybase`                                       | Services, security posture, recent daemon actions (`--json` for the full API payload)                                    |
-| Track available updates  | `ownbasectl updates mybase`                                      | Per-service commits-behind and newest semver tag; you update by editing `ref:`                                           |
-| Security posture & CVEs  | `ownbasectl security mybase`, `security scan`, `security fix`    | Exposure + SSH access report, on-demand CVE rescan, `apt-get upgrade` on the host                                        |
-| Upgrade the core package | `ownbasectl upgrade mybase [--apply]`                            | Updates Caddy — the one package OwnBase manages outside `ownbase.yaml`                                                   |
-| Recover Postgres        | `ownbasectl db status mybase`, `db restore mybase --to <time>`    | Recovery window and archiver health; point-in-time recovery into a scratch instance or over production                    |
-| Manage secrets           | `ownbasectl secrets list\|get\|set\|delete mybase <service> ...` | Per-service secrets, age-encrypted on the Base, injected as env vars at container start                                  |
-| Edit config as data      | `ownbasectl config get\|set mybase`                              | Read/replace the whole `ownbase.yaml` non-interactively — handy for scripts and agents                                   |
-| Manage multiple Bases    | `ownbasectl list`, `ownbasectl adopt`, `ownbasectl delete`       | See all profiles/VMs, register a Base installed another way, tear one down                                               |
-| Export everything        | see [docs/uninstall.md](docs/uninstall.md)                       | Clone every repo, export every volume, read out every secret — in standard formats                                       |
-| Retire a Base            | see [docs/uninstall.md](docs/uninstall.md)                       | Remove OwnBase from the machine; the pass-zero hardening (UFW, fail2ban, updates) stays, so it's still a safe Ubuntu box |
+Services cost almost nothing at rest. What sets the floor is that **every service is built from source on the Base**, and a build's peak is far larger than the container it produces.
+
+Measured on a 2 vCPU / 2 GB Ubuntu 24.04 Base:
+
+| | Idle memory |
+|---|---|
+| Ubuntu + OwnBase daemon + Caddy | ~265 MB |
+| A compiled service (Go) | ~1.5 MB |
+| A Node service | ~8 MB |
+| Postgres 17 | ~4 MB |
+
+| Build | Peak above idle | Time |
+|---|---|---|
+| Go service, multi-stage | ~360 MB | 45 s |
+| Next.js app (`npm install` + build) | ~460 MB | 75 s |
+
+So the rule is: **~300 MB for the system, ~500 MB of headroom for the single largest build, and then your services**, which are cheap until they take traffic.
+
+| Machine | Comfortable for |
+|---|---|
+| 2 GB RAM, 20 GB disk | The floor. A few small apps and a database. Builds succeed, one at a time. |
+| 4 GB RAM, 40 GB disk | Where most people should start. Roughly a dozen apps plus Postgres doing real work. |
+| 8 GB RAM, 80 GB disk | Dozens of apps and several databases, without thinking about it. |
+
+Disk fills faster than memory. Bare Ubuntu is about 2 GB; add OwnBase, Caddy, and a first service and you are near 4 GB; each additional build toolchain (a Go builder image, a Node one) caches roughly another gigabyte of layers.
+
+None of this is a commitment. Providers resize machines, and `ownbasectl restore` rebuilds a Base onto a bigger one from its backups. Start small.
 
 ---
 
-## What's in this repo
+## Operating a Base
 
-The OwnBase source: the on-Base daemon and the CLI.
+**There is exactly one way to change what runs: commit to `ownbase.yaml` in the config repo.** `ownbasectl` does that for you and tells the Base to reconcile. Nothing on the Base is hand-edited, which is why the Base can always be rebuilt from the repo, the secrets, and the backups.
 
-| Binary       | Purpose                                                                                                  |
-| ------------ | -------------------------------------------------------------------------------------------------------- |
-| `ownbased`   | The on-Base daemon. Reconciles, watches, backs up, and explains.                                         |
-| `ownbasectl` | The CLI you install on your own machine: creates Bases, manages backups/secrets/updates, previews plans. |
+The commands worth knowing:
+
+| Command | What it does |
+|---|---|
+| `ownbasectl status <base>` | What is deployed, what is healthy, what the security posture is (`--json` for the full payload) |
+| `ownbasectl checkup <base>` | One plain-language health report: intrusions, exposure, CVEs, update drift, backup health, each with its fix |
+| `ownbasectl deploy <base> <svc> --ref <ref>` | The only way to move a service to a new version |
+| `ownbasectl tunnel <base>` | Reach any service at a trusted local HTTPS URL over SSH |
+| `ownbasectl backup status <base>` | Last snapshot, last verified drill, and whether it is genuinely restorable |
+| `ownbasectl restore <base> --repo <url> --password <pw>` | Rebuild the whole Base onto a fresh machine |
+
+Everything else — secrets, databases, updates, multiple Bases, uninstalling — is in [docs/cli.md](docs/cli.md).
+
+Run `checkup` weekly. It is the one command that answers "is anything wrong?" in a sentence.
+
+---
 
 ## Documentation
 
-| Doc                                                | What it covers                                                                    |
-| -------------------------------------------------- | --------------------------------------------------------------------------------- |
-| [MISSION.md](MISSION.md)                           | Why OwnBase exists, the promise, and the hard constraints                         |
-| [INSTALL.md](INSTALL.md)                           | Setting up a Base end to end (VM or remote server), verifying a fresh install     |
-| [docs/operating.md](docs/operating.md)             | The playbook for operating a running Base (human or AI)                           |
-| [docs/cli.md](docs/cli.md)                         | Full `ownbasectl` command reference                                               |
-| [docs/ownbase-yaml.md](docs/ownbase-yaml.md)       | The `ownbase.yaml` schema, the `ref:` update model, secrets, integrating services |
-| [docs/api.md](docs/api.md)                         | The daemon's HTTP API: auth, every endpoint, request/response shapes              |
-| [docs/troubleshooting.md](docs/troubleshooting.md) | When something fails: install, tunnel, tokens, Multipass, restic                  |
-| [docs/uninstall.md](docs/uninstall.md)             | Retiring a Base: export your data, remove OwnBase, keep everything                |
-| [docs/decisions.md](docs/decisions.md)             | Locked technical decisions: why the code is the way it is                         |
-| [docs/development.md](docs/development.md)         | Building, testing, and the invariants to preserve when changing this code         |
-| [docs/foundation/](docs/foundation/)               | The durable rules of how a Base works                                             |
-| [AGENTS.md](AGENTS.md)                             | Dispatch for AI agents: which doc owns which job                                  |
-
----
-
-## How a Base works
-
-- **One config file.** `ownbase.yaml`, in a local, remote-less git repo on the Base itself, declares every service. Committing a change is the only mutation path: push (via `ownbasectl config`/`service`, or plain `git push` over SSH) → hook → reconcile → build → health-gated start. See [docs/ownbase-yaml.md](docs/ownbase-yaml.md).
-- **No registries.** User services build locally from source at a pinned `ref:`. The core package (Caddy) is managed by `ownbasectl upgrade`.
-- **Secrets stay home.** Per-service secrets are age-encrypted on the Base; the private key never leaves it. Managed with `ownbasectl secrets`, injected as env vars at container start.
-- **Backups are verified.** Regular restic snapshots plus a periodic _verified restore drill_: `ownbasectl checkup` reports whether the Base is provably restorable, not just "backed up".
-- **Everything is explained.** The config repo's seeded README tells any human or AI how to operate the Base safely; `ownbasectl status`/`checkup` (and the `/status` JSON API — [docs/api.md](docs/api.md)) report what is deployed, what is healthy, and what the security posture is, always current.
-
----
-
-## Testing
-
-```bash
-go test ./...                    # Tier-1: runs anywhere, no VM
-go test -tags=integration ./...  # Tier-2: requires the Ubuntu test VM
-```
-
-See [docs/development.md](docs/development.md) for VM setup and the full test workflow.
-
----
-
-## Hard constraints
-
-Six constraints govern every change to this project — user owns everything, nothing is mysterious, operations disappear, every service is ownable, boring technology wins, no pre-built application images. They do not change without a deliberate, explicit decision. The canonical statement lives in [MISSION.md](MISSION.md); the reasoning behind each lives in [docs/foundation/](docs/foundation/).
+- [MISSION.md](MISSION.md): why OwnBase exists, the promise, and the six hard constraints every change respects.
+- [INSTALL.md](INSTALL.md): install reference — local VM, non-Homebrew install, non-standard SSH ports, what to do when setup fails.
+- [AGENTS.md](AGENTS.md): dispatch for AI agents — which document owns which job.
+- [docs/operating.md](docs/operating.md): the order of operations for working on a running Base.
+- [docs/cli.md](docs/cli.md): every `ownbasectl` command, flag, and default.
+- [docs/ownbase-yaml.md](docs/ownbase-yaml.md): the `ownbase.yaml` schema, the `ref:` update model, secrets, databases, jobs.
+- [docs/integration-contract.md](docs/integration-contract.md): the contract any service must meet to run on a Base.
+- [docs/api.md](docs/api.md): the daemon's HTTP API — auth, endpoints, request and response shapes.
+- [docs/troubleshooting.md](docs/troubleshooting.md): symptom-first fixes, including Postgres point-in-time recovery.
+- [docs/uninstall.md](docs/uninstall.md): export everything and remove OwnBase, leaving a working Ubuntu machine.
+- [docs/foundation/](docs/foundation/): the durable rules of how a Base works — read once, in order.
+- [docs/decisions.md](docs/decisions.md): locked technical decisions, and why the code is the way it is.
+- [docs/development.md](docs/development.md): building, testing, and the invariants to preserve when changing OwnBase itself.
