@@ -1,0 +1,16 @@
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+*.tsbuildinfo
+
+# The sidecar is compiled from ./cmd/ownbasectl by scripts/build-sidecar.mjs.
+# A 9 MB binary per platform does not belong in git, and it must match the
+# checkout it is built from anyway.
+src-tauri/binaries/
+
+# The icons in src-tauri/icons/ ARE committed, even though make-icon.mjs
+# generates them: a release build should not need the Tauri CLI's image
+# pipeline, and the geometry that produced them is in the script. The 1024px
+# source it feeds to `tauri icon` is only an intermediate.
+src-tauri/icon-source.png

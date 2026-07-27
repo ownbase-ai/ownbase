@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ownbase/ownbase/internal/serverconfig"
 	"github.com/ownbase/ownbase/internal/tunnel"
+	"github.com/ownbase/ownbase/internal/vault"
 )
 
 // extractStatusSection returns one top-level section of the status payload
@@ -54,32 +54,12 @@ func (c *connection) close() {
 //
 // Callers must call conn.close() when done.
 func connectToServer(serverName string) (*connection, error) {
-	cfgPath, err := serverconfig.DefaultConfigPath()
-	if err != nil {
-		return nil, fmt.Errorf("locate config: %w", err)
-	}
-
-	cfg, err := serverconfig.Load(cfgPath)
-	if err != nil {
-		return nil, fmt.Errorf("load config: %w", err)
-	}
-
-	profile, err := cfg.ProfileFor(serverName)
+	target, profile, err := baseTarget(serverName)
 	if err != nil {
 		return nil, err
 	}
 
-	if profile.Host == "" {
-		return nil, fmt.Errorf("server profile has no host configured")
-	}
-
-	tun, err := tunnel.Open(
-		profile.Host,
-		profile.EffectiveSSHUser(),
-		profile.EffectiveSSHKey(),
-		profile.EffectiveAPIPort(),
-		profile.EffectiveSSHPort(),
-	)
+	tun, err := tunnel.Open(target, profile.EffectiveAPIPort())
 	if err != nil {
 		return nil, fmt.Errorf("open SSH tunnel to %s: %w", profile.Host, err)
 	}
@@ -87,25 +67,14 @@ func connectToServer(serverName string) (*connection, error) {
 	tok := profile.Token
 
 	// If the profile has no token cached, try to read it from the Base via SSH
-	// and persist it to the local profile.
+	// and persist it to the vault.
 	if tok == "" {
-		fetched, ferr := tunnel.RunCommand(
-			profile.Host,
-			profile.EffectiveSSHUser(),
-			profile.EffectiveSSHKey(),
-			"sudo cat /opt/ownbase/api-token 2>/dev/null || cat /opt/ownbase/api-token 2>/dev/null",
-			profile.EffectiveSSHPort(),
-		)
+		fetched, ferr := tunnel.RunCommand(target,
+			"sudo cat /opt/ownbase/api-token 2>/dev/null || cat /opt/ownbase/api-token 2>/dev/null")
 		if ferr == nil && fetched != "" {
 			tok = strings.TrimSpace(fetched)
-			// Persist the token to the local profile.
-			if serverName != "" {
-				p := cfg.Servers[serverName]
-				p.Token = tok
-				cfg.Servers[serverName] = p
-				if saveErr := serverconfig.Save(cfgPath, cfg); saveErr != nil {
-					fmt.Fprintf(os.Stderr, "ownbasectl: warning: could not save token to profile: %v\n", saveErr)
-				}
+			if saveErr := saveProfile(serverName, func(p *vault.Profile) { p.Token = tok }); saveErr != nil {
+				fmt.Fprintf(os.Stderr, "ownbasectl: warning: could not save token to the vault: %v\n", saveErr)
 			}
 		}
 	}
@@ -120,7 +89,7 @@ func connectToServer(serverName string) (*connection, error) {
 		baseURL:   "http://" + tun.LocalAddr(),
 		token:     tok,
 		tun:       tun,
-		sshTarget: profile.EffectiveSSHUser() + "@" + profile.Host,
+		sshTarget: target.Destination(),
 	}, nil
 }
 

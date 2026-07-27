@@ -2,21 +2,24 @@
 
 > Export and Retire are first-class lifecycle stages ([foundation/base-lifecycle.md](foundation/base-lifecycle.md), stages 8–9). Because a Base is just Ubuntu you own, retiring OwnBase leaves a working system behind — nothing is held hostage.
 
-There are three levels, from gentlest to most complete:
+There are four levels, from gentlest to most complete:
 
 1. **Forget the Base locally** — remove the client profile, leave the Base running.
 2. **Export everything** — take code, data, and backups out in standard formats.
 3. **Remove OwnBase from the machine** — uninstall the daemon and services, keep (or destroy) the machine.
+4. **Remove OwnBase from your own machine** — the CLI, the vault, and the session recordings.
 
 ---
 
 ## 1. Forget the Base locally
 
 ```bash
-ownbasectl delete <name> --keep-vm   # removes only the profile from ~/.ownbase/config
+ownbasectl delete <name> --keep-vm   # removes only the profile from the vault
 ```
 
 For a local VM, plain `ownbasectl delete <name>` also destroys the VM (it asks first). A profile known to be a remote server is never destroyed by `delete` — only its local profile is removed.
+
+This deletes the Base's owner SSH key along with the profile, so it is the last thing to do, not the first: without that key you cannot log in to the machine to export anything. Do level 2 first.
 
 ---
 
@@ -27,6 +30,9 @@ Export is always available — the source of truth already lives in your repos a
 **Code and config.** The config repo (`ownbase.yaml`) is an external git repo you already control — nothing to export from the Base. Service code likewise lives in the external repos referenced by each service's `repo:`. The Base keeps only read-only clones; if you want a copy straight off the machine you can grab the working checkout and the bare service clones over SSH (from the admin user's account, e.g. `ubuntu`):
 
 ```bash
+# Let the credential agent authenticate, so there is no key file to dig out.
+export SSH_AUTH_SOCK="$(ownbasectl vault status --json | jq -r .ssh_agent_socket)"
+
 scp -r ubuntu@<base-host>:/opt/ownbase/checkout ./ownbase-checkout          # the read-only config checkout (ownbase.yaml)
 git clone ssh://ubuntu@<base-host>/opt/ownbase/repos/<name>                 # each service's local bare clone
 ```
@@ -82,3 +88,24 @@ The result is exactly what the constitution promises: a working, secured Ubuntu 
 ### Destroying the machine instead
 
 If the machine itself is being decommissioned (cloud instance deletion, VM teardown), you only need levels 1–2: export what you keep, `ownbasectl delete <name>`, then delete the machine at the provider. Your restic repository and cloned repos are sufficient to rebuild the entire Base later with `ownbasectl restore`.
+
+---
+
+## 4. Remove OwnBase from your own machine
+
+Nothing here is needed by any Base, and nothing on a Base depends on it. Do this last.
+
+**Keep the vault.** It holds the owner SSH keys and API tokens for every Base you have not retired, so deleting it is what locks you out — not uninstalling the CLI. It is a standard KDBX file, so it stays useful with KeePassXC after OwnBase is gone; export the keys from there if you want them as ordinary files ([vault.md](vault.md)).
+
+```bash
+ownbasectl agent stop                  # forget the master password, close the sockets
+ownbasectl vault status                # confirm where the vault file is before you touch it
+
+# Session recordings — asciicast v2, replayable with asciinema. Archive or delete.
+tar czf ownbase-sessions.tar.gz -C ~/.ownbase sessions
+
+rm -rf ~/.ownbase                      # pointer file, known_hosts, agent log, recordings
+brew uninstall --cask ownbasectl       # or: sudo rm /usr/local/bin/ownbasectl
+```
+
+`~/.ownbase` holds no credentials: the pointer to the vault, `known_hosts`, the agent log, and the recordings. The vault itself is wherever you put it and is not touched by any of the above.

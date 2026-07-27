@@ -2,11 +2,10 @@ package main
 
 import (
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/ownbase/ownbase/internal/serverconfig"
+	"github.com/ownbase/ownbase/internal/vault"
 )
 
 func TestParseOSRelease(t *testing.T) {
@@ -80,15 +79,23 @@ func TestIsSSHAuthFailure(t *testing.T) {
 }
 
 func TestCheckProfileConflict(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	startTestAgent(t)
 
 	// No profile yet: nothing to conflict with.
 	if err := checkProfileConflict("mybase", "203.0.113.10", false); err != nil {
 		t.Fatalf("unexpected conflict for a new name: %v", err)
 	}
 
-	if err := registerProfile("mybase", "203.0.113.10", "root", "~/.ssh/ownbase_mybase", 22, 7070, "tok", false); err != nil {
+	// A Base that has only an owner key from keygen is not a conflict either:
+	// there is no machine yet to orphan.
+	if err := runKeygen("mybase", "", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkProfileConflict("mybase", "203.0.113.10", false); err != nil {
+		t.Fatalf("a keygen-only Base must not conflict: %v", err)
+	}
+
+	if err := registerProfile("mybase", "203.0.113.10", "root", 22, "tok", false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -151,8 +158,7 @@ func TestSameHost(t *testing.T) {
 }
 
 func TestCheckLocalVMProfileConflict(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	startTestAgent(t)
 
 	// No profile yet: nothing to conflict with.
 	if err := checkLocalVMProfileConflict("mybase", false, false); err != nil {
@@ -161,7 +167,7 @@ func TestCheckLocalVMProfileConflict(t *testing.T) {
 
 	// A remote Base under the same name: launching a VM here would discard
 	// the token for a server that stays running and billed.
-	if err := registerProfile("mybase", "203.0.113.10", "root", "~/.ssh/ownbase_mybase", 22, 7070, "tok", false); err != nil {
+	if err := registerProfile("mybase", "203.0.113.10", "root", 22, "tok", false); err != nil {
 		t.Fatal(err)
 	}
 	err := checkLocalVMProfileConflict("mybase", false, false)
@@ -188,7 +194,7 @@ func TestCheckLocalVMProfileConflict(t *testing.T) {
 
 	// Re-creating a VM whose profile says local is a normal retry, whether
 	// or not the VM is still around.
-	if err := registerProfile("vmbase", "192.168.64.5", "ubuntu", "~/.ssh/id_ed25519", 22, 7070, "tok", true); err != nil {
+	if err := registerProfile("vmbase", "192.168.64.5", "ubuntu", 22, "tok", true); err != nil {
 		t.Fatal(err)
 	}
 	for _, vmExists := range []bool{false, true} {
@@ -197,75 +203,55 @@ func TestCheckLocalVMProfileConflict(t *testing.T) {
 		}
 	}
 
-	// A legacy profile predating local_vm could be either, so Multipass
-	// breaks the tie — the same fallback `delete` uses.
-	writeLegacyProfile(t, "legacy", "192.168.64.9")
-	if err := checkLocalVMProfileConflict("legacy", true, false); err != nil {
-		t.Errorf("a legacy profile with its VM present must still be re-creatable: %v", err)
+	// A profile whose kind is unknown (local_vm unset) could be either, so
+	// Multipass breaks the tie — the same fallback `delete` uses.
+	putTestProfile(t, "unknown", vault.Profile{Host: "192.168.64.9", Token: "tok"})
+	if err := checkLocalVMProfileConflict("unknown", true, false); err != nil {
+		t.Errorf("a profile of unknown kind with its VM present must still be re-creatable: %v", err)
 	}
-	if err := checkLocalVMProfileConflict("legacy", false, false); err == nil {
-		t.Error("a legacy profile with no VM to vouch for it must be refused")
-	}
-}
-
-// writeLegacyProfile registers a profile with local_vm unset, as versions
-// before that field existed wrote them. registerProfile cannot produce one.
-func writeLegacyProfile(t *testing.T, name, host string) {
-	t.Helper()
-	cfgPath, err := serverconfig.DefaultConfigPath()
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := serverconfig.Load(cfgPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Servers == nil {
-		cfg.Servers = map[string]serverconfig.ServerProfile{}
-	}
-	cfg.Servers[name] = serverconfig.ServerProfile{Host: host, Token: "tok"}
-	if err := serverconfig.Save(cfgPath, cfg); err != nil {
-		t.Fatal(err)
+	if err := checkLocalVMProfileConflict("unknown", false, false); err == nil {
+		t.Error("a profile of unknown kind with no VM to vouch for it must be refused")
 	}
 }
 
 func TestEnsureOwnerKey(t *testing.T) {
-	// A local VM on a machine with no SSH key at all: generate one, so the
+	// A local VM on a machine with no key for this Base: generate one, so the
 	// installer has a public key to authorize and later tunnels work.
 	t.Run("local VM generates a missing key", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
+		startTestAgent(t)
 		f := &baseTargetFlags{}
-		key, err := f.ensureOwnerKey("mybase")
+		pub, err := f.ensureOwnerKey("mybase")
 		if err != nil {
 			t.Fatalf("local create must not require a pre-existing key: %v", err)
 		}
-		if key != filepath.Join("~", ".ssh", "ownbase_mybase") {
-			t.Errorf("key path = %q, want the per-Base keygen path", key)
-		}
-		if !fileExists(expandKeyPath(key)) {
-			t.Error("resolved key does not exist on disk")
-		}
 		// The installer authorizes whatever this returns; empty means the
 		// VM boots with no way in.
-		if ownerPublicKey(key) == "" {
-			t.Error("generated key yields no authorized_keys line")
+		if pub == "" {
+			t.Fatal("generated key yields no authorized_keys line")
+		}
+		stored, lerr := loadProfile("mybase")
+		if lerr != nil {
+			t.Fatal(lerr)
+		}
+		if stored.PublicKeyLine() != pub {
+			t.Error("the key handed to the installer is not the key stored in the vault")
 		}
 	})
 
 	// Re-running must reuse the key, or the second create locks us out of
 	// the machine the first one authorized.
 	t.Run("existing key is reused", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
+		startTestAgent(t)
 		f := &baseTargetFlags{}
 		first, err := f.ensureOwnerKey("mybase")
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := ownerPublicKey(first)
-		if _, err := f.ensureOwnerKey("mybase"); err != nil {
+		second, err := f.ensureOwnerKey("mybase")
+		if err != nil {
 			t.Fatal(err)
 		}
-		if got := ownerPublicKey(first); got != want {
+		if first != second {
 			t.Error("re-running regenerated the key instead of reusing it")
 		}
 	})
@@ -273,7 +259,7 @@ func TestEnsureOwnerKey(t *testing.T) {
 	// A remote key must be authorized by the provider before the server
 	// boots, so generating one here would be useless.
 	t.Run("remote refuses with a keygen pointer", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
+		startTestAgent(t)
 		f := &baseTargetFlags{remoteHost: "root@203.0.113.10"}
 		_, err := f.ensureOwnerKey("mybase")
 		if err == nil {
@@ -290,7 +276,7 @@ func TestEnsureOwnerKey(t *testing.T) {
 	// An explicit --ssh-key that does not exist is a typo, not an invitation
 	// to substitute a different key.
 	t.Run("explicit missing key is an error", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
+		startTestAgent(t)
 		f := &baseTargetFlags{sshKey: "/nonexistent/key"}
 		if _, err := f.ensureOwnerKey("mybase"); err == nil {
 			t.Fatal("expected a refusal for a missing --ssh-key")
@@ -323,6 +309,7 @@ func TestExitCodeFor(t *testing.T) {
 		"exitInstall":   exitInstall,
 		"exitNotReady":  exitNotReady,
 		"exitConflict":  exitConflict,
+		"exitLocked":    exitLocked,
 	} {
 		if prev, dup := seen[code]; dup {
 			t.Errorf("%s and %s share exit code %d", prev, name, code)

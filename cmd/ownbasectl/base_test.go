@@ -5,8 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/ownbase/ownbase/internal/serverconfig"
 )
 
 func TestSplitUserHost(t *testing.T) {
@@ -88,24 +86,15 @@ func TestFindRepoRoot_NotFound(t *testing.T) {
 }
 
 func TestRegisterProfile(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	startTestAgent(t)
 
-	if err := registerProfile("mybase", "192.168.1.10", "ubuntu", "~/.ssh/id_ed25519", 22, 7070, "tok123", true); err != nil {
+	if err := registerProfile("mybase", "192.168.1.10", "ubuntu", 22, "tok123", true); err != nil {
 		t.Fatalf("registerProfile: %v", err)
 	}
 
-	cfgPath, err := serverconfig.DefaultConfigPath()
+	p, err := loadProfile("mybase")
 	if err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := serverconfig.Load(cfgPath)
-	if err != nil {
-		t.Fatalf("load config: %v", err)
-	}
-	p, ok := cfg.Servers["mybase"]
-	if !ok {
-		t.Fatal("expected profile 'mybase' to be registered")
+		t.Fatalf("loadProfile: %v", err)
 	}
 	if p.Host != "192.168.1.10" || p.Token != "tok123" {
 		t.Errorf("unexpected profile: %+v", p)
@@ -116,24 +105,46 @@ func TestRegisterProfile(t *testing.T) {
 }
 
 func TestRegisterProfile_PersistsSSHPort(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	startTestAgent(t)
 
-	if err := registerProfile("first", "1.1.1.1", "ubuntu", "", 2222, 7070, "tok1", false); err != nil {
+	if err := registerProfile("first", "1.1.1.1", "ubuntu", 2222, "tok1", false); err != nil {
 		t.Fatalf("registerProfile first: %v", err)
 	}
 
-	cfgPath, _ := serverconfig.DefaultConfigPath()
-	cfg, err := serverconfig.Load(cfgPath)
+	p, err := loadProfile("first")
 	if err != nil {
-		t.Fatalf("load config: %v", err)
-	}
-	p, ok := cfg.Servers["first"]
-	if !ok {
-		t.Fatal("expected profile 'first' to be registered")
+		t.Fatalf("loadProfile: %v", err)
 	}
 	if p.SSHPort != 2222 {
 		t.Errorf("SSHPort: got %d, want 2222", p.SSHPort)
+	}
+}
+
+// A Base registered after keygen must keep the owner key that keygen stored:
+// replacing it would lock the operator out of the machine that authorized it.
+func TestRegisterProfile_KeepsOwnerKey(t *testing.T) {
+	startTestAgent(t)
+
+	if err := runKeygen("mybase", "", true); err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+	before, err := loadProfile("mybase")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.PublicKeyLine() == "" {
+		t.Fatal("keygen stored no owner key")
+	}
+
+	if err := registerProfile("mybase", "203.0.113.10", "root", 22, "tok", false); err != nil {
+		t.Fatalf("registerProfile: %v", err)
+	}
+	after, err := loadProfile("mybase")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.PublicKeyLine() != before.PublicKeyLine() {
+		t.Error("registering a Base replaced its owner key")
 	}
 }
 
@@ -192,7 +203,7 @@ func TestCheckupFindings_BackupConfiguredButNotYetVerified(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding, got %d: %+v", len(findings), findings)
 	}
-	if strings.Contains(findings[0].fix, "backup setup") {
+	if strings.Contains(findings[0].Fix, "backup setup") {
 		t.Errorf("fix should not suggest re-running setup when backups are already configured, got %+v", findings[0])
 	}
 }
@@ -208,7 +219,7 @@ func TestCheckupFindings_NoSecuritySection_StillScansUpdates(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding (update drift) despite missing security section, got %d: %+v", len(findings), findings)
 	}
-	if !strings.Contains(findings[0].summary, "behind their source repo") {
+	if !strings.Contains(findings[0].Summary, "behind their source repo") {
 		t.Errorf("expected an update-drift finding, got %+v", findings[0])
 	}
 }

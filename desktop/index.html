@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      No CSP meta tag here on purpose. Tauri injects the policy from
+      tauri.conf.json, and a second policy in the document would silently
+      intersect with it — leaving one place where a permission is granted and
+      another where the same permission is refused.
+    -->
+    <title>OwnBase</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

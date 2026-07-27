@@ -226,12 +226,21 @@ func generateClientKey(t *testing.T) (keyPath string, pub ssh.PublicKey) {
 	return keyPath, clientPub
 }
 
+// testTarget points at the in-process SSH server, authenticating with an
+// explicit key file rather than the credential agent.
+func testTarget(keyPath string, sshPort int) tunnel.Target {
+	return tunnel.Target{Host: "127.0.0.1", User: "testuser", Port: sshPort, KeyPath: keyPath}
+}
+
 // overrideHome sets HOME to a temp dir for the duration of the test so that
 // the tunnel package creates a fresh ~/.ownbase/known_hosts (TOFU path).
+// SSH_AUTH_SOCK is cleared too, so a developer's real ssh-agent cannot inject
+// keys into the auth attempt and change what the test exercises.
 func overrideHome(t *testing.T) {
 	t.Helper()
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
+	t.Setenv("SSH_AUTH_SOCK", "")
 }
 
 // ---------------------------------------------------------------------------
@@ -260,7 +269,7 @@ func TestOpen_ForwardsHTTPTraffic(t *testing.T) {
 	overrideHome(t)
 
 	// Open a tunnel through the SSH server to the agent.
-	tun, err := tunnel.Open("127.0.0.1", "testuser", keyPath, agentPort, sshPort)
+	tun, err := tunnel.Open(testTarget(keyPath, sshPort), agentPort)
 	if err != nil {
 		t.Fatalf("tunnel.Open: %v", err)
 	}
@@ -288,7 +297,7 @@ func TestRunCommand_ReturnsOutput(t *testing.T) {
 
 	overrideHome(t)
 
-	out, err := tunnel.RunCommand("127.0.0.1", "testuser", keyPath, "echo hello-world", sshPort)
+	out, err := tunnel.RunCommand(testTarget(keyPath, sshPort), "echo hello-world")
 	if err != nil {
 		t.Fatalf("RunCommand: %v", err)
 	}
@@ -306,7 +315,7 @@ func TestRunCommand_MultipleWords(t *testing.T) {
 
 	overrideHome(t)
 
-	out, err := tunnel.RunCommand("127.0.0.1", "testuser", keyPath, "printf '%s' test-value", sshPort)
+	out, err := tunnel.RunCommand(testTarget(keyPath, sshPort), "printf '%s' test-value")
 	if err != nil {
 		t.Fatalf("RunCommand: %v", err)
 	}
@@ -330,7 +339,7 @@ func TestOpen_LocalAddrIsLoopback(t *testing.T) {
 
 	overrideHome(t)
 
-	tun, err := tunnel.Open("127.0.0.1", "testuser", keyPath, agentPort, sshPort)
+	tun, err := tunnel.Open(testTarget(keyPath, sshPort), agentPort)
 	if err != nil {
 		t.Fatalf("tunnel.Open: %v", err)
 	}

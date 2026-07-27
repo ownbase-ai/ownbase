@@ -20,7 +20,14 @@
 //	service   — add/remove/update a service in ownbase.yaml
 //	deploy    — resolve a ref to a commit, pin it, and reconcile
 //	ssh-key   — provision the Base's read-only git deploy key
-//	tunnel    — local HTTPS bridge over SSH (the one command allowed to prompt)
+//	ssh       — open a recorded shell (or run one command) on a Base
+//	sessions  — list and replay recorded ssh sessions
+//	tunnel    — local HTTPS bridge over SSH (interactive; may prompt for sudo)
+//
+// Credential commands take no Base name — the vault holds every Base:
+//
+//	vault    — create, unlock, lock, and inspect the credential vault
+//	agent    — run or stop the resident credential agent
 //
 // Local subcommands operate on a repo checkout and take no Base name:
 //
@@ -55,6 +62,12 @@ const (
 	// (repoint anyway with --replace, or pick a different name), which for
 	// an unattended caller usually means stopping to ask a human.
 	exitConflict = 6
+	// exitLocked means no credential was available: the vault is locked, or
+	// there is no vault yet. Distinct from every other code because the
+	// recovery is neither a flag fix nor a machine problem — it needs a
+	// human to type a master password (or open the app), and an unattended
+	// caller should say so rather than retrying.
+	exitLocked = 7
 )
 
 // exitCodeError carries a process exit code alongside an error.
@@ -111,6 +124,9 @@ and gives you one command for every step of the lifecycle.
 Every command that targets a Base takes its name as the first argument.
 
 Start here:
+  ownbasectl vault init <path>                     one encrypted file holds
+                                                   every credential you own
+
   ownbasectl create <name>                         try OwnBase on a local VM
 
   ownbasectl keygen <name>                         ...or install on a server:
@@ -128,6 +144,8 @@ Start here:
 	})
 
 	root.AddCommand(
+		newVaultCmd(),
+		newAgentCmd(),
 		newKeygenCmd(),
 		newCreateCmd(),
 		newAdoptCmd(),
@@ -146,6 +164,8 @@ Start here:
 		newServiceCmd(),
 		newDeployCmd(),
 		newSSHKeyCmd(),
+		newSSHCmd(),
+		newSessionsCmd(),
 		newTunnelCmd(),
 		newCompileCmd(),
 		newPlanCmd(),

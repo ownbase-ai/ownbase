@@ -38,6 +38,70 @@ jobs:
       - name: go test
         run: go test ./...
 
+  # The desktop app. No window is opened, so this is Tier 1: the TypeScript
+  # typechecks, the Rust bridge compiles clean, and the frontend bundles. What it
+  # is really guarding is the seam between the two halves — the app renders
+  # `ownbasectl --json`, and a field that moved on the Go side has to fail here
+  # rather than in a shipped bundle.
+  desktop:
+    name: Desktop app (typecheck + clippy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      # Tauri's Linux build needs GTK and WebKitGTK; `cargo clippy` will not
+      # resolve the crate without them even though nothing is displayed.
+      - name: Install Tauri's Linux dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q libwebkit2gtk-4.1-dev libgtk-3-dev \
+            librsvg2-dev patchelf libayatana-appindicator3-dev
+
+      - name: npm ci
+        working-directory: desktop
+        run: npm ci
+
+      - name: Typecheck, lint, and test
+        working-directory: desktop
+        run: |
+          npm run typecheck
+          npm run lint
+          npm run test
+
+      - name: Build the frontend
+        working-directory: desktop
+        run: npm run build
+
+      # The Rust side never sees the sidecar's contents, but Tauri refuses to
+      # configure a bundle whose declared sidecar is absent, so a stub stands in.
+      - name: Stub the sidecar
+        working-directory: desktop
+        run: |
+          mkdir -p src-tauri/binaries
+          triple=$(rustc -vV | sed -n 's/^host: //p')
+          : > "src-tauri/binaries/ownbasectl-${triple}"
+          chmod +x "src-tauri/binaries/ownbasectl-${triple}"
+
+      - name: cargo fmt and clippy
+        working-directory: desktop/src-tauri
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets -- -D warnings
+
   # Tier 2 — real Ubuntu with Podman + Quadlet + systemd. Runs on push to
   # main and on pull requests targeting main; also runnable manually.
   # Required from M3 onward; harmless before (no integration tests yet).

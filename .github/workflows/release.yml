@@ -6,12 +6,22 @@ name: Release
 # the signed daemon binaries to the releases.ownbase.ai/daemon layout that
 # install.sh downloads from.
 #
+# A second job then builds the desktop app for macOS and Linux and attaches the
+# bundles to the same release.
+#
 # Required repository secrets:
 #   MINISIGN_SECRET_KEY        — contents of the minisign secret key file
 #   MINISIGN_PASSWORD          — passphrase for that key
 #   HOMEBREW_TAP_GITHUB_TOKEN  — token with push access to ownbase-ai/homebrew-tap
 #   RELEASES_BUCKET_*          — credentials for the releases.ownbase.ai origin
 #                                (see the "Publish daemon binaries" step)
+#
+# Optional, for signing the macOS app (without them it still builds, but the
+# first launch needs a right-click → Open):
+#   APPLE_CERTIFICATE           — base64 of a Developer ID Application .p12
+#   APPLE_CERTIFICATE_PASSWORD  — its password
+#   APPLE_SIGNING_IDENTITY      — e.g. "Developer ID Application: Name (TEAMID)"
+#   APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID — for notarization
 
 on:
   push:
@@ -100,3 +110,147 @@ jobs:
               aws s3 cp "$src" "s3://${RELEASES_BUCKET}/daemon/latest/${f}" "${endpoint_flag[@]}"
             done
           done
+
+  # The desktop app, attached to the release GoReleaser just created.
+  #
+  # This runs after `release` rather than beside it because it uploads to that
+  # release: starting both at once is a race in which the upload can lose. The
+  # app bundles are additive, so a failure here leaves a usable CLI release.
+  app:
+    name: App (${{ matrix.label }})
+    needs: release
+    runs-on: ${{ matrix.runner }}
+    # At job level, not on the step: a step's own `env:` is not readable from its
+    # `if:`, and the `secrets` context is not available there at all.
+    env:
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macOS (Apple silicon)
+            runner: macos-14
+            target: aarch64-apple-darwin
+          - label: macOS (Intel)
+            runner: macos-13
+            target: x86_64-apple-darwin
+          - label: Linux (x86_64)
+            runner: ubuntu-22.04 # oldest glibc we support; newer would not run on it
+            target: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+          key: ${{ matrix.target }}
+
+      - name: Install Tauri's Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q libwebkit2gtk-4.1-dev libgtk-3-dev \
+            librsvg2-dev patchelf libayatana-appindicator3-dev
+
+      - name: npm ci
+        working-directory: desktop
+        run: npm ci
+
+      # The real CLI, not a stub: this is the binary users will run, and it is
+      # stamped with the tag so the app and the daemon it installs stay in step.
+      - name: Build the bundled ownbasectl
+        working-directory: desktop
+        env:
+          OWNBASE_SIDECAR_TARGET: ${{ matrix.target }}
+          OWNBASE_VERSION: ${{ github.ref_name }}
+        run: npm run sidecar
+
+      - name: Import the Apple signing certificate
+        if: runner.os == 'macOS' && env.APPLE_CERTIFICATE != ''
+        env:
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          # A throwaway keychain, unlocked for this job only, so the certificate
+          # never lands in the runner's login keychain.
+          keychain=/tmp/build.keychain
+          password=$(uuidgen)
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > /tmp/cert.p12
+          security import /tmp/cert.p12 -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$password" "$keychain" >/dev/null
+          security list-keychain -d user -s "$keychain" login.keychain
+          rm -f /tmp/cert.p12
+
+      # The committed version is a placeholder; the tag is the real one. Without
+      # this the About box and the bundle filename would both claim 0.1.0 forever.
+      - name: Stamp the bundle version from the tag
+        working-directory: desktop
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          jq --arg v "$version" '.version = $v' src-tauri/tauri.conf.json > /tmp/conf.json
+          mv /tmp/conf.json src-tauri/tauri.conf.json
+          jq -r '"bundling version " + .version' src-tauri/tauri.conf.json
+
+      - name: Build the bundle
+        working-directory: desktop
+        env:
+          # Empty when the certificate secrets are unset, which Tauri reads as
+          # "do not sign" — an unsigned bundle rather than a failed release.
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npm run tauri -- build --target ${{ matrix.target }}
+
+      # Uploaded by explicit path rather than by a release-creating action: the
+      # release already exists, and `--clobber` makes a re-run of this job
+      # replace its own artifacts instead of failing on a name that is taken.
+      - name: Attach the bundle to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle="desktop/src-tauri/target/${TARGET}/release/bundle"
+          shopt -s nullglob
+          # Renamed on the way out: three runners upload into one release, and
+          # Tauri's own filenames collide across targets.
+          #
+          # Staged into a directory and counted with `find` rather than collected
+          # into an array, because the macOS runners ship bash 3.2, where reading
+          # an empty array under `set -u` is itself an error.
+          stage=$(mktemp -d)
+          for f in "$bundle"/dmg/*.dmg "$bundle"/appimage/*.AppImage "$bundle"/deb/*.deb; do
+            ext="${f##*.}"
+            cp "$f" "$stage/OwnBase-${VERSION}-${TARGET}.${ext}"
+          done
+          if [ -z "$(ls -A "$stage")" ]; then
+            echo "No bundles found under $bundle" >&2
+            find "$bundle" -maxdepth 2 -type f >&2 || true
+            exit 1
+          fi
+          ls -la "$stage"
+          gh release upload "$VERSION" "$stage"/* --clobber

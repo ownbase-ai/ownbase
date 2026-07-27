@@ -5,9 +5,47 @@
 The single most useful diagnostic for anything happening *on* the Base is the daemon journal:
 
 ```bash
-ssh root@<base-host> journalctl -u ownbased -f     # remote server
-multipass exec <name> -- journalctl -u ownbased -f # local VM
+ownbasectl ssh <name> -- journalctl -u ownbased -n 200   # any Base, recorded
+ownbasectl ssh <name>                                    # then: journalctl -u ownbased -f
 ```
+
+Use `ownbasectl ssh` rather than plain `ssh`: it finds the key in your vault and records the session, so there is a trail of the debugging itself.
+
+If `ownbasectl` will not run at all, the problem is on your machine — jump to [ownbasectl will not run](#ownbasectl-will-not-run).
+
+---
+
+## `ownbasectl` will not run
+
+### "the vault is locked" (exit code 7)
+
+Every credential lives in your vault, and the credential agent has forgotten the master password — either it auto-locked after four idle hours, the machine rebooted, or something ran `vault lock`.
+
+```bash
+ownbasectl vault unlock
+```
+
+`ownbasectl vault status` shows whether the agent is running, whether the vault is open, and when it will lock next. Raise or disable the timeout with `ownbasectl vault unlock --idle-timeout 8h` or `--idle-timeout 0`.
+
+This is exit code 7 and not a generic failure precisely so an unattended caller can tell "a human needs to type a password" apart from "something is broken".
+
+### "no vault configured"
+
+There is no vault yet, or the pointer to it is gone. If this is a fresh machine, create one — [vault.md](vault.md):
+
+```bash
+ownbasectl vault init ~/Dropbox/OwnBase
+```
+
+If you already have a vault file (from another machine, or restored from backup), point at it instead of making a new one, or you will have an empty vault and no way to reach your Bases:
+
+```bash
+ownbasectl vault init ~/Dropbox/OwnBase/ownbase.kdbx   # records an existing file
+```
+
+### "wrong master password (or the vault file is corrupt)"
+
+KDBX authenticates the whole file, so a bad password and a damaged file fail identically and OwnBase cannot tell you which it was. Try the password in KeePassXC: if it opens there, the problem is what you typed; if it does not, restore the file from your cloud storage's version history and try again.
 
 ---
 
@@ -39,7 +77,7 @@ The image is wrong for OwnBase. Rebuild the server with a stock Ubuntu 22.04 or 
 
 The machine is too small to build a service from source. See [sizing](../README.md#how-big-a-machine) — the floor is set by build peaks, not by what the services use at rest.
 
-### "already points at <host> in ~/.ownbase/config" (exit code 6)
+### "already points at <host>" (exit code 6)
 
 That Base name is registered against a different machine, and overwriting it would discard the old server's API token, leaving it running and unreachable. Use a different name, remove the stale profile with `ownbasectl delete <name> --keep-vm`, or pass `--replace` if you really are moving the name.
 
@@ -54,7 +92,7 @@ You can also hit this when it *is* the same machine, reached by a different addr
 The install succeeded and the profile is registered; the daemon just did not finish pass zero within `--wait-timeout`. It is almost certainly still working — hardening a slow or small machine can take several minutes. Watch it:
 
 ```bash
-ssh root@<host> journalctl -u ownbased -f
+ownbasectl ssh <name> -- journalctl -u ownbased -n 200
 ```
 
 Then `ownbasectl status <name>` once it settles. Nothing needs re-running.
@@ -91,17 +129,22 @@ grep -v '<host>' ~/.ownbase/known_hosts > /tmp/kh && mv /tmp/kh ~/.ownbase/known
 
 ### "ssh: unable to authenticate" / connection refused
 
-- Check the profile: `ownbasectl list` shows the host, and `~/.ownbase/config` holds `ssh_user`, `ssh_key`, and `ssh_port` per profile. Remote installs connect as `root` by default; local VMs use `ubuntu`.
-- Confirm the key works outside ownbasectl: `ssh -i ~/.ssh/ownbase_<name> root@<host>`.
-- `create` uses `~/.ssh/ownbase_<name>` when it exists and `~/.ssh/id_ed25519` otherwise, and records the choice in the profile. If you created the server with a different key, point at it with `--ssh-key`.
-- If sshd listens on a non-standard port, set `ssh_port` in the profile, or pass `--ssh-port` at create time so UFW opens it and fail2ban jails the right port.
+- Check the profile: `ownbasectl list` shows the host and login user. Remote installs connect as `root` by default; local VMs use `ubuntu`. Fix a wrong one with `ownbasectl adopt <name> --host <host> --ssh-user <user>`.
+- Check the key is actually there: `ownbasectl vault status` reports how many keys are loaded, and `ownbasectl keygen <name>` prints the public half of this Base's key. If the server authorizes a different key, the fix is to import the right one: `ownbasectl keygen <name> --import <path>`.
+- Confirm the key works outside ownbasectl by borrowing the agent rather than exporting the key:
+
+```bash
+SSH_AUTH_SOCK="$(ownbasectl vault status --json | jq -r .ssh_agent_socket)" ssh root@<host>
+```
+
+- If sshd listens on a non-standard port, re-register with `ownbasectl adopt <name> --host <host> --ssh-port <port>`, or pass `--ssh-port` at create time so UFW opens it and fail2ban jails the right port.
 
 ### "unauthorized — check that your token is correct"
 
 The API token in your profile no longer matches the Base (e.g. someone ran `POST /token/reset`). Fetch the current token and update the profile:
 
 ```bash
-ssh root@<host> sudo cat /opt/ownbase/api-token
+ownbasectl ssh <name> -- sudo cat /opt/ownbase/api-token
 ownbasectl adopt <name> --host <host> --token <token>
 ```
 

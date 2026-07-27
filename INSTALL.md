@@ -44,6 +44,17 @@ Verify either method:
 ownbasectl version
 ```
 
+### Create the vault
+
+Before anything else, `ownbasectl` needs somewhere to keep credentials. One command, once per machine:
+
+```bash
+ownbasectl vault init ~/Dropbox/OwnBase   # or any path you like
+ownbasectl vault unlock
+```
+
+This is an encrypted KDBX file you own and place wherever you want, holding the SSH keys, API tokens, and hosts for every Base. Full details — the format, the credential agent, auto-locking, and how to open the file without OwnBase — are in [docs/vault.md](docs/vault.md).
+
 ---
 
 ## Trying it on a local VM
@@ -59,7 +70,7 @@ ownbasectl status mybase
 
 `create` launches a fresh Ubuntu 24.04 VM, deleting any existing VM of the same name first — it will ask before doing so. Size it with `--cpus`, `--memory`, `--disk` (defaults: 2 CPUs, 2 GB, 15 GB).
 
-You do not need to run `keygen` first: there is no provider to authorize a key with, so if you have no SSH key `create` generates one at `~/.ssh/ownbase_<name>` and the VM boots with it authorized.
+You do not need to run `keygen` first: there is no provider to authorize a key with, so if the vault has no key for this Base `create` generates one into it and the VM boots with it authorized. You do still need an unlocked vault for `create` to store the profile in.
 
 Since a local VM has no DNS records, Caddy never gets a real certificate. Use `ownbasectl tunnel mybase` to reach services at trusted local HTTPS URLs.
 
@@ -103,7 +114,7 @@ The walkthrough is in [README.md](README.md#setting-up-a-base). This is the refe
 1. **Waits for SSH.** A freshly created cloud server refuses connections for anywhere from ten seconds to two minutes after the provider's console says "running". Controlled by `--wait-for-ssh` (default 5m).
 2. **Runs preflight.** Passwordless sudo, Ubuntu version, architecture, memory, disk. Fails here, before any change, with a message naming the specific problem.
 3. **Uploads and runs the installer.** It downloads the `ownbased` release matching your `ownbasectl` version, verifies its minisign signature, creates the `ownbase` system user, and installs the systemd unit.
-4. **Registers the Base** in `~/.ownbase/config`, reading the generated API token back over SSH. Nothing to copy or paste.
+4. **Registers the Base** in your vault, reading the generated API token back over SSH. Nothing to copy or paste.
 5. **Waits for hardening,** with `--wait`. The daemon runs pass zero — Podman, UFW, fail2ban, unattended-upgrades, Trivy — on startup, *before* it binds its API port. So the API answering is exactly the signal that hardening finished.
 
 Without `--wait`, `create` returns after step 4 and the daemon keeps working in the background for another minute or two.
@@ -134,6 +145,7 @@ Without `--wait`, `create` returns after step 4 and the daemon keeps working in 
 | 4 | The installer ran and failed |
 | 5 | Installed, but not healthy within `--wait-timeout` |
 | 6 | Refused — valid command, but it would have discarded another Base's API token. Nothing was changed |
+| 7 | The vault is locked, or there is no vault yet. Run `ownbasectl vault unlock`. Nothing was changed |
 
 ### Two different SSH keys
 
@@ -141,10 +153,16 @@ Easy to conflate, so worth stating plainly:
 
 | | Direction | Created by | Private half lives |
 |---|---|---|---|
-| **Owner key** | your machine → the Base | `ownbasectl keygen <name>` | on your machine |
+| **Owner key** | your machine → the Base | `ownbasectl keygen <name>` | in your vault, never as a file |
 | **Deploy key** | the Base → GitHub | `ownbasectl ssh-key add <name>` | on the Base, never leaves it |
 
 The owner key must exist before the server does, because the provider authorizes it at creation time. The deploy key is created afterward and registered read-only on your repos.
+
+Neither one is ever a plaintext file you have to look after. The owner key is in the vault and signed for by the credential agent; if you want plain `ssh` or `git` to use it, point `SSH_AUTH_SOCK` at that agent rather than exporting the key:
+
+```bash
+export SSH_AUTH_SOCK="$(ownbasectl vault status --json | jq -r .ssh_agent_socket)"
+```
 
 ---
 
@@ -184,8 +202,10 @@ ownbasectl delete mybase    # tear down the local VM and its profile
 The daemon's journal is the canonical diagnostic for anything that happens after the installer finishes:
 
 ```bash
-ssh root@<host> journalctl -u ownbased -n 100
+ownbasectl ssh mybase -- journalctl -u ownbased -n 100
 ```
+
+Use `ownbasectl ssh` rather than plain `ssh`: it authenticates from the vault with no key file to find, and it records the session so there is a trail of whatever you or an agent did while debugging.
 
 ---
 

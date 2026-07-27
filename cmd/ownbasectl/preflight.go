@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/ownbase/ownbase/internal/install"
-	"github.com/ownbase/ownbase/internal/serverconfig"
 	"github.com/ownbase/ownbase/internal/tunnel"
 )
 
@@ -49,15 +48,17 @@ type preflightResult struct {
 // preflightRemote waits for SSH to answer, then verifies the target can host a
 // Base. Errors are tagged exitPreflight: nothing has been modified, so the
 // caller can fix the machine and re-run.
-func preflightRemote(host, sshUser, keyPath string, sshPort int, waitForSSH time.Duration) (*preflightResult, error) {
-	progress("==> Checking %s@%s ...", sshUser, host)
+func preflightRemote(target tunnel.Target, waitForSSH time.Duration) (*preflightResult, error) {
+	host := target.Host
+	sshUser := target.User
+	progress("==> Checking %s ...", target.Destination())
 
-	if err := waitForSSHReady(host, sshUser, keyPath, sshPort, waitForSSH); err != nil {
+	if err := waitForSSHReady(target, waitForSSH); err != nil {
 		return nil, withExitCode(exitPreflight, err)
 	}
 
 	run := func(cmd string) (string, error) {
-		return tunnel.RunCommand(host, sshUser, keyPath, cmd, sshPort)
+		return tunnel.RunCommand(target, cmd)
 	}
 
 	if _, err := run("sudo -n true"); err != nil {
@@ -136,13 +137,13 @@ func preflightRemote(host, sshUser, keyPath string, sshPort int, waitForSSH time
 // waitForSSHReady polls until the target accepts an SSH session or timeout
 // elapses. A just-booted cloud server refuses connections for a while; that is
 // expected, not an error worth surfacing until we give up.
-func waitForSSHReady(host, sshUser, keyPath string, sshPort int, timeout time.Duration) error {
+func waitForSSHReady(target tunnel.Target, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	announced := false
 
 	for {
-		_, err := tunnel.RunCommand(host, sshUser, keyPath, "true", sshPort)
+		_, err := tunnel.RunCommand(target, "true")
 		if err == nil {
 			return nil
 		}
@@ -152,19 +153,19 @@ func waitForSSHReady(host, sshUser, keyPath string, sshPort int, timeout time.Du
 		// remedy is specific enough to be worth saying outright.
 		if isSSHAuthFailure(err) {
 			return fmt.Errorf(
-				"%s@%s rejected the key %s — make sure this key was pasted into the provider's SSH key field when the server was created: %w",
-				sshUser, host, keyPath, err)
+				"%s rejected this Base's owner key — make sure the key from 'ownbasectl keygen' was pasted into the provider's SSH key field when the server was created: %w",
+				target.Destination(), err)
 		}
 		if time.Now().After(deadline) {
 			break
 		}
 		if !announced {
-			progress("    waiting for SSH on %s (up to %s) ...", host, timeout)
+			progress("    waiting for SSH on %s (up to %s) ...", target.Host, timeout)
 			announced = true
 		}
 		time.Sleep(5 * time.Second)
 	}
-	return fmt.Errorf("%s@%s did not accept SSH within %s: %w", sshUser, host, timeout, lastErr)
+	return fmt.Errorf("%s did not accept SSH within %s: %w", target.Destination(), timeout, lastErr)
 }
 
 // isSSHAuthFailure distinguishes "this key is not authorized" from "the host
@@ -225,20 +226,18 @@ func checkProfileConflict(name, host string, allowRepoint bool) error {
 	if allowRepoint {
 		return nil
 	}
-	cfgPath, err := serverconfig.DefaultConfigPath()
+	existing, err := loadProfile(name)
 	if err != nil {
-		return fmt.Errorf("locate config: %w", err)
+		if isMissingBase(err) {
+			return nil
+		}
+		return err
 	}
-	cfg, err := serverconfig.Load(cfgPath)
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-	existing, ok := cfg.Servers[name]
-	if !ok || existing.Host == "" || sameHost(existing.Host, host) {
+	if existing.Host == "" || sameHost(existing.Host, host) {
 		return nil
 	}
 	return withExitCode(exitConflict, fmt.Errorf(
-		"Base %q already points at %s in ~/.ownbase/config; creating it at %s would discard that server's API token.\n"+
+		"Base %q already points at %s in your vault; creating it at %s would discard that server's API token.\n"+
 			"       If that is the same machine under a different address, --replace is safe. Otherwise pick another name, or remove the old profile with 'ownbasectl delete %s --keep-vm'",
 		name, existing.Host, host, name))
 }
@@ -293,23 +292,21 @@ func checkLocalVMProfileConflict(name string, vmExists, allowRepoint bool) error
 	if allowRepoint {
 		return nil
 	}
-	cfgPath, err := serverconfig.DefaultConfigPath()
+	existing, err := loadProfile(name)
 	if err != nil {
-		return fmt.Errorf("locate config: %w", err)
+		if isMissingBase(err) {
+			return nil
+		}
+		return err
 	}
-	cfg, err := serverconfig.Load(cfgPath)
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-	existing, ok := cfg.Servers[name]
-	if !ok || existing.KnownLocalVM() || existing.Host == "" {
+	if existing.KnownLocalVM() || existing.Host == "" {
 		return nil
 	}
 	if !existing.KnownRemote() && vmExists {
 		return nil
 	}
 	return withExitCode(exitConflict, fmt.Errorf(
-		"Base %q already points at %s in ~/.ownbase/config; creating a local VM under that name would discard that Base's API token.\n"+
+		"Base %q already points at %s in your vault; creating a local VM under that name would discard that Base's API token.\n"+
 			"       Pick another name, remove the old profile with 'ownbasectl delete %s --keep-vm', or pass --replace",
 		name, existing.Host, name))
 }

@@ -7,13 +7,10 @@ package main
 import (
 	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"testing"
 
 	"golang.org/x/crypto/ssh"
@@ -164,30 +161,4 @@ func handleSessionChan(newChan ssh.NewChannel) {
 		_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Code uint32 }{uint32(exitCode)}))
 		return
 	}
-}
-
-// generateTestClientKey writes a fresh ED25519 private key to a temp file and
-// returns the path and corresponding SSH public key.
-func generateTestClientKey(t *testing.T) (keyPath string, pub ssh.PublicKey) {
-	t.Helper()
-	edPub, edPriv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("generate client key: %v", err)
-	}
-	block, err := ssh.MarshalPrivateKey(edPriv, "")
-	if err != nil {
-		t.Fatalf("marshal private key: %v", err)
-	}
-	keyBytes := pem.EncodeToMemory(block)
-
-	dir := t.TempDir()
-	keyPath = filepath.Join(dir, "id_ed25519")
-	if err := os.WriteFile(keyPath, keyBytes, 0o600); err != nil {
-		t.Fatalf("write key file: %v", err)
-	}
-	clientPub, err := ssh.NewPublicKey(edPub)
-	if err != nil {
-		t.Fatalf("ssh public key: %v", err)
-	}
-	return keyPath, clientPub
 }
