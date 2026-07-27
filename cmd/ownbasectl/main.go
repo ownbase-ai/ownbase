@@ -104,8 +104,8 @@ func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "ownbasectl",
 		Short: "Set up, operate, and own your Base",
-		Long: `ownbasectl is the OwnBase CLI: it provisions a Base (a user-owned
-Ubuntu machine managed by the ownbased daemon), keeps its backups honest,
+		Long: `ownbasectl is the OwnBase CLI: it provisions a Base (a Ubuntu
+machine you own, running the ownbased daemon), keeps its backups honest,
 and gives you one command for every step of the lifecycle.
 
 Every command that targets a Base takes its name as the first argument.

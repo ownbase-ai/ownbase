@@ -14,6 +14,8 @@ Key claims are deliberately repeated across documents so each is self-contained 
 
 | Claim | Canonical source | Also restated in |
 |---|---|---|
+| Positioning: the tagline, the thesis that AI builds faster when it owns the whole machine, and ownership as the mechanism rather than a second feature | [MISSION.md](../../MISSION.md) | README front matter, AGENTS.md "One sentence" |
+| What "own everything" includes — down to OwnBase itself, MIT-licensed and forkable | [MISSION.md](../../MISSION.md) | README "Why build here", AGENTS.md, service-constitution "The ownership boundary", lexicon |
 | The hard constraints (six) | [MISSION.md](../../MISSION.md) | README "Why build here", AGENTS.md |
 | `reconstructable = (repo, secrets, backups)`; four ops, one reconcile | [reconstruction-model.md](reconstruction-model.md) | architecture-principles §1, this file |
 | Secrets model (age-encrypted, key never leaves, injected at start) | [ownbase-yaml.md](../ownbase-yaml.md) "Secrets" | decisions, api, cli, reconstruction-model, architecture-principles §13 |

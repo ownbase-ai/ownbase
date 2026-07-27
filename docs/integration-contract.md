@@ -10,13 +10,13 @@ A service is added as an **external git repo built locally to a `localhost/ownba
 
 A service is declared in `ownbase.yaml` with a single field:
 
-- **`repo:`** — an external git URL (GitHub, any git host). OwnBase keeps a read-only `git clone --bare --mirror` of it under `/opt/ownbase/repos/<service-name>` and builds from it at the pinned `ref:`. Declarative: the operator only specifies the URL and ref; the daemon fetches a new ref on demand. Private repos are read using the Base's managed SSH deploy key (see [cli.md](cli.md), `ssh-key`). There is no push-to-Base path — the Base never hosts service code.
+- **`repo:`** — an external git URL (GitHub, any git host). The daemon keeps a read-only `git clone --bare --mirror` of it under `/opt/ownbase/repos/<service-name>` and builds from it at the pinned `ref:`. Declarative: the operator only specifies the URL and ref; the daemon fetches a new ref on demand. Private repos are read using the Base's managed SSH deploy key (see [cli.md](cli.md), `ssh-key`). There is no push-to-Base path — the Base never hosts service code.
 
 **The no-registry rule:** `image:` and `digest:` are not valid user service fields. The core package (Caddy) is the only bootstrap exception and is managed by the installer, not by `ownbase.yaml`.
 
 ```text
 external repo (GitHub, any git host) — repo: declaration in ownbase.yaml
-        │  OwnBase keeps a read-only bare clone (/opt/ownbase/repos/<name>)
+        │  the daemon keeps a read-only bare clone (/opt/ownbase/repos/<name>)
         ▼
 local bare clone  @  pinned ref: (a concrete SHA written by `ownbasectl deploy`)
         │  daemon clones + builds at ref:

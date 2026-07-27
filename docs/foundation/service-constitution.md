@@ -2,7 +2,7 @@
 
 > The non-negotiable rules every OwnBase service must obey. These are the anti-lock-in guarantees, made concrete. A service that breaks any rule here does not ship, no matter how useful it is.
 
-OwnBase provides services — auth, jobs, storage, a Git host — so a user (or their AI) doesn't have to reinvent them per service. That convenience is also the exact place lock-in usually creeps in. This document is the wall against that.
+A Base ships with services — auth, jobs, storage, a Git host — so a user (or their AI) doesn't have to reinvent them per service. That convenience is also the exact place lock-in usually creeps in. This document is the wall against that.
 
 These rules apply to every OwnBase service and to any alternative a user swaps in for a capability (see Rule 3).
 
@@ -30,9 +30,9 @@ Every service runs fully on the user's machine without phoning home. No service 
 
 ## The ownership boundary
 
-**The user owns:** the server account, all service code, all data, all configuration, all secrets, all backups, all domains.
+There is no boundary in the usual sense, because there are not two parties. **The user owns the server account, all service code, all data, all configuration, all secrets, all backups, all domains — and OwnBase itself**, which is MIT-licensed: their copy of the daemon, the service templates, and this documentation is theirs to read, change, fork, and ship.
 
-**OwnBase provides:** the daemon, service templates, and this documentation. That's it — there is no OwnBase-operated backend a Base depends on at runtime.
+What the project upstream contributes is source code, not a service. There is no OwnBase-operated backend a Base depends on at runtime, and nothing to revoke: a fork that never pulls from upstream again keeps working indefinitely.
 
 ## Capabilities are declared in `ownbase.yaml`, not a separate manifest
 

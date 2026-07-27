@@ -4,7 +4,7 @@
 
 ## Core nouns
 
-**OwnBase** : The system that turns a machine the user controls into a secure, self-maintaining home for the software they own.
+**OwnBase** : Open-source (MIT) software that turns a machine the user controls into a secure, self-maintaining home for the software they own. Not a host, a platform, or a service: the user owns their copy and can fork it, and nothing on a Base depends on an upstream backend at runtime.
 
 **a Base** : One user's installation of OwnBase — a single owned machine, everything on it, and its config repo. "Create a Base," "the Base is healthy." Plural: Bases.
 
