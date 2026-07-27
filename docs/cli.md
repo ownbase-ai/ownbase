@@ -89,6 +89,8 @@ Without `--wait`, `create` returns while the daemon is still hardening the host 
 
 `create` refuses to repoint an existing Base name at a different machine without `--replace`, because overwriting the profile discards the old Base's API token and orphans it. This applies to both paths: repointing a name at another host, and launching a local VM under a name that already belongs to a remote server.
 
+"Same machine" means the address as written, normalized for case, whitespace, a trailing dot, and IPv6 spelling. DNS is not resolved, so reaching one server by hostname and then by IP reads as two machines — see [troubleshooting.md](troubleshooting.md#already-points-at-host-in-ownbaseconfig) for why that is deliberate, and why `--replace` is the right answer there.
+
 A freshly created Base has no domain configured, so it exposes nothing but SSH. Once a service has a `domain:`, reach it with [`tunnel`](#tunnel-name), or through Caddy once DNS points at the Base.
 
 ### `adopt <name> --host <host> --token <token>`

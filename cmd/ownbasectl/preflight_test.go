@@ -92,9 +92,12 @@ func TestCheckProfileConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Same host is a retry, which must keep working.
-	if err := checkProfileConflict("mybase", "203.0.113.10", false); err != nil {
-		t.Errorf("re-running create against the same host must be allowed: %v", err)
+	// Same host is a retry, which must keep working — including when it is
+	// spelled differently than the profile records it.
+	for _, host := range []string{"203.0.113.10", " 203.0.113.10 "} {
+		if err := checkProfileConflict("mybase", host, false); err != nil {
+			t.Errorf("re-running create against the same host (%q) must be allowed: %v", host, err)
+		}
 	}
 
 	// A different host would orphan the original server.
@@ -112,6 +115,36 @@ func TestCheckProfileConflict(t *testing.T) {
 	// ...unless the caller opted in (create --replace, or restore).
 	if err := checkProfileConflict("mybase", "198.51.100.5", true); err != nil {
 		t.Errorf("allowRepoint should permit the change: %v", err)
+	}
+}
+
+func TestSameHost(t *testing.T) {
+	same := [][2]string{
+		{"203.0.113.10", "203.0.113.10"},
+		{"Example.COM", "example.com"},
+		{"example.com.", "example.com"},
+		{" example.com ", "example.com"},
+		{"[2001:db8::1]", "2001:db8::1"},
+		{"2001:DB8::0001", "2001:db8::1"},
+	}
+	for _, c := range same {
+		if !sameHost(c[0], c[1]) {
+			t.Errorf("sameHost(%q, %q) = false, want true", c[0], c[1])
+		}
+	}
+
+	// A hostname and an address are not assumed to be the same machine:
+	// see the note on sameHost about why DNS is not consulted.
+	differ := [][2]string{
+		{"203.0.113.10", "203.0.113.20"},
+		{"example.com", "example.org"},
+		{"example.com", "203.0.113.10"},
+		{"2001:db8::1", "2001:db8::2"},
+	}
+	for _, c := range differ {
+		if sameHost(c[0], c[1]) {
+			t.Errorf("sameHost(%q, %q) = true, want false", c[0], c[1])
+		}
 	}
 }
 

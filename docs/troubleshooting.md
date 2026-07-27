@@ -43,6 +43,8 @@ The machine is too small to build a service from source. See [sizing](../README.
 
 That Base name is registered against a different machine, and overwriting it would discard the old server's API token, leaving it running and unreachable. Use a different name, remove the stale profile with `ownbasectl delete <name> --keep-vm`, or pass `--replace` if you really are moving the name.
 
+You can also hit this when it *is* the same machine, reached by a different address — you created the Base by hostname and retried with the IP, or the other way round. The comparison is on the address as written (normalized for case, whitespace, a trailing dot, and IPv6 spelling), and it does not resolve DNS on purpose: a hostname that has since been repointed would resolve to the new server and silently approve discarding the old one's token. When you know both addresses are the same machine, `--replace` is the right answer and costs nothing.
+
 ---
 
 ## `create` / install failures

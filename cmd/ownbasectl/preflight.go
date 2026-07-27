@@ -13,6 +13,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -233,13 +234,43 @@ func checkProfileConflict(name, host string, allowRepoint bool) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 	existing, ok := cfg.Servers[name]
-	if !ok || existing.Host == host || existing.Host == "" {
+	if !ok || existing.Host == "" || sameHost(existing.Host, host) {
 		return nil
 	}
 	return withExitCode(exitUsage, fmt.Errorf(
 		"Base %q already points at %s in ~/.ownbase/config; creating it at %s would discard that server's API token.\n"+
-			"       Pick another name, remove the old profile with 'ownbasectl delete %s --keep-vm', or pass --replace",
+			"       If that is the same machine under a different address, --replace is safe. Otherwise pick another name, or remove the old profile with 'ownbasectl delete %s --keep-vm'",
 		name, existing.Host, host, name))
+}
+
+// sameHost reports whether two host strings denote the same machine, as far as
+// can be determined without touching the network. It normalizes the ways one
+// address is legitimately spelled: surrounding whitespace, case (DNS names are
+// case-insensitive, as are IPv6 hex digits), IPv6 brackets, a trailing FQDN
+// dot, and equivalent IP literal forms such as 2001:db8::0001 and 2001:db8::1.
+//
+// It deliberately does not resolve DNS, even though that would also catch
+// "hostname the first time, IP address on the retry". Resolving the stored
+// hostname says where that name points *now*, not which machine the profile
+// was written for. After a rebuild-and-repoint the old hostname resolves to
+// the new server, so the guard would call them the same machine and discard
+// the original's token — the exact orphaning it exists to prevent. A false
+// refusal costs one --replace flag; a false match costs a running, billed,
+// unreachable server, so the comparison stays conservative.
+func sameHost(a, b string) bool {
+	a, b = normalizeHost(a), normalizeHost(b)
+	if a == b {
+		return true
+	}
+	ipA, ipB := net.ParseIP(a), net.ParseIP(b)
+	return ipA != nil && ipB != nil && ipA.Equal(ipB)
+}
+
+func normalizeHost(h string) string {
+	h = strings.TrimSpace(h)
+	h = strings.Trim(h, "[]")
+	h = strings.TrimSuffix(h, ".")
+	return strings.ToLower(h)
 }
 
 // checkLocalVMProfileConflict is the same guard for the local-VM path, where
