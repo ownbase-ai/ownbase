@@ -75,11 +75,8 @@ func runBaseRestore(name, backupRepo string, creds backupCredFlags, forceRebuild
 		env["B2_ACCOUNT_KEY"] = creds.b2AccountKey
 	}
 
-	if !target.jsonOut {
-		fmt.Printf("==> Restoring Base %q from %s\n", name, backupRepo)
-		fmt.Println("    current = restore(backups); running = reconcile(compile(repo, secrets), current)")
-		fmt.Println()
-	}
+	progress("==> Restoring Base %q from %s", name, backupRepo)
+	progress("    current = restore(backups); running = reconcile(compile(repo, secrets), current)\n")
 
 	if err := target.provision(name, env); err != nil {
 		return fmt.Errorf("restore failed: %w", err)

@@ -107,7 +107,10 @@ func (f *baseTargetFlags) register(cmd *cobra.Command) {
 func (f *baseTargetFlags) provision(name string, extraEnv map[string]string) error {
 	// Resolve once, here, so the key we authenticate with and the key we
 	// install into the server's authorized_keys are always the same one.
-	sshKey := resolveOwnerKey(name, f.sshKey)
+	sshKey, err := f.ensureOwnerKey(name)
+	if err != nil {
+		return err
+	}
 
 	if f.remoteHost != "" {
 		host, user := splitUserHost(f.remoteHost, f.sshUser)
@@ -115,6 +118,53 @@ func (f *baseTargetFlags) provision(name string, extraEnv map[string]string) err
 	}
 	opts := vmhost.LaunchOptions{CPUs: f.cpus, MemoryGB: f.memoryGB, DiskGB: f.diskGB}
 	return baseCreateVM(name, opts, sshKey, extraEnv, f)
+}
+
+// ensureOwnerKey resolves the key ownbasectl will authenticate with and
+// guarantees it exists on disk before anything depends on it. Returns the
+// ~-prefixed path to record in the profile.
+//
+// Without this, a machine with no SSH key at all provisions a local VM
+// successfully and then cannot be reached: the installer gets no public key to
+// authorize, so every later tunnel — including --wait's health poll — fails on
+// a missing key file long after the VM is running.
+//
+// The two paths diverge on who authorizes the key. A local VM is configured by
+// us, so a missing key can simply be generated and `create <name>` works on a
+// machine that has never used SSH. A cloud server is authorized by the
+// provider at boot, from a key pasted in before the machine existed;
+// generating one now would produce a key the server has never heard of, so the
+// only useful move is to say so before touching anything.
+func (f *baseTargetFlags) ensureOwnerKey(name string) (string, error) {
+	sshKey := resolveOwnerKey(name, f.sshKey)
+	if fileExists(expandKeyPath(sshKey)) {
+		return sshKey, nil
+	}
+
+	// An explicitly named key is a statement of intent: substituting a
+	// different one would be worse than refusing.
+	if f.sshKey != "" {
+		return "", withExitCode(exitPreflight, fmt.Errorf(
+			"no SSH private key at %s (from --ssh-key)", sshKey))
+	}
+	if f.remoteHost != "" {
+		return "", withExitCode(exitPreflight, fmt.Errorf(
+			"no SSH key to reach %s with: expected one at %s.\n"+
+				"       Run 'ownbasectl keygen %s', paste the printed public key into your provider's SSH key field, and rebuild the server so it boots with that key authorized",
+			f.remoteHost, sshKey, name))
+	}
+
+	keyPath, err := ownerKeyPath(name)
+	if err != nil {
+		return "", err
+	}
+	if !fileExists(keyPath) {
+		if err := generateOwnerKey(keyPath, filepath.Base(keyPath)); err != nil {
+			return "", err
+		}
+		progress("==> No SSH key found; generated one for this Base at %s", keyPath)
+	}
+	return filepath.Join("~", ".ssh", "ownbase_"+name), nil
 }
 
 func newCreateCmd() *cobra.Command {
@@ -151,6 +201,16 @@ unattended. Add --wait to block until host hardening has finished, and
 	cmd.Flags().BoolVar(&target.replace, "replace", false,
 		"allow an existing Base name to be repointed at a different machine")
 	return cmd
+}
+
+// progress writes a status line to stderr.
+//
+// Progress is not the command's result. Keeping it off stdout is what lets
+// --json emit a single parseable document while a human watching a two-minute
+// install still sees what is happening. The result — the banner, or the JSON —
+// is the only thing that goes to stdout.
+func progress(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, format+"\n", args...)
 }
 
 // splitUserHost splits a --remote value that may be given in ssh-style
@@ -199,10 +259,16 @@ func baseCreateVM(name string, opts vmhost.LaunchOptions, sshKey string, extraEn
 	ctx := context.Background()
 	m := vmhost.New()
 
-	fmt.Printf("==> Provisioning local VM %q (multipass) ...\n", name)
+	progress("==> Provisioning local VM %q (multipass) ...", name)
 	exists, err := m.Exists(ctx, name)
 	if err != nil {
 		return fmt.Errorf("check for existing VM %q: %w", name, err)
+	}
+	// Refuse before launching anything if this name already belongs to a
+	// machine we are not about to replace — the same orphaning risk the
+	// remote path guards against.
+	if err := checkLocalVMProfileConflict(name, exists, f.replace || f.repointOK); err != nil {
+		return err
 	}
 	if exists {
 		if !confirm(fmt.Sprintf("A local VM named %q already exists and will be DELETED (all its data is lost). Continue?", name), f.assumeYes) {
@@ -215,24 +281,24 @@ func baseCreateVM(name string, opts vmhost.LaunchOptions, sshKey string, extraEn
 	if err := m.Launch(ctx, name, opts); err != nil {
 		return fmt.Errorf("launch VM %q: %w", name, err)
 	}
-	fmt.Println("    VM launched.")
+	progress("    VM launched.")
 
 	if repoRoot != "" {
-		fmt.Println("==> Building ownbased for the VM (go build -tags=integration) ...")
+		progress("==> Building ownbased for the VM (go build -tags=integration) ...")
 		binPath, cleanup, err := buildOwnbasedBinary(repoRoot)
 		if err != nil {
 			return err
 		}
 		defer cleanup()
 
-		fmt.Println("==> Transferring the daemon binary into the VM ...")
+		progress("==> Transferring the daemon binary into the VM ...")
 		if err := m.Transfer(ctx, binPath, name, "/home/ubuntu/ownbased"); err != nil {
 			return fmt.Errorf("transfer ownbased binary: %w", err)
 		}
 		env["OWNBASE_LOCAL_BINARY"] = "/home/ubuntu/ownbased"
 	}
 
-	fmt.Println("==> Transferring the installer into the VM ...")
+	progress("==> Transferring the installer into the VM ...")
 	scriptPath, scriptCleanup, err := writeEmbeddedInstallScript()
 	if err != nil {
 		return err
@@ -242,7 +308,7 @@ func baseCreateVM(name string, opts vmhost.LaunchOptions, sshKey string, extraEn
 		return fmt.Errorf("transfer install.sh: %w", err)
 	}
 
-	fmt.Println("==> Running the installer inside the VM ...")
+	progress("==> Running the installer inside the VM ...")
 	if key := ownerPublicKey(sshKey); key != "" {
 		env["OWNBASE_OWNER_SSH_KEY"] = key
 	}
@@ -253,7 +319,7 @@ func baseCreateVM(name string, opts vmhost.LaunchOptions, sshKey string, extraEn
 		env[k] = v
 	}
 	out, err := m.RunSudoScript(ctx, name, "/home/ubuntu/install.sh", env)
-	fmt.Println(out)
+	fmt.Fprintln(os.Stderr, out)
 	if err != nil {
 		return withExitCode(exitInstall, fmt.Errorf("installer failed: %w", err))
 	}
@@ -263,7 +329,7 @@ func baseCreateVM(name string, opts vmhost.LaunchOptions, sshKey string, extraEn
 		return fmt.Errorf("get VM IP address: %w", err)
 	}
 
-	fmt.Println("==> Reading the API token from the VM ...")
+	progress("==> Reading the API token from the VM ...")
 	token, err := waitForVMAPIToken(ctx, m, name, 2*time.Minute)
 	if err != nil {
 		return err
@@ -292,13 +358,11 @@ func baseCreateRemote(name, host, sshUser, sshKey string, extraEnv map[string]st
 	if err := checkProfileConflict(name, host, f.replace || f.repointOK); err != nil {
 		return err
 	}
-	if _, err := preflightRemote(host, sshUser, keyPath, sshPort, f.waitForSSH, f.jsonOut); err != nil {
+	if _, err := preflightRemote(host, sshUser, keyPath, sshPort, f.waitForSSH); err != nil {
 		return err
 	}
 
-	if !f.jsonOut {
-		fmt.Printf("==> Installing OwnBase on %s@%s ...\n", sshUser, host)
-	}
+	progress("==> Installing OwnBase on %s@%s ...", sshUser, host)
 	const remoteScriptPath = "/tmp/ownbase-install.sh"
 	if err := tunnel.UploadFile(host, sshUser, keyPath, sshPort, ownbase.InstallScript, remoteScriptPath, 0o755); err != nil {
 		return withExitCode(exitInstall, fmt.Errorf("upload install.sh: %w", err))
@@ -329,19 +393,12 @@ func baseCreateRemote(name, host, sshUser, sshKey string, extraEnv map[string]st
 	// (CADDY_EMAIL, OWNBASE_OWNER_SSH_KEY, ...) through the sudo boundary
 	// so it works whether sshUser is already root or a sudo-capable user.
 	out, err := tunnel.RunCommand(host, sshUser, keyPath, envPrefixedCommand(env, "sudo -E bash "+remoteScriptPath), sshPort)
-	if !f.jsonOut {
-		fmt.Println(out)
-	}
+	fmt.Fprintln(os.Stderr, out)
 	if err != nil {
-		if f.jsonOut {
-			fmt.Fprintln(os.Stderr, out)
-		}
 		return withExitCode(exitInstall, fmt.Errorf("installer failed: %w", err))
 	}
 
-	if !f.jsonOut {
-		fmt.Println("==> Reading the API token from the server ...")
-	}
+	progress("==> Reading the API token from the server ...")
 	token, err := tunnel.RunCommand(host, sshUser, keyPath, "sudo cat /opt/ownbase/api-token", sshPort)
 	if err != nil {
 		return withExitCode(exitInstall, fmt.Errorf("read API token: %w", err))
@@ -368,16 +425,12 @@ func baseCreateRemote(name, host, sshUser, sshKey string, extraEnv map[string]st
 func finishCreate(name, host, sshUser, sshKey string, sshPort int, f *baseTargetFlags) error {
 	ready := false
 	if f.wait {
-		if !f.jsonOut {
-			fmt.Println("==> Waiting for the daemon to finish hardening the host ...")
-		}
+		progress("==> Waiting for the daemon to finish hardening the host ...")
 		if err := waitForDaemonReady(name, f.waitTimeout); err != nil {
 			return err
 		}
 		ready = true
-		if !f.jsonOut {
-			fmt.Println("    Host hardened, daemon healthy.")
-		}
+		progress("    Host hardened, daemon healthy.")
 	}
 
 	if f.jsonOut {
@@ -503,9 +556,7 @@ func registerProfile(name, host, sshUser, sshKey string, sshPort, apiPort int, t
 		return fmt.Errorf("save config: %w", err)
 	}
 
-	// Progress goes to stderr so that --json leaves stdout a single parseable
-	// document. It still shows in a terminal.
-	fmt.Fprintf(os.Stderr, "Registered %q in ~/.ownbase/config.\n", name)
+	progress("Registered %q in ~/.ownbase/config.", name)
 	return nil
 }
 

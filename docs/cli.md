@@ -36,6 +36,10 @@ Mutating config commands additionally clone and push the external config repo di
 
 Every other command uses 0 for success and 1 for failure.
 
+## stdout and stderr
+
+Stdout carries only the result: the human banner, or the `--json` document. Progress lines, installer logs, and errors go to stderr on every path, local VM and remote alike. So `ownbasectl create ... --json | jq` is always safe, and dropping stderr is what makes a run quiet rather than what makes it parseable.
+
 ---
 
 ## Lifecycle
@@ -79,9 +83,11 @@ ownbasectl create mybase --remote root@203.0.113.10 --wait       # fresh Ubuntu 
 
 On the `--remote` path, `create` waits for SSH, then verifies passwordless sudo, the Ubuntu version, the architecture, and that the machine meets the memory and disk floor — all **before** it changes anything. See [INSTALL.md](../INSTALL.md#installing-on-a-server).
 
+The key `create` will connect with is resolved up front. For a local VM a missing key is generated, so `create <name>` works with no prior setup. For `--remote` a missing key is a preflight failure: the provider has to authorize it before the server boots, so run [`keygen`](#keygen-name) first.
+
 Without `--wait`, `create` returns while the daemon is still hardening the host for another minute or two. The daemon runs pass zero before it binds its API port, so "the API answers" is exactly the signal that hardening finished.
 
-`create` refuses to repoint an existing Base name at a different host without `--replace`, because overwriting the profile discards the old server's API token and orphans it.
+`create` refuses to repoint an existing Base name at a different machine without `--replace`, because overwriting the profile discards the old Base's API token and orphans it. This applies to both paths: repointing a name at another host, and launching a local VM under a name that already belongs to a remote server.
 
 A freshly created Base has no domain configured, so it exposes nothing but SSH. Once a service has a `domain:`, reach it with [`tunnel`](#tunnel-name), or through Caddy once DNS points at the Base.
 

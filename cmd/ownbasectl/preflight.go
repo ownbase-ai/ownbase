@@ -48,12 +48,10 @@ type preflightResult struct {
 // preflightRemote waits for SSH to answer, then verifies the target can host a
 // Base. Errors are tagged exitPreflight: nothing has been modified, so the
 // caller can fix the machine and re-run.
-func preflightRemote(host, sshUser, keyPath string, sshPort int, waitForSSH time.Duration, quiet bool) (*preflightResult, error) {
-	if !quiet {
-		fmt.Printf("==> Checking %s@%s ...\n", sshUser, host)
-	}
+func preflightRemote(host, sshUser, keyPath string, sshPort int, waitForSSH time.Duration) (*preflightResult, error) {
+	progress("==> Checking %s@%s ...", sshUser, host)
 
-	if err := waitForSSHReady(host, sshUser, keyPath, sshPort, waitForSSH, quiet); err != nil {
+	if err := waitForSSHReady(host, sshUser, keyPath, sshPort, waitForSSH); err != nil {
 		return nil, withExitCode(exitPreflight, err)
 	}
 
@@ -123,23 +121,21 @@ func preflightRemote(host, sshUser, keyPath string, sshPort int, waitForSSH time
 		}
 	}
 
-	if !quiet {
-		fmt.Printf("    Ubuntu %s, %s", res.UbuntuVersion, res.Arch)
-		if res.MemoryMB > 0 {
-			fmt.Printf(", %d MB RAM", res.MemoryMB)
-		}
-		if res.DiskGB > 0 {
-			fmt.Printf(", %d GB disk", res.DiskGB)
-		}
-		fmt.Println()
+	summary := fmt.Sprintf("    Ubuntu %s, %s", res.UbuntuVersion, res.Arch)
+	if res.MemoryMB > 0 {
+		summary += fmt.Sprintf(", %d MB RAM", res.MemoryMB)
 	}
+	if res.DiskGB > 0 {
+		summary += fmt.Sprintf(", %d GB disk", res.DiskGB)
+	}
+	progress("%s", summary)
 	return res, nil
 }
 
 // waitForSSHReady polls until the target accepts an SSH session or timeout
 // elapses. A just-booted cloud server refuses connections for a while; that is
 // expected, not an error worth surfacing until we give up.
-func waitForSSHReady(host, sshUser, keyPath string, sshPort int, timeout time.Duration, quiet bool) error {
+func waitForSSHReady(host, sshUser, keyPath string, sshPort int, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	announced := false
@@ -161,8 +157,8 @@ func waitForSSHReady(host, sshUser, keyPath string, sshPort int, timeout time.Du
 		if time.Now().After(deadline) {
 			break
 		}
-		if !announced && !quiet {
-			fmt.Printf("    waiting for SSH on %s (up to %s) ...\n", host, timeout)
+		if !announced {
+			progress("    waiting for SSH on %s (up to %s) ...", host, timeout)
 			announced = true
 		}
 		time.Sleep(5 * time.Second)
@@ -244,4 +240,38 @@ func checkProfileConflict(name, host string, allowRepoint bool) error {
 		"Base %q already points at %s in ~/.ownbase/config; creating it at %s would discard that server's API token.\n"+
 			"       Pick another name, remove the old profile with 'ownbasectl delete %s --keep-vm', or pass --replace",
 		name, existing.Host, host, name))
+}
+
+// checkLocalVMProfileConflict is the same guard for the local-VM path, where
+// the host is not known until after the VM boots, so there is nothing to
+// compare against. The question it answers instead: would launching a VM under
+// this name discard a profile for a machine that is not this VM?
+//
+// vmExists means a Multipass VM of this name is already there, which is the
+// ordinary "re-create my VM" case — it has its own delete confirmation, and
+// the profile being overwritten belongs to the VM being replaced.
+//
+// Anything that is not a known local VM is refused, including a legacy profile
+// with LocalVM unset. Being wrong in that direction costs one --replace flag;
+// being wrong in the other orphans a paid server.
+func checkLocalVMProfileConflict(name string, vmExists, allowRepoint bool) error {
+	if allowRepoint || vmExists {
+		return nil
+	}
+	cfgPath, err := serverconfig.DefaultConfigPath()
+	if err != nil {
+		return fmt.Errorf("locate config: %w", err)
+	}
+	cfg, err := serverconfig.Load(cfgPath)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	existing, ok := cfg.Servers[name]
+	if !ok || existing.KnownLocalVM() || existing.Host == "" {
+		return nil
+	}
+	return withExitCode(exitUsage, fmt.Errorf(
+		"Base %q already points at %s in ~/.ownbase/config; creating a local VM under that name would discard that Base's API token.\n"+
+			"       Pick another name, remove the old profile with 'ownbasectl delete %s --keep-vm', or pass --replace",
+		name, existing.Host, name))
 }

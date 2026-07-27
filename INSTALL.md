@@ -59,6 +59,8 @@ ownbasectl status mybase
 
 `create` launches a fresh Ubuntu 24.04 VM, deleting any existing VM of the same name first — it will ask before doing so. Size it with `--cpus`, `--memory`, `--disk` (defaults: 2 CPUs, 2 GB, 15 GB).
 
+You do not need to run `keygen` first: there is no provider to authorize a key with, so if you have no SSH key `create` generates one at `~/.ssh/ownbase_<name>` and the VM boots with it authorized.
+
 Since a local VM has no DNS records, Caddy never gets a real certificate. Use `ownbasectl tunnel mybase` to reach services at trusted local HTTPS URLs.
 
 ### Pausing a local VM

@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -110,6 +111,119 @@ func TestCheckProfileConflict(t *testing.T) {
 	if err := checkProfileConflict("mybase", "198.51.100.5", true); err != nil {
 		t.Errorf("allowRepoint should permit the change: %v", err)
 	}
+}
+
+func TestCheckLocalVMProfileConflict(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	// No profile yet: nothing to conflict with.
+	if err := checkLocalVMProfileConflict("mybase", false, false); err != nil {
+		t.Fatalf("unexpected conflict for a new name: %v", err)
+	}
+
+	// A remote Base under the same name: launching a VM here would discard
+	// the token for a server that stays running and billed.
+	if err := registerProfile("mybase", "203.0.113.10", "root", "~/.ssh/ownbase_mybase", 22, 7070, "tok", false); err != nil {
+		t.Fatal(err)
+	}
+	err := checkLocalVMProfileConflict("mybase", false, false)
+	if err == nil {
+		t.Fatal("expected a conflict when a local VM would replace a remote Base")
+	}
+	if !strings.Contains(err.Error(), "203.0.113.10") {
+		t.Errorf("error should name the existing host, got: %v", err)
+	}
+	if code := exitCodeFor(err); code != exitUsage {
+		t.Errorf("conflict exit code = %d, want %d", code, exitUsage)
+	}
+
+	// Opting in (create --replace, or restore) proceeds.
+	if err := checkLocalVMProfileConflict("mybase", false, true); err != nil {
+		t.Errorf("allowRepoint should permit the change: %v", err)
+	}
+	// So does an existing VM of that name: that path already confirms the
+	// delete, and the profile belongs to the VM being replaced.
+	if err := checkLocalVMProfileConflict("mybase", true, false); err != nil {
+		t.Errorf("an existing VM is the ordinary re-create case: %v", err)
+	}
+
+	// Re-creating a VM whose profile says local is a normal retry.
+	if err := registerProfile("vmbase", "192.168.64.5", "ubuntu", "~/.ssh/id_ed25519", 22, 7070, "tok", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkLocalVMProfileConflict("vmbase", false, false); err != nil {
+		t.Errorf("re-creating a known local VM must be allowed: %v", err)
+	}
+}
+
+func TestEnsureOwnerKey(t *testing.T) {
+	// A local VM on a machine with no SSH key at all: generate one, so the
+	// installer has a public key to authorize and later tunnels work.
+	t.Run("local VM generates a missing key", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		f := &baseTargetFlags{}
+		key, err := f.ensureOwnerKey("mybase")
+		if err != nil {
+			t.Fatalf("local create must not require a pre-existing key: %v", err)
+		}
+		if key != filepath.Join("~", ".ssh", "ownbase_mybase") {
+			t.Errorf("key path = %q, want the per-Base keygen path", key)
+		}
+		if !fileExists(expandKeyPath(key)) {
+			t.Error("resolved key does not exist on disk")
+		}
+		// The installer authorizes whatever this returns; empty means the
+		// VM boots with no way in.
+		if ownerPublicKey(key) == "" {
+			t.Error("generated key yields no authorized_keys line")
+		}
+	})
+
+	// Re-running must reuse the key, or the second create locks us out of
+	// the machine the first one authorized.
+	t.Run("existing key is reused", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		f := &baseTargetFlags{}
+		first, err := f.ensureOwnerKey("mybase")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := ownerPublicKey(first)
+		if _, err := f.ensureOwnerKey("mybase"); err != nil {
+			t.Fatal(err)
+		}
+		if got := ownerPublicKey(first); got != want {
+			t.Error("re-running regenerated the key instead of reusing it")
+		}
+	})
+
+	// A remote key must be authorized by the provider before the server
+	// boots, so generating one here would be useless.
+	t.Run("remote refuses with a keygen pointer", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		f := &baseTargetFlags{remoteHost: "root@203.0.113.10"}
+		_, err := f.ensureOwnerKey("mybase")
+		if err == nil {
+			t.Fatal("expected a refusal when no key exists for a remote target")
+		}
+		if !strings.Contains(err.Error(), "keygen mybase") {
+			t.Errorf("error should point at keygen, got: %v", err)
+		}
+		if code := exitCodeFor(err); code != exitPreflight {
+			t.Errorf("exit code = %d, want %d (nothing was changed)", code, exitPreflight)
+		}
+	})
+
+	// An explicit --ssh-key that does not exist is a typo, not an invitation
+	// to substitute a different key.
+	t.Run("explicit missing key is an error", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		f := &baseTargetFlags{sshKey: "/nonexistent/key"}
+		if _, err := f.ensureOwnerKey("mybase"); err == nil {
+			t.Fatal("expected a refusal for a missing --ssh-key")
+		}
+	})
 }
 
 func TestExitCodeFor(t *testing.T) {
