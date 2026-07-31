@@ -895,7 +895,7 @@ function Activity({ status }: { status: BaseStatus }) {
               className="flex flex-wrap items-center justify-between gap-3 py-2.5 text-xs first:pt-0 last:pb-0"
             >
               <span className="flex min-w-0 items-center gap-2">
-                <Dot tone={action.outcome === "success" ? "good" : "bad"} />
+                <Dot tone={action.outcome === "applied" ? "good" : "bad"} />
                 <span className="font-mono text-zinc-300">{action.action}</span>
                 {action.target && (
                   <span className="selectable truncate text-zinc-500">

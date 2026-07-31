@@ -132,7 +132,7 @@ jobs:
             runner: macos-14
             target: aarch64-apple-darwin
           - label: macOS (Intel)
-            runner: macos-13
+            runner: macos-15-intel # macos-13 (the last plain Intel label) retired December 2025
             target: x86_64-apple-darwin
           - label: Linux (x86_64)
             runner: ubuntu-22.04 # oldest glibc we support; newer would not run on it

@@ -251,10 +251,17 @@ export interface AuditSummary {
   total_seen: number;
 }
 
-/** internal/explain.RecentAction */
+/**
+ * internal/explain.RecentAction
+ *
+ * outcome mirrors the Outcome* constants in internal/authz/audit.go exactly —
+ * the daemon never emits "success". Keeping this a union instead of `string`
+ * is what makes a typo here (like the one this comment used to sit next to)
+ * a compile error instead of every action rendering as a failure.
+ */
 export interface RecentAction {
   time: string;
   action: string;
   target: string;
-  outcome: string;
+  outcome: "applied" | "rolled_back" | "refused" | "error" | "rollback_error";
 }

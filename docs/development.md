@@ -94,8 +94,11 @@ multipass exec ownbase-fresh -- sudo systemctl list-units 'ownbase-*'  # units l
 multipass exec ownbase-fresh -- sudo ls /etc/containers/systemd/       # Quadlet unit files
 multipass exec ownbase-fresh -- sudo ls /opt/ownbase/checkout /opt/ownbase/repos  # config checkout + service bare clones
 
-# Verify trivy was installed by PassZero
+# Verify trivy was installed by PassZero, and that it can actually scan —
+# both are required for `security` to report real results instead of
+# "scan failed" for every image.
 multipass exec ownbase-fresh -- trivy --version
+multipass exec ownbase-fresh -- systemctl is-active podman.socket
 ```
 
 ### Then use `ownbasectl` as usual

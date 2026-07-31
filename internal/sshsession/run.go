@@ -91,18 +91,25 @@ func Run(opts Options) (*Result, error) {
 		return nil, err
 	}
 
+	// failEarly records the abandoned attempt (so it is on disk and in
+	// `sessions list` like any other) and still returns a Result carrying its
+	// Meta, so callers such as `ownbasectl ssh` can print --json metadata and
+	// the "session recorded as ..." notice for a failure exactly as they
+	// would for one that ran to completion.
+	failEarly := func(wrapped error) (*Result, error) {
+		_ = rec.Finish(-1, wrapped)
+		return &Result{Meta: rec.Meta(), ExitCode: -1}, wrapped
+	}
+
 	client, err := tunnel.Dial(opts.Target)
 	if err != nil {
-		_ = rec.Finish(-1, err)
-		return nil, err
+		return failEarly(err)
 	}
 	defer client.Close()
 
 	sess, err := client.NewSession()
 	if err != nil {
-		wrapped := fmt.Errorf("open ssh session: %w", err)
-		_ = rec.Finish(-1, wrapped)
-		return nil, wrapped
+		return failEarly(fmt.Errorf("open ssh session: %w", err))
 	}
 	defer sess.Close()
 
@@ -111,18 +118,14 @@ func Run(opts Options) (*Result, error) {
 
 	remoteStdin, err := sess.StdinPipe()
 	if err != nil {
-		wrapped := fmt.Errorf("attach stdin: %w", err)
-		_ = rec.Finish(-1, wrapped)
-		return nil, wrapped
+		return failEarly(fmt.Errorf("attach stdin: %w", err))
 	}
 
 	var restore func()
 	if wantTTY {
 		state, rerr := term.MakeRaw(stdinFD)
 		if rerr != nil {
-			wrapped := fmt.Errorf("put the terminal in raw mode: %w", rerr)
-			_ = rec.Finish(-1, wrapped)
-			return nil, wrapped
+			return failEarly(fmt.Errorf("put the terminal in raw mode: %w", rerr))
 		}
 		restore = func() { _ = term.Restore(stdinFD, state) }
 		defer restore()
@@ -133,9 +136,7 @@ func Run(opts Options) (*Result, error) {
 		}
 		modes := ssh.TerminalModes{ssh.ECHO: 1, ssh.TTY_OP_ISPEED: 14400, ssh.TTY_OP_OSPEED: 14400}
 		if perr := sess.RequestPty(termType, height, width, modes); perr != nil {
-			wrapped := fmt.Errorf("request a terminal on the Base: %w", perr)
-			_ = rec.Finish(-1, wrapped)
-			return nil, wrapped
+			return failEarly(fmt.Errorf("request a terminal on the Base: %w", perr))
 		}
 
 		if outFD, ok := terminalFD(stdout); ok {
