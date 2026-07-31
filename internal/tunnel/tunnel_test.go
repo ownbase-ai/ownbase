@@ -18,9 +18,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 
 	"github.com/ownbase/ownbase/internal/tunnel"
 )
@@ -351,5 +354,143 @@ func TestOpen_LocalAddrIsLoopback(t *testing.T) {
 	}
 	if host != "127.0.0.1" {
 		t.Errorf("LocalAddr host = %q, want 127.0.0.1", host)
+	}
+}
+
+// startTestAgent serves an ssh-agent keyring on a unix socket under t.TempDir
+// and tracks how many client connections are currently open / have ever been
+// accepted. Used to prove Dial closes the agent FD once the handshake
+// finishes (Bugbot: agent sockets never closed).
+func startTestAgent(t *testing.T, priv any) (sockPath string, live, total *atomic.Int32) {
+	t.Helper()
+	keyring := agent.NewKeyring()
+	if err := keyring.Add(agent.AddedKey{PrivateKey: priv}); err != nil {
+		t.Fatalf("agent add: %v", err)
+	}
+
+	// macOS caps sun_path at ~104 bytes; t.TempDir() is already too long, so
+	// park the socket under /tmp with a short unique name.
+	sockPath = filepath.Join(os.TempDir(), fmt.Sprintf("ob-tunn-%d.sock", os.Getpid()+int(time.Now().UnixNano()%1e6)))
+	_ = os.Remove(sockPath)
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen agent: %v", err)
+	}
+	t.Cleanup(func() {
+		ln.Close()
+		_ = os.Remove(sockPath)
+	})
+
+	live = &atomic.Int32{}
+	total = &atomic.Int32{}
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			total.Add(1)
+			live.Add(1)
+			go func(c net.Conn) {
+				defer live.Add(-1)
+				defer c.Close()
+				_ = agent.ServeAgent(keyring, c)
+			}(conn)
+		}
+	}()
+	return sockPath, live, total
+}
+
+// waitForLive spins until the agent reports want concurrent connections, or
+// the test times out. Agent.ServeAgent only notices a client Close after a
+// read returns, so give it a moment after Dial returns.
+func waitForLive(t *testing.T, live *atomic.Int32, want int32) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if live.Load() == want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("agent live connections = %d, want %d", live.Load(), want)
+}
+
+// Dial used to leave every agent unix conn open for the process lifetime.
+// After a successful handshake the agent is no longer needed (rekey does not
+// re-auth), so the FD must be released — otherwise create --wait and similar
+// loops exhaust the process limit.
+func TestDial_ClosesAgentSocketAfterHandshake(t *testing.T) {
+	edPub, edPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	clientPub, err := ssh.NewPublicKey(edPub)
+	if err != nil {
+		t.Fatalf("public key: %v", err)
+	}
+
+	sockPath, live, total := startTestAgent(t, edPriv)
+	sshSrv := startTestSSHServer(t, clientPub)
+	_, sshPortStr, _ := net.SplitHostPort(sshSrv.addr())
+	var sshPort int
+	_, _ = fmt.Sscan(sshPortStr, &sshPort)
+
+	overrideHome(t)
+
+	// Point both AgentSocket and SSH_AUTH_SOCK at the same path — the
+	// documented setup — and confirm we only open one connection, not two.
+	t.Setenv("SSH_AUTH_SOCK", sockPath)
+
+	client, err := tunnel.Dial(tunnel.Target{
+		Host:        "127.0.0.1",
+		User:        "testuser",
+		Port:        sshPort,
+		AgentSocket: sockPath,
+		PublicKey:   string(ssh.MarshalAuthorizedKey(clientPub)),
+	})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	// Signers are held only for the handshake; agent conn must already be gone
+	// even while the SSH client is still open.
+	waitForLive(t, live, 0)
+	if n := total.Load(); n != 1 {
+		t.Errorf("agent accepted %d connections, want 1 (dedup AgentSocket + SSH_AUTH_SOCK)", n)
+	}
+	_ = client.Close()
+}
+
+// A dial that never reaches a server still opened the agent socket to build
+// auth methods; that path must clean up too, or a tight failure loop leaks.
+func TestDial_ClosesAgentSocketOnDialFailure(t *testing.T) {
+	_, edPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	sockPath, live, total := startTestAgent(t, edPriv)
+	overrideHome(t)
+	t.Setenv("SSH_AUTH_SOCK", "")
+
+	// Closed port: TCP fails fast, before auth runs.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+
+	_, err = tunnel.Dial(tunnel.Target{
+		Host:        "127.0.0.1",
+		User:        "testuser",
+		Port:        port,
+		AgentSocket: sockPath,
+	})
+	if err == nil {
+		t.Fatal("Dial: expected connection error, got nil")
+	}
+	waitForLive(t, live, 0)
+	if n := total.Load(); n != 1 {
+		t.Errorf("agent accepted %d connections, want 1", n)
 	}
 }

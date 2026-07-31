@@ -88,10 +88,15 @@ type Tunnel struct {
 // port forward (an interactive shell, several sessions) use this directly and
 // close the client themselves.
 func Dial(t Target) (*ssh.Client, error) {
-	authMethods, err := buildAuthMethods(t)
+	authMethods, cleanup, err := buildAuthMethods(t)
 	if err != nil {
 		return nil, fmt.Errorf("ssh auth: %w", err)
 	}
+	// Agent unix conns are only needed while the handshake signs; keeping them
+	// open for the SSH session lifetime would leak one FD per Dial (two when
+	// SSH_AUTH_SOCK also points at the OwnBase agent). Close as soon as Dial
+	// returns — success or failure.
+	defer cleanup()
 	hostKeyCallback, err := buildHostKeyCallback(t.Host)
 	if err != nil {
 		return nil, fmt.Errorf("ssh known_hosts: %w", err)
@@ -223,8 +228,17 @@ func (t *Tunnel) forward(local net.Conn, remoteAddr string) {
 //  2. The private key at KeyPath.
 //  3. The agent at AgentSocket (the OwnBase credential agent).
 //  4. Whatever SSH_AUTH_SOCK points at.
-func buildAuthMethods(t Target) ([]ssh.AuthMethod, error) {
-	var methods []ssh.AuthMethod
+//
+// cleanup closes every agent unix connection opened here. The caller must
+// defer it around the SSH handshake (see Dial); the methods themselves do not
+// own the lifetime.
+func buildAuthMethods(t Target) (methods []ssh.AuthMethod, cleanup func(), err error) {
+	var conns []net.Conn
+	cleanup = func() {
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	}
 
 	if len(t.Signers) > 0 {
 		methods = append(methods, ssh.PublicKeys(t.Signers...))
@@ -232,18 +246,27 @@ func buildAuthMethods(t Target) ([]ssh.AuthMethod, error) {
 	if t.KeyPath != "" {
 		signer, err := loadPrivateKey(t.KeyPath)
 		if err != nil {
-			return nil, err
+			cleanup()
+			return nil, func() {}, err
 		}
 		methods = append(methods, ssh.PublicKeys(signer))
 	}
+	// Dedup so pointing SSH_AUTH_SOCK at the OwnBase agent (the documented
+	// setup) does not open the same socket twice per Dial.
+	seen := map[string]struct{}{}
 	for _, sock := range []string{t.AgentSocket, os.Getenv("SSH_AUTH_SOCK")} {
 		if sock == "" {
 			continue
 		}
+		if _, dup := seen[sock]; dup {
+			continue
+		}
+		seen[sock] = struct{}{}
 		conn, err := net.Dial("unix", sock)
 		if err != nil {
 			continue
 		}
+		conns = append(conns, conn)
 		client := agent.NewClient(conn)
 		wanted := t.PublicKey
 		methods = append(methods, ssh.PublicKeysCallback(func() ([]ssh.Signer, error) {
@@ -256,9 +279,10 @@ func buildAuthMethods(t Target) ([]ssh.AuthMethod, error) {
 	}
 
 	if len(methods) == 0 {
-		return nil, errors.New("no SSH authentication available: unlock the vault with 'ownbasectl vault unlock', or pass --ssh-key")
+		cleanup()
+		return nil, func() {}, errors.New("no SSH authentication available: unlock the vault with 'ownbasectl vault unlock', or pass --ssh-key")
 	}
-	return methods, nil
+	return methods, cleanup, nil
 }
 
 // selectSigners narrows an agent's keys to the one the target names. An
