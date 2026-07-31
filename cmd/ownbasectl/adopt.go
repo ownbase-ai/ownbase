@@ -12,6 +12,24 @@ import (
 	"github.com/ownbase/ownbase/internal/vault"
 )
 
+// adoptOpts is the resolved adopt command line. The *Set fields record whether
+// the operator passed the corresponding flag: an existing profile must keep
+// its SSHUser/SSHPort/APIPort/Token when those flags are omitted, otherwise
+// `adopt --host <new-ip>` (the documented Multipass IP-update flow) forces
+// root/22 and can wipe a working token.
+type adoptOpts struct {
+	Host       string
+	SSHUser    string
+	SSHUserSet bool
+	SSHKey     string
+	SSHPort    int
+	SSHPortSet bool
+	APIPort    int
+	APIPortSet bool
+	Token      string
+	TokenSet   bool
+}
+
 func newAdoptCmd() *cobra.Command {
 	var (
 		host    string
@@ -34,10 +52,27 @@ The Base needs an owner key in your vault to reach it. Either run
 already authorizes, or pass --ssh-key here to do the same thing.
 
 Bases created with 'ownbasectl create' are registered automatically;
-this command is only needed to connect to an already-installed Base.`,
+this command is only needed to connect to an already-installed Base.
+
+Re-running adopt against a Base already in the vault only changes the
+fields you pass. Omitting --ssh-user / --ssh-port / --api-port / --token
+leaves those vault values alone — so updating a Multipass IP is just
+'adopt <name> --host <new-ip>'.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runAdopt(args[0], host, sshUser, sshKey, sshPort, apiPort, token)
+			fl := cmd.Flags()
+			return runAdopt(args[0], adoptOpts{
+				Host:       host,
+				SSHUser:    sshUser,
+				SSHUserSet: fl.Changed("ssh-user"),
+				SSHKey:     sshKey,
+				SSHPort:    sshPort,
+				SSHPortSet: fl.Changed("ssh-port"),
+				APIPort:    apiPort,
+				APIPortSet: fl.Changed("api-port"),
+				Token:      token,
+				TokenSet:   fl.Changed("token"),
+			})
 		},
 	}
 	fl := cmd.Flags()
@@ -54,33 +89,48 @@ this command is only needed to connect to an already-installed Base.`,
 
 // runAdopt registers an existing Base in the vault and verifies SSH
 // connectivity before saving.
-func runAdopt(name, host, sshUser, sshKey string, sshPort, apiPort int, token string) error {
-	if host == "" {
+func runAdopt(name string, opts adoptOpts) error {
+	if opts.Host == "" {
 		return fmt.Errorf("--host is required")
 	}
 
 	profile, err := loadProfile(name)
+	existed := err == nil
 	if err != nil && !isMissingBase(err) {
 		return err
 	}
-	profile.Host = host
-	profile.SSHUser = sshUser
-	profile.SSHPort = sshPort
-	profile.APIPort = apiPort
+
+	// Host is always required and always applied. Everything else only
+	// overwrites an existing profile when the flag was passed explicitly —
+	// defaults must not clobber a working ubuntu/token entry just because
+	// the operator is updating the IP.
+	profile.Host = opts.Host
+	if !existed || opts.SSHUserSet {
+		profile.SSHUser = opts.SSHUser
+	}
+	if !existed || opts.SSHPortSet {
+		profile.SSHPort = opts.SSHPort
+	}
+	if !existed || opts.APIPortSet {
+		profile.APIPort = opts.APIPort
+	}
+	// Fresh adopt with no flag defaults: cobra supplies root/22/7070 via the
+	// opts values above. When those fields are still empty on a brand-new
+	// profile (tests pass zero values), fall through to Effective* at dial time.
 
 	// A signer to verify with, resolved without writing anything to the vault
 	// yet: a mistyped host or an unauthorized key must not cost the Base its
 	// previously working profile or owner key, and nothing here is undoable
 	// once it lands in the vault.
 	var verifySigner ssh.Signer
-	if sshKey != "" {
-		priv, pub, ierr := readPrivateKeyFile(sshKey)
+	if opts.SSHKey != "" {
+		priv, pub, ierr := readPrivateKeyFile(opts.SSHKey)
 		if ierr != nil {
 			return ierr
 		}
 		verifySigner, ierr = ssh.ParsePrivateKey([]byte(priv))
 		if ierr != nil {
-			return fmt.Errorf("parse %s: %w", sshKey, ierr)
+			return fmt.Errorf("parse %s: %w", opts.SSHKey, ierr)
 		}
 		profile.PrivateKey, profile.PublicKey = priv, pub
 	}
@@ -88,10 +138,12 @@ func runAdopt(name, host, sshUser, sshKey string, sshPort, apiPort int, token st
 		return withExitCode(exitPreflight, fmt.Errorf(
 			"no owner key in the vault for Base %q — adopt cannot reach %s without one.\n"+
 				"       Import the key that machine already authorizes: ownbasectl keygen %s --import ~/.ssh/<key>",
-			name, host, name))
+			name, opts.Host, name))
 	}
 
-	target := tunnel.Target{Host: host, User: sshUser, Port: sshPort}
+	sshUser := profile.EffectiveSSHUser()
+	sshPort := profile.EffectiveSSHPort()
+	target := tunnel.Target{Host: opts.Host, User: sshUser, Port: sshPort}
 	if verifySigner != nil {
 		// A freshly imported key: test it directly, in memory, rather than
 		// staging it into the vault first.
@@ -111,15 +163,17 @@ func runAdopt(name, host, sshUser, sshKey string, sshPort, apiPort int, token st
 	fmt.Fprintf(os.Stderr, "ownbasectl: verifying SSH connection to %s ...\n", target.Destination())
 	out, err := tunnel.RunCommand(target, "hostname")
 	if err != nil {
-		return fmt.Errorf("SSH connection to %s failed: %w\n  Check that the host is reachable and this Base's owner key is authorized on it", host, err)
+		return fmt.Errorf("SSH connection to %s failed: %w\n  Check that the host is reachable and this Base's owner key is authorized on it", opts.Host, err)
 	}
-	fmt.Fprintf(os.Stderr, "ownbasectl: connected to %s (hostname: %s)\n", host, out)
+	fmt.Fprintf(os.Stderr, "ownbasectl: connected to %s (hostname: %s)\n", opts.Host, out)
 
-	profile.Token = token
-	if profile.Token == "" {
-		// Same fetch connectToServer already does for any profile with no
-		// cached token — over the same connection just verified, so there is
-		// no reason to make the operator paste in what SSH can already read.
+	// Token: explicit --token wins; otherwise try to fetch only when we do not
+	// already have one. Never assign the empty default over a cached token —
+	// a failed fetch would otherwise drop API access on a host-only re-adopt.
+	switch {
+	case opts.TokenSet:
+		profile.Token = opts.Token
+	case profile.Token == "":
 		if fetched, ferr := tunnel.RunCommand(target,
 			"sudo cat /opt/ownbase/api-token 2>/dev/null || cat /opt/ownbase/api-token 2>/dev/null"); ferr == nil && fetched != "" {
 			profile.Token = fetched

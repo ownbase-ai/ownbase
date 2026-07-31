@@ -18,6 +18,23 @@ import (
 	"github.com/ownbase/ownbase/internal/vault"
 )
 
+// fullAdopt is a convenience for tests that are adopting a Base for the first
+// time and want every field set (as if the operator passed every flag).
+func fullAdopt(host, user, key string, port, apiPort int, token string) adoptOpts {
+	return adoptOpts{
+		Host:       host,
+		SSHUser:    user,
+		SSHUserSet: true,
+		SSHKey:     key,
+		SSHPort:    port,
+		SSHPortSet: true,
+		APIPort:    apiPort,
+		APIPortSet: true,
+		Token:      token,
+		TokenSet:   token != "",
+	}
+}
+
 func TestRunAdopt_Succeeds(t *testing.T) {
 	startTestAgent(t)
 
@@ -25,7 +42,7 @@ func TestRunAdopt_Succeeds(t *testing.T) {
 	sshSrv := startTestSSHServer(t, clientPub)
 	keyFile := writeKeyFile(t, privPEM)
 
-	if err := runAdopt("mybase", "127.0.0.1", "testuser", keyFile, sshSrv.port(), 7070, "test-token"); err != nil {
+	if err := runAdopt("mybase", fullAdopt("127.0.0.1", "testuser", keyFile, sshSrv.port(), 7070, "test-token")); err != nil {
 		t.Fatalf("adopt: %v", err)
 	}
 
@@ -60,7 +77,7 @@ func TestRunAdopt_WithoutSSHKeyUsesExistingVaultKey(t *testing.T) {
 	}
 	sshSrv := startTestSSHServer(t, pubKey)
 
-	if err := runAdopt("mybase", "127.0.0.1", "testuser", "", sshSrv.port(), 7070, "tok"); err != nil {
+	if err := runAdopt("mybase", fullAdopt("127.0.0.1", "testuser", "", sshSrv.port(), 7070, "tok")); err != nil {
 		t.Fatalf("adopt without --ssh-key: %v", err)
 	}
 	after, err := loadProfile("mybase")
@@ -81,7 +98,7 @@ func TestRunAdopt_FailedVerificationDoesNotOverwriteExistingProfile(t *testing.T
 	privPEM, _, clientPub := newTestOwnerKey(t)
 	sshSrv := startTestSSHServer(t, clientPub)
 	keyFile := writeKeyFile(t, privPEM)
-	if err := runAdopt("mybase", "127.0.0.1", "testuser", keyFile, sshSrv.port(), 7070, "original-token"); err != nil {
+	if err := runAdopt("mybase", fullAdopt("127.0.0.1", "testuser", keyFile, sshSrv.port(), 7070, "original-token")); err != nil {
 		t.Fatalf("initial adopt: %v", err)
 	}
 	before, err := loadProfile("mybase")
@@ -95,7 +112,7 @@ func TestRunAdopt_FailedVerificationDoesNotOverwriteExistingProfile(t *testing.T
 	otherKeyFile := writeKeyFile(t, otherPEM)
 	deadPort := closedLocalPort(t)
 
-	err = runAdopt("mybase", "127.0.0.1", "testuser", otherKeyFile, deadPort, 7070, "attacker-token")
+	err = runAdopt("mybase", fullAdopt("127.0.0.1", "testuser", otherKeyFile, deadPort, 7070, "attacker-token"))
 	if err == nil {
 		t.Fatal("expected adopt to fail against an unreachable port")
 	}
@@ -120,7 +137,7 @@ func TestRunAdopt_UnauthorizedKeyDoesNotOverwriteExistingProfile(t *testing.T) {
 	privPEM, _, clientPub := newTestOwnerKey(t)
 	sshSrv := startTestSSHServer(t, clientPub)
 	keyFile := writeKeyFile(t, privPEM)
-	if err := runAdopt("mybase", "127.0.0.1", "testuser", keyFile, sshSrv.port(), 7070, "original-token"); err != nil {
+	if err := runAdopt("mybase", fullAdopt("127.0.0.1", "testuser", keyFile, sshSrv.port(), 7070, "original-token")); err != nil {
 		t.Fatalf("initial adopt: %v", err)
 	}
 	before, err := loadProfile("mybase")
@@ -132,7 +149,7 @@ func TestRunAdopt_UnauthorizedKeyDoesNotOverwriteExistingProfile(t *testing.T) {
 	unauthorizedPEM, _, _ := newTestOwnerKey(t)
 	unauthorizedKeyFile := writeKeyFile(t, unauthorizedPEM)
 
-	err = runAdopt("mybase", "127.0.0.1", "testuser", unauthorizedKeyFile, sshSrv.port(), 7070, "attacker-token")
+	err = runAdopt("mybase", fullAdopt("127.0.0.1", "testuser", unauthorizedKeyFile, sshSrv.port(), 7070, "attacker-token"))
 	if err == nil {
 		t.Fatal("expected adopt to fail with an unauthorized key")
 	}
@@ -172,7 +189,9 @@ func TestRunAdopt_FetchesTokenAutomatically(t *testing.T) {
 	sshSrv := startTestSSHServer(t, clientPub)
 	keyFile := writeKeyFile(t, privPEM)
 
-	if err := runAdopt("mybase", "127.0.0.1", "testuser", keyFile, sshSrv.port(), 7070, ""); err != nil {
+	opts := fullAdopt("127.0.0.1", "testuser", keyFile, sshSrv.port(), 7070, "")
+	opts.TokenSet = false
+	if err := runAdopt("mybase", opts); err != nil {
 		t.Fatalf("adopt without --token: %v", err)
 	}
 
@@ -208,7 +227,9 @@ func TestRunAdopt_SucceedsWithoutTokenWhenFetchFails(t *testing.T) {
 	sshSrv := startTestSSHServer(t, clientPub)
 	keyFile := writeKeyFile(t, privPEM)
 
-	if err := runAdopt("mybase", "127.0.0.1", "testuser", keyFile, sshSrv.port(), 7070, ""); err != nil {
+	opts := fullAdopt("127.0.0.1", "testuser", keyFile, sshSrv.port(), 7070, "")
+	opts.TokenSet = false
+	if err := runAdopt("mybase", opts); err != nil {
 		t.Fatalf("adopt without --token and without a way to fetch one: %v", err)
 	}
 
@@ -227,12 +248,65 @@ func TestRunAdopt_SucceedsWithoutTokenWhenFetchFails(t *testing.T) {
 func TestRunAdopt_NoKeyAnywhereFails(t *testing.T) {
 	startTestAgent(t)
 
-	err := runAdopt("mybase", "127.0.0.1", "testuser", "", 22, 7070, "tok")
+	err := runAdopt("mybase", fullAdopt("127.0.0.1", "testuser", "", 22, 7070, "tok"))
 	if err == nil {
 		t.Fatal("expected an error when no key is available")
 	}
 	if code := exitCodeFor(err); code != exitPreflight {
 		t.Errorf("exit code = %d, want %d", code, exitPreflight)
+	}
+}
+
+// Re-running adopt with only --host (the Multipass IP-update flow in
+// INSTALL.md) must keep the existing SSH user, ports, and token. Flag
+// defaults used to overwrite them: root instead of ubuntu, and an empty
+// token when the fetch failed.
+func TestRunAdopt_HostOnlyUpdatePreservesExistingFields(t *testing.T) {
+	// Fail the token fetch so a clobber would leave Token empty.
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "sudo"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+	startTestAgent(t)
+	privPEM, _, clientPub := newTestOwnerKey(t)
+	sshSrv := startTestSSHServer(t, clientPub)
+	keyFile := writeKeyFile(t, privPEM)
+
+	if err := runAdopt("mybase", fullAdopt("127.0.0.1", "ubuntu", keyFile, sshSrv.port(), 7070, "keep-me")); err != nil {
+		t.Fatalf("initial adopt: %v", err)
+	}
+
+	// Host-only re-adopt: no *Set flags, same key already in the vault.
+	// SSH server still listens on the original port; only Host changes.
+	err := runAdopt("mybase", adoptOpts{
+		Host: "127.0.0.1", // "new" IP in the real flow; same loopback here
+		// Defaults an un-Changed cobra flag would supply — must NOT apply:
+		SSHUser: "root",
+		SSHPort: 22,
+		APIPort: 9999,
+		Token:   "",
+	})
+	if err != nil {
+		t.Fatalf("host-only adopt: %v", err)
+	}
+
+	p, err := loadProfile("mybase")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.SSHUser != "ubuntu" {
+		t.Errorf("SSHUser = %q, want ubuntu (flag default root must not clobber)", p.SSHUser)
+	}
+	if p.SSHPort != sshSrv.port() {
+		t.Errorf("SSHPort = %d, want %d", p.SSHPort, sshSrv.port())
+	}
+	if p.APIPort != 7070 {
+		t.Errorf("APIPort = %d, want 7070", p.APIPort)
+	}
+	if p.Token != "keep-me" {
+		t.Errorf("Token = %q, want keep-me (failed fetch must not blank a cached token)", p.Token)
 	}
 }
 
