@@ -8,11 +8,24 @@ Working on the app itself is documented in [desktop/README.md](../desktop/README
 
 ## Installing it
 
+**macOS**
+
 ```bash
 brew install --cask ownbase-ai/tap/ownbase
 ```
 
 That installs `OwnBase.app` and clears the Gatekeeper quarantine flag. The app is not Apple-notarized yet; if you download the `.dmg` by hand instead, the first launch needs a right-click → Open.
+
+**Linux**
+
+Download the `.deb` or `.AppImage` for your arch from [GitHub Releases](https://github.com/ownbase-ai/ownbase/releases):
+
+```bash
+sudo dpkg -i OwnBase-v*-x86_64-unknown-linux-gnu.deb
+# or
+chmod +x OwnBase-v*-x86_64-unknown-linux-gnu.AppImage
+./OwnBase-v*-x86_64-unknown-linux-gnu.AppImage
+```
 
 The app bundles `ownbasectl`, so there is nothing else to install. If you also want the CLI on your `PATH` — worth it, since it is what an agent will use — see [INSTALL.md](../INSTALL.md#install-ownbasectl).
 

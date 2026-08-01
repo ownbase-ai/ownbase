@@ -48,13 +48,23 @@ There is exactly one step a human must do, because server providers require a hu
 
 Both run on your own computer, not on the server. Pick whichever you prefer — they share one vault and cannot disagree about what is deployed.
 
-**OwnBase app** (macOS) — guided setup, dashboard, session replay:
+**OwnBase app** (macOS or Linux) — guided setup, dashboard, session replay:
 
 ```bash
+# macOS
 brew install --cask ownbase-ai/tap/ownbase
 ```
 
-That installs `OwnBase.app` and clears the Gatekeeper quarantine flag. The app is not Apple-notarized yet; if you download the `.dmg` from [GitHub Releases](https://github.com/ownbase-ai/ownbase/releases) instead, first launch needs a right-click → Open. More in [docs/desktop.md](docs/desktop.md).
+```bash
+# Linux — pick the asset for your arch from the latest release
+# https://github.com/ownbase-ai/ownbase/releases
+#   OwnBase-v*-x86_64-unknown-linux-gnu.AppImage
+#   OwnBase-v*-x86_64-unknown-linux-gnu.deb
+sudo dpkg -i OwnBase-v*-x86_64-unknown-linux-gnu.deb
+# or: chmod +x OwnBase-*.AppImage && ./OwnBase-*.AppImage
+```
+
+On macOS the cask clears the Gatekeeper quarantine flag; the app is not Apple-notarized yet, so a hand-downloaded `.dmg` needs a right-click → Open on first launch. More in [docs/desktop.md](docs/desktop.md).
 
 **CLI** (macOS or Linux) — what an agent will use, and what the rest of this walkthrough shows:
 
@@ -63,7 +73,7 @@ brew install --cask ownbase-ai/tap/ownbasectl
 ownbasectl version
 ```
 
-The app already bundles `ownbasectl`, so you only need the CLI cask if you want it on your `PATH`. No Homebrew? [INSTALL.md](INSTALL.md#install-ownbasectl) has a checksum-verified install script for the CLI.
+The app already bundles `ownbasectl`, so you only need the CLI cask (or the CLI tarball) if you want it on your `PATH`. No Homebrew? [INSTALL.md](INSTALL.md#install-ownbasectl) has a checksum-verified install script for the CLI.
 
 ### 2. Create the vault
 
