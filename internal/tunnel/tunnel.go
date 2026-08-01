@@ -409,7 +409,7 @@ func knownHostsPath() (string, error) {
 // (often "[ip]:22") and remote address.
 func splitHostPort(hostname string, remote net.Addr) (host string, port int) {
 	port = 22
-	h := hostname
+	var h string
 	if hostPart, portPart, err := net.SplitHostPort(hostname); err == nil {
 		h = hostPart
 		if p, err := strconv.Atoi(portPart); err == nil && p > 0 {
