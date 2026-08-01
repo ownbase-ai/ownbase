@@ -614,10 +614,11 @@ func run(cfg agentConfig) error {
 	var lastReboot secwatch.RebootResult
 	var lastUnexpectedCount = -1 // -1 = first run; used for transition detection
 
-	// Wired now that lastReboot is in scope. Also mirrors into StatusSrv so a
-	// /status read between security fix and the next afterReconcile is honest.
+	// Wired once StatusSrv is live. Only touches the status cache — lastReboot
+	// is main-loop-only (written in afterReconcile) so a concurrent HTTP
+	// handler never races the select loop on that variable. Update re-samples
+	// the marker under its lock, so a later afterReconcile cannot wipe this.
 	notifyReboot = func(r secwatch.RebootResult) {
-		lastReboot = r
 		statusSrv.SetReboot(r.Required, r.Packages)
 	}
 
