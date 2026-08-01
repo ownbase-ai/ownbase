@@ -52,6 +52,8 @@ What that guards is the seam: every screen renders `ownbasectl --json`, so a fie
 
 All changes must keep `go test ./...` and `golangci-lint run ./...` green, and `make app-check` if you touched `desktop/` or any `--json` output. Breaking a hard constraint (see [MISSION.md](../MISSION.md)) requires the user's explicit sign-off first, not a workaround.
 
+**Every change lands through a pull request.** Do not push commits straight to `main`. Branch, open a PR, wait for CI, merge when green and reviewed. Releases are tagged from `main` only after that. (Same rule is in [AGENTS.md](../AGENTS.md) so agents cannot miss it.)
+
 ## Verifying a fresh install end-to-end
 
 This is for verifying the installer itself still works correctly after changing `install.sh`, the daemon's bootstrap path, or `internal/vmhost`. It is separate from the automated tiers above because the fresh-install path (pass zero → Quadlet bootstrap → reconcile loop) cannot be fully exercised by unit or integration tests; it requires a real installer run on a clean machine.

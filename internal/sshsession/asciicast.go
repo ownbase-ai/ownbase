@@ -180,11 +180,14 @@ func invokerLabel() string {
 // problem here, because the recording is created O_EXCL and the session would
 // fail outright.
 func NewID() string {
-	var suffix [3]byte
+	// 6 random bytes (48 bits): birthday-safe well past tens of thousands of
+	// sessions opened in the same second. 3 bytes was not — 2000 draws collided
+	// often enough to flake CI.
+	var suffix [6]byte
 	if _, err := rand.Read(suffix[:]); err != nil {
 		// A machine whose CSPRNG is unavailable has larger problems, and
 		// failing to open a shell over it would help nobody.
-		return fmt.Sprintf("%s-%06x", time.Now().UTC().Format("20060102T150405Z"), time.Now().UnixNano()&0xffffff)
+		return fmt.Sprintf("%s-%012x", time.Now().UTC().Format("20060102T150405Z"), time.Now().UnixNano()&0xffffffffffff)
 	}
 	return fmt.Sprintf("%s-%x", time.Now().UTC().Format("20060102T150405Z"), suffix)
 }
