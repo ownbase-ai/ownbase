@@ -21,12 +21,13 @@ import type { Tone } from "../components/ui";
 import * as api from "../lib/api";
 import type { StreamEvent } from "../lib/cli";
 import { cx } from "../lib/cx";
-import { absolute, ago, shortRef, until } from "../lib/format";
+import { absolute, ago, pickDeployRef, shortRef, until } from "../lib/format";
 import type {
   BaseStatus,
   BaseSummary,
   Checkup,
   Finding,
+  ServiceDrift,
   ServiceStatus,
   VulnSummary,
 } from "../lib/types";
@@ -1843,6 +1844,16 @@ function BackupActions({ base, onChanged }: { base: string; onChanged: () => voi
 // Updates
 // ---------------------------------------------------------------------------
 
+function driftStatusLine(d: ServiceDrift): string {
+  if (d.up_to_date) return "up to date";
+  if (d.commits_behind > 0) {
+    const behind = `${d.commits_behind} commit${d.commits_behind === 1 ? "" : "s"} behind ${d.branch || "the default branch"}`;
+    return d.newest_tag ? `${behind} · newest tag ${d.newest_tag}` : behind;
+  }
+  if (d.newest_tag) return `newer tag available (${d.newest_tag})`;
+  return "behind its source repo";
+}
+
 function Updates({
   base,
   status,
@@ -1891,17 +1902,18 @@ function Updates({
                 </span>
               </div>
               <p className="mt-1 pl-4 text-xs text-zinc-500">
-                {d.up_to_date
-                  ? "up to date"
-                  : `${d.commits_behind} commit${d.commits_behind === 1 ? "" : "s"} behind ${d.branch || "the default branch"}`}
-                {d.newest_tag && ` · newest tag ${d.newest_tag}`}
+                {driftStatusLine(d)}
               </p>
               {openFor === d.service && (
                 <div className="mt-3 pl-4">
                   <DeployForm
                     base={base.name}
                     service={d.service}
-                    suggestedRef={d.newest_tag || d.branch || "main"}
+                    suggestedRef={pickDeployRef(
+                      d.commits_behind,
+                      d.branch,
+                      d.newest_tag,
+                    )}
                     onDone={() => {
                       setOpenFor(null);
                       onChanged();

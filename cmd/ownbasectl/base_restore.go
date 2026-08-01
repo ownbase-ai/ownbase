@@ -29,9 +29,13 @@ repo, then let the daemon's normal reconcile loop resume — the whole
 reconstruction drill as one command.`,
 		Example: `  ownbasectl restore mybase \
     --repo s3:s3.amazonaws.com/my-bucket/ownbase \
-    --password <the-restic-password>`,
+    --password <the-restic-password>
+  echo '{"password":"..."}' | ownbasectl restore mybase --repo s3:... --creds-stdin`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := creds.resolve(); err != nil {
+				return err
+			}
 			return runBaseRestore(args[0], backupRepo, creds, forceRebuild, target)
 		},
 	}
@@ -51,7 +55,7 @@ func runBaseRestore(name, backupRepo string, creds backupCredFlags, forceRebuild
 		return fmt.Errorf("--repo is required — the restic repository URL of the Base you're restoring")
 	}
 	if creds.password == "" {
-		return fmt.Errorf("--password is required (the restic repository password)")
+		return fmt.Errorf("--password is required (the restic repository password); or pass --creds-stdin")
 	}
 
 	env := map[string]string{
