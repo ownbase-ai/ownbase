@@ -49,7 +49,7 @@ There is exactly one step a human must do, because server providers require a hu
 Both run on your own computer, not on the server. Pick whichever you prefer — they share one vault and cannot disagree about what is deployed.
 
 ```bash
-brew install --cask ownbase-ai/tap/ownbase      # app — macOS only
+brew install --cask ownbase-ai/tap/ownbase     # app — macOS only
 brew install --cask ownbase-ai/tap/ownbasectl  # CLI — macOS or Linux
 ```
 
