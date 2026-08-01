@@ -111,7 +111,15 @@ function Shell({ vault }: { vault: Vault }) {
         ) : route.view === "vault" ? (
           <VaultView vault={vault} bases={list} />
         ) : selected ? (
-          <BaseDetail key={selected.name} base={selected} />
+          <BaseDetail
+            key={selected.name}
+            base={selected}
+            onRemoved={() => {
+              void bases.reload();
+              void vault.refresh();
+              setChosen(null);
+            }}
+          />
         ) : (
           <div className="flex h-full items-center justify-center">
             <Spinner className="text-zinc-700" />

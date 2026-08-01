@@ -70,6 +70,23 @@ export function listBases(): Promise<BaseSummary[]> {
   return cli.json<BaseSummary[]>(["list"]).then((bases) => bases ?? []);
 }
 
+/**
+ * Forget a Base on this computer: drop its vault profile and owner key.
+ *
+ * Always passes `--yes` — the window confirms first. `keepVm` leaves a local
+ * Multipass VM running (and is the only safe choice for a remote server; the
+ * CLI never destroys one of those either way). Without it, a local VM is
+ * destroyed and its data is gone.
+ */
+export async function deleteBase(
+  base: string,
+  opts: { keepVm?: boolean } = {},
+): Promise<void> {
+  const args = ["delete", base, "--yes"];
+  if (opts.keepVm) args.push("--keep-vm");
+  await cli.text(args);
+}
+
 /** Create or reuse the owner key for a Base, returning the public half. */
 export function keygen(base: string): Promise<KeygenResult> {
   return cli.json<KeygenResult>(["keygen", base]);
@@ -87,9 +104,10 @@ export function keygenImport(base: string, path: string): Promise<KeygenResult> 
 /**
  * Provision a Base, streaming progress.
  *
- * `--wait` is not optional here: the whole point of showing this in a window is
- * that the user watches hardening finish rather than being told "done" while
- * the daemon is still working.
+ * With `remote`, installs on a fresh Ubuntu server. Without it, launches a
+ * local Multipass VM. `--wait` is not optional here: the whole point of
+ * showing this in a window is that the user watches hardening finish rather
+ * than being told "done" while the daemon is still working.
  */
 export function createBase(
   base: string,

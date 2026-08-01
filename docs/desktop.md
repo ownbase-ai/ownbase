@@ -27,7 +27,7 @@ If you already have a vault — from another machine, or from the CLI — point 
 
 ## Setting up a Base
 
-**Set up a Base** in the sidebar starts with one choice: a new server, or one that already runs OwnBase.
+**Set up a Base** in the sidebar starts with one choice: a new remote server, a local VM on this computer, or a server that already runs OwnBase.
 
 ### A new server
 
@@ -39,6 +39,10 @@ The common path — four steps, about ten minutes, most of it waiting.
 4. **Install.** The app runs `ownbasectl create` and streams the output. Roughly ten minutes: hardening the host, installing the daemon, bringing up Caddy. Nothing to answer.
 
 This path is a front end for `keygen` and `create`. Doing it in a terminal instead is [the same four steps](../README.md#setting-up-a-base).
+
+### A local VM on this computer
+
+For trying OwnBase without a cloud bill. Needs [Multipass](https://canonical.com/multipass) installed. Three steps: name it, generate (or import) a key, and install — the app runs `ownbasectl create` with no `--remote`, Multipass launches Ubuntu, and OwnBase installs inside the VM. Nothing is exposed on the public internet. First launch may download an image.
 
 ### A server that already runs OwnBase
 
@@ -57,7 +61,7 @@ The floor is set by building, not by running: each service is built from source 
 
 Pick a Base in the sidebar. Each tab is a section of one `ownbasectl checkup` — one call, one SSH tunnel.
 
-**Overview** leads with anything worth your attention, each with the command that addresses it, then the machine's identity and a summary: services running, last backup, whether that backup has ever been *proven* restorable, disk, certificate expiry.
+**Overview** leads with anything worth your attention, each with the command that addresses it, then the machine's identity and a summary: services running, last backup, whether that backup has ever been *proven* restorable, disk, certificate expiry. At the bottom, *Remove from this computer* forgets the Base on this laptop (vault profile and owner key). For a local Multipass VM you can also destroy the VM. It never uninstalls OwnBase on a remote server or destroys a cloud instance — that is your provider's console, or the steps in [uninstall.md](uninstall.md).
 
 **Services** shows what `ownbase.yaml` asks for beside what the machine actually has running — the deployed ref, the domains, and the result of the health probe. A service can be running and unhealthy, and that reads differently from running.
 
@@ -65,7 +69,7 @@ Pick a Base in the sidebar. Each tab is a section of one `ownbasectl checkup` �
 
 The exposure list is the machine's own view. It cannot see a firewall your provider runs in front of it, and it cannot see a socket a compromised kernel is hiding from it. It is one input, not a verdict.
 
-**Backups** is the one place with buttons. *Back up now* takes a snapshot. *Run the restore drill* is the one that matters: the Base restores its newest snapshot into an isolated directory, checks it, and when Postgres is in the backup starts a real database from it and waits for recovery. Until that has passed, "restorable" is an assumption — which is why the app says *not yet verified* rather than showing you a green light you did not earn.
+**Backups** is the one place with buttons that change nothing about desired state. *Back up now* takes a snapshot. *Run the restore drill* is the one that matters: the Base restores its newest snapshot into an isolated directory, checks it, and when Postgres is in the backup starts a real database from it and waits for recovery. Until that has passed, "restorable" is an assumption — which is why the app says *not yet verified* rather than showing you a green light you did not earn.
 
 **Updates** shows how far each service is from its source repo. Nothing updates itself. Moving one forward is `ownbasectl deploy`, which resolves the ref to a concrete commit and commits it to your config repo, so what is deployed stays written down.
 
@@ -75,7 +79,7 @@ The exposure list is the machine's own view. It cannot see a firewall your provi
 
 It will not edit `ownbase.yaml`. Your config lives in a Git repo you own, every change to it is a commit, and the app is not going to make commits you did not write. It shows you the command and lets you copy it.
 
-The two exceptions are the backup buttons, and they are exceptions because neither one changes the desired state.
+The exceptions are the backup buttons (neither changes desired state) and removing a Base from this computer (forgets the local profile; optionally destroys a local VM).
 
 ## Sessions
 
