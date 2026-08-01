@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSplitUserHost(t *testing.T) {
@@ -183,8 +184,14 @@ func TestCheckupFindings_AllClear(t *testing.T) {
 			"backup_restorable": true,
 			"exposure": {"available": true, "firewall_active": true, "unexpected_count": 0},
 			"access": {"available": true, "banned_ips": []},
-			"vulns": {"available": true, "host": {"critical": 0, "high": 0}},
-			"drift_count": 0
+			"vulns": {
+				"available": true,
+				"trivy_installed": true,
+				"scanned_at": "` + time.Now().UTC().Format(time.RFC3339) + `",
+				"host": {"critical": 0, "high": 0}
+			},
+			"drift_count": 0,
+			"reboot_required": false
 		},
 		"updates": {"drift": [{"service": "crm", "up_to_date": true}]}
 	}`)
@@ -194,20 +201,141 @@ func TestCheckupFindings_AllClear(t *testing.T) {
 	}
 }
 
+// Unfixed CVEs alone must not raise a finding — there is nothing a person
+// can finish. They live as a reading on the Security tab.
+func TestCheckupFindings_UnfixedCVEsAreNotFindings(t *testing.T) {
+	body := []byte(`{
+		"security": {
+			"backup_restorable": true,
+			"exposure": {"available": true, "firewall_active": true, "unexpected_count": 0},
+			"vulns": {
+				"available": true,
+				"trivy_installed": true,
+				"scanned_at": "` + time.Now().UTC().Format(time.RFC3339) + `",
+				"host": {
+					"critical": 11, "high": 115,
+					"fixable_critical": 0, "fixable_high": 0
+				}
+			}
+		}
+	}`)
+	findings := checkupFindings("mybase", body)
+	if len(findings) != 0 {
+		t.Errorf("unfixed CVEs must not raise a finding, got %+v", findings)
+	}
+}
+
+// Banned IPs are fail2ban working, not a to-do.
+func TestCheckupFindings_BannedIPsAreNotFindings(t *testing.T) {
+	body := []byte(`{
+		"security": {
+			"backup_restorable": true,
+			"exposure": {"available": true, "firewall_active": true, "unexpected_count": 0},
+			"access": {"available": true, "banned_ips": ["1.2.3.4", "5.6.7.8"]},
+			"vulns": {
+				"available": true,
+				"trivy_installed": true,
+				"scanned_at": "` + time.Now().UTC().Format(time.RFC3339) + `",
+				"host": {"critical": 0, "high": 0}
+			}
+		}
+	}`)
+	findings := checkupFindings("mybase", body)
+	if len(findings) != 0 {
+		t.Errorf("banned IPs must not raise a finding, got %+v", findings)
+	}
+}
+
 func TestCheckupFindings_FlagsIssues(t *testing.T) {
 	body := []byte(`{
 		"security": {
 			"backup_restorable": false,
 			"exposure": {"available": true, "firewall_active": false, "unexpected_count": 2},
 			"access": {"available": true, "banned_ips": ["1.2.3.4"]},
-			"vulns": {"available": true, "host": {"critical": 1, "high": 2, "fixable_critical": 1, "fixable_high": 0}},
-			"drift_count": 3
+			"vulns": {
+				"available": true,
+				"trivy_installed": true,
+				"scanned_at": "` + time.Now().UTC().Format(time.RFC3339) + `",
+				"host": {"critical": 1, "high": 2, "fixable_critical": 1, "fixable_high": 0},
+				"images": [
+					{
+						"service": "ownbase-core-caddy",
+						"image": "docker.io/library/caddy:2-alpine",
+						"summary": {"critical": 1, "high": 0, "fixable_critical": 1, "fixable_high": 0}
+					},
+					{
+						"service": "ownbase-crm",
+						"image": "localhost/crm:abc",
+						"scan_failed": true,
+						"scan_error": "image not found"
+					}
+				]
+			},
+			"drift_count": 3,
+			"reboot_required": true
 		},
 		"updates": {"drift": [{"service": "crm", "up_to_date": false}, {"service": "worker", "up_to_date": true}]}
 	}`)
 	findings := checkupFindings("mybase", body)
-	if len(findings) != 7 {
-		t.Fatalf("expected 7 findings, got %d: %+v", len(findings), findings)
+
+	// Expected:
+	// 1. backups not configured (no last_backup)
+	// 2. firewall not active
+	// 3. unexpected ports
+	// 4. reboot required
+	// 5. host fixable CVEs
+	// 6. caddy image fixable CVEs
+	// 7. crm scan failed
+	// 8. drift
+	// 9. services behind
+	// (banned IPs deliberately absent)
+	if len(findings) != 9 {
+		t.Fatalf("expected 9 findings, got %d: %+v", len(findings), findings)
+	}
+
+	want := []struct {
+		summarySubstr string
+		kind          string
+		run           string
+		tab           string
+	}{
+		{"Backups not configured", actionManual, "", ""},
+		{"Firewall (UFW) is not active", actionOpen, "", "security"},
+		{"unexpected internet-reachable port", actionOpen, "", "security"},
+		{"Host reboot required", actionRun, "security reboot", ""},
+		{"host CVE(s) have a patch available", actionRun, "security fix", ""},
+		{"CVE(s) with a patch in image for \"ownbase-core-caddy\"", actionManual, "", ""},
+		{"CVE scan failed for service \"ownbase-crm\"", actionOpen, "", "security"},
+		{"runtime file(s) drifted", actionOpen, "", "security"},
+		{"service(s) behind their source repo", actionOpen, "", "updates"},
+	}
+	for _, w := range want {
+		var found *checkupFinding
+		for i := range findings {
+			if strings.Contains(findings[i].Summary, w.summarySubstr) {
+				found = &findings[i]
+				break
+			}
+		}
+		if found == nil {
+			t.Errorf("missing finding containing %q", w.summarySubstr)
+			continue
+		}
+		if found.Action.Kind != w.kind {
+			t.Errorf("%q: kind = %q, want %q", w.summarySubstr, found.Action.Kind, w.kind)
+		}
+		if w.run != "" && found.Action.Run != w.run {
+			t.Errorf("%q: run = %q, want %q", w.summarySubstr, found.Action.Run, w.run)
+		}
+		if w.tab != "" && found.Action.Tab != w.tab {
+			t.Errorf("%q: tab = %q, want %q", w.summarySubstr, found.Action.Tab, w.tab)
+		}
+		if found.Action.Label == "" {
+			t.Errorf("%q: empty label", w.summarySubstr)
+		}
+		if found.Fix == "" {
+			t.Errorf("%q: empty fix string", w.summarySubstr)
+		}
 	}
 }
 
@@ -223,7 +351,12 @@ func TestCheckupFindings_BackupConfiguredButNotYetVerified(t *testing.T) {
 			"last_backup": "2026-07-04T00:27:18Z",
 			"exposure": {"available": true, "firewall_active": true, "unexpected_count": 0},
 			"access": {"available": true, "banned_ips": []},
-			"vulns": {"available": true, "host": {"critical": 0, "high": 0}},
+			"vulns": {
+				"available": true,
+				"trivy_installed": true,
+				"scanned_at": "` + time.Now().UTC().Format(time.RFC3339) + `",
+				"host": {"critical": 0, "high": 0}
+			},
 			"drift_count": 0
 		},
 		"updates": {"drift": [{"service": "crm", "up_to_date": true}]}
@@ -234,6 +367,9 @@ func TestCheckupFindings_BackupConfiguredButNotYetVerified(t *testing.T) {
 	}
 	if strings.Contains(findings[0].Fix, "backup setup") {
 		t.Errorf("fix should not suggest re-running setup when backups are already configured, got %+v", findings[0])
+	}
+	if findings[0].Action.Kind != actionOpen || findings[0].Action.Tab != "backups" {
+		t.Errorf("expected open→backups, got %+v", findings[0].Action)
 	}
 }
 
@@ -250,6 +386,82 @@ func TestCheckupFindings_NoSecuritySection_StillScansUpdates(t *testing.T) {
 	}
 	if !strings.Contains(findings[0].Summary, "behind their source repo") {
 		t.Errorf("expected an update-drift finding, got %+v", findings[0])
+	}
+}
+
+func TestCheckupFindings_StaleScan(t *testing.T) {
+	stale := time.Now().UTC().Add(-50 * time.Hour).Format(time.RFC3339)
+	body := []byte(`{
+		"security": {
+			"backup_restorable": true,
+			"vulns": {
+				"available": true,
+				"trivy_installed": true,
+				"scanned_at": "` + stale + `",
+				"host": {"critical": 0, "high": 0}
+			}
+		}
+	}`)
+	findings := checkupFindings("mybase", body)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 stale-scan finding, got %d: %+v", len(findings), findings)
+	}
+	if findings[0].Action.Kind != actionRun || findings[0].Action.Run != "security scan" {
+		t.Errorf("expected run→security scan, got %+v", findings[0].Action)
+	}
+}
+
+func TestCheckupFindings_ScanUnavailable(t *testing.T) {
+	body := []byte(`{
+		"security": {
+			"backup_restorable": true,
+			"vulns": {
+				"available": false,
+				"trivy_installed": true,
+				"host_scan_error": "trivy timed out"
+			}
+		}
+	}`)
+	findings := checkupFindings("mybase", body)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 unavailable-scan finding, got %d: %+v", len(findings), findings)
+	}
+	if findings[0].Action.Run != "security scan" {
+		t.Errorf("expected security scan action, got %+v", findings[0].Action)
+	}
+}
+
+func TestCheckupFindings_TrivyMissing(t *testing.T) {
+	body := []byte(`{
+		"security": {
+			"backup_restorable": true,
+			"vulns": {
+				"available": false,
+				"trivy_installed": false
+			}
+		}
+	}`)
+	findings := checkupFindings("mybase", body)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 missing-scanner finding, got %d: %+v", len(findings), findings)
+	}
+	if findings[0].Action.Kind != actionManual {
+		t.Errorf("expected manual action, got %+v", findings[0].Action)
+	}
+}
+
+func TestScanIsStale(t *testing.T) {
+	if scanIsStale(time.Now().UTC().Format(time.RFC3339)) {
+		t.Error("fresh scan must not be stale")
+	}
+	if !scanIsStale(time.Now().UTC().Add(-49 * time.Hour).Format(time.RFC3339)) {
+		t.Error("49h-old scan must be stale")
+	}
+	if scanIsStale("") {
+		t.Error("empty timestamp must not be stale")
+	}
+	if scanIsStale("not-a-time") {
+		t.Error("unparseable timestamp must not be stale")
 	}
 }
 

@@ -11,8 +11,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/ownbase/ownbase/internal/authz"
+	"github.com/ownbase/ownbase/internal/schema"
 	"github.com/ownbase/ownbase/internal/secrets"
+	"github.com/ownbase/ownbase/internal/secwatch"
 )
 
 const (
@@ -41,6 +45,9 @@ type APIConfig struct {
 	// the daemon is still initializing and the scan cannot be started yet.
 	// Called by /security/fix (after upgrade) and /security/scan (on-demand).
 	TriggerScan func() bool
+	// AuditLog, when non-nil, receives one record per host-mutating security
+	// action (patch, reboot). Nil is safe — the handlers still run.
+	AuditLog authz.AuditLogger
 	// UpgradeCore, when non-nil, pulls the latest pinned image for the core
 	// package (Caddy) and restarts it. Progress lines are written
 	// to w so the HTTP handler can stream them to the client. A non-nil error
@@ -371,6 +378,16 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 		fw := &flushWriter{w: w, flush: flush}
 
 		ctx := r.Context()
+		recordPatch := func(outcome, errMsg string) {
+			if cfg.AuditLog == nil {
+				return
+			}
+			action, err := schema.NewAction(schema.ActionHostPatch, "host OS packages")
+			if err != nil {
+				return
+			}
+			_ = cfg.AuditLog.Record(action, outcome, errMsg)
+		}
 
 		// runStep executes apt-get with its stdout/stderr written directly to
 		// the flushing response writer, avoiding any intermediate pipe or
@@ -389,10 +406,25 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 		}
 
 		if !runStep("Refreshing package index (apt-get update)", "update", "-q") {
+			recordPatch(authz.OutcomeError, "apt-get update failed")
 			return
 		}
 		if !runStep("Upgrading packages (apt-get upgrade)", "upgrade", "-y", "-q") {
+			recordPatch(authz.OutcomeError, "apt-get upgrade failed")
 			return
+		}
+		recordPatch(authz.OutcomeApplied, "")
+
+		// A successful upgrade can leave the machine needing a reboot (new
+		// kernel). Surface that here so the operator does not have to wait
+		// for the next secwatch tick to learn the CVE scan is no longer
+		// the whole story.
+		if reboot := secwatch.GatherRebootRequired(); reboot.Required {
+			fmt.Fprintf(fw, "\n==> A reboot is required for some upgrades to take effect")
+			if len(reboot.Packages) > 0 {
+				fmt.Fprintf(fw, " (%s)", strings.Join(reboot.Packages, ", "))
+			}
+			fmt.Fprintf(fw, ".\n    Run 'ownbasectl security reboot' when ready — every service will drop for ~30–60s.\n")
 		}
 
 		fmt.Fprintf(fw, "\n==> Done. Triggering vulnerability rescan...\n")
@@ -406,6 +438,64 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 			}
 		}
 		fmt.Fprintf(fw, "---OK---\n")
+	})
+
+	// /security/reboot — schedule a host reboot one minute out and stream a
+	// short confirmation. The delay lets ---OK--- reach the client before the
+	// SSH tunnel dies with the machine. Requires POST.
+	mux.HandleFunc("/security/reboot", func(w http.ResponseWriter, r *http.Request) {
+		if !authRequired(w, r, cfg.StatusSrv) {
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if _, err := exec.LookPath("shutdown"); err != nil {
+			http.Error(w, "shutdown not found — this endpoint is only available on Linux", http.StatusNotImplemented)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.WriteHeader(http.StatusOK)
+
+		flusher, canFlush := w.(http.Flusher)
+		flush := func() {
+			if canFlush {
+				flusher.Flush()
+			}
+		}
+		fw := &flushWriter{w: w, flush: flush}
+
+		recordReboot := func(outcome, errMsg string) {
+			if cfg.AuditLog == nil {
+				return
+			}
+			action, err := schema.NewAction(schema.ActionHostReboot, "host")
+			if err != nil {
+				return
+			}
+			_ = cfg.AuditLog.Record(action, outcome, errMsg)
+		}
+
+		fmt.Fprintf(fw, "==> Scheduling reboot in 1 minute\n")
+		fmt.Fprintf(fw, "    Every service on this Base will stop and restart with the machine.\n")
+		// `shutdown -r +1` returns immediately; the actual reboot is a minute
+		// later. That window is what lets ---OK--- leave the box before the
+		// network drops. `+0` would race the response.
+		cmd := exec.Command("shutdown", "-r", "+1", "OwnBase security reboot")
+		cmd.Stdout = fw
+		cmd.Stderr = fw
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintf(fw, "ERROR: shutdown: %v\n", err)
+			recordReboot(authz.OutcomeError, err.Error())
+			return
+		}
+		recordReboot(authz.OutcomeApplied, "")
+		fmt.Fprintf(fw, "==> Reboot scheduled at %s UTC\n", time.Now().UTC().Add(time.Minute).Format(time.RFC3339))
+		fmt.Fprintf(fw, "---OK---\n")
+		flush()
 	})
 
 	// /upgrade — pull updated core package images and restart containers.

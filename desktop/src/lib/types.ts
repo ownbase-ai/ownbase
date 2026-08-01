@@ -84,10 +84,31 @@ export interface Checkup {
   verify?: VerifyResult;
 }
 
-/** One problem and the command that fixes it — cmd/ownbasectl.checkupFinding */
+/**
+ * How to address a finding — cmd/ownbasectl.checkupAction.
+ *
+ * The CLI decides the kind so the app never reimplements the rule:
+ * - `run` — the app finishes it (security fix / scan / reboot)
+ * - `open` — open a tab and read (nothing to execute)
+ * - `manual` — show the command; the fix changes desired state or needs input
+ */
+export interface FindingAction {
+  kind: "run" | "open" | "manual";
+  /** ownbasectl subcommand path without the binary or base, e.g. "security fix". */
+  run?: string;
+  /** Desktop tab to open for kind=open. */
+  tab?: "security" | "backups" | "updates";
+  label: string;
+  /** Prose shown before a run that has a cost (reboot). */
+  confirm?: string;
+}
+
+/** One problem and how to address it — cmd/ownbasectl.checkupFinding */
 export interface Finding {
   summary: string;
+  /** Full command string for terminals and kind=manual. */
   fix: string;
+  action: FindingAction;
 }
 
 /** The verified-restore drill's verdict — cmd/ownbased backup verify trailer */
@@ -155,6 +176,9 @@ export interface SecurityStatus {
   exposure: ExposureResult;
   access: AccessResult;
   vulns: VulnStatus;
+  /** True when /var/run/reboot-required is present (usually a new kernel). */
+  reboot_required?: boolean;
+  reboot_packages?: string[];
 }
 
 /**

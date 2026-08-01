@@ -137,7 +137,13 @@ Returns `503` if the daemon is still initialising.
 
 ### `POST /security/fix` — apply host OS package patches
 
-Behind `ownbasectl security fix`. Runs `apt-get update` + `apt-get upgrade -y` on the Base. **Streams** the apt output as `text/plain`, ending with `---OK---` on success. Triggers a vulnerability rescan on completion. Returns `501` on non-Ubuntu/Debian platforms.
+Behind `ownbasectl security fix`. Runs `apt-get update` + `apt-get upgrade -y` on the Base. **Streams** the apt output as `text/plain`, ending with `---OK---` on success. Records a `host.patch` audit action. If `/var/run/reboot-required` is present afterwards, the stream names the packages that need a reboot. Triggers a vulnerability rescan on completion. Returns `501` on non-Ubuntu/Debian platforms.
+
+### `POST /security/reboot` — reboot the host
+
+Behind `ownbasectl security reboot`. Schedules `shutdown -r +1` so the `---OK---` sentinel can leave the box before the network drops. **Streams** a short confirmation as `text/plain`. Records a `host.reboot` audit action. Returns `501` when `shutdown` is absent. Every service on the Base drops for roughly 30–60 seconds.
+
+The reboot-required state itself is exposed on `GET /status` as `security.reboot_required` and `security.reboot_packages` (from `/var/run/reboot-required[.pkgs]`).
 
 ---
 

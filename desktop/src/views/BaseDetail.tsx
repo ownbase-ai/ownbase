@@ -37,12 +37,12 @@ type Tab = "overview" | "services" | "security" | "backups" | "updates" | "activ
 /**
  * Everything known about one Base.
  *
- * Read-only by design for desired state. Config changes are commits to a Git
- * repo the user owns, and giving the window a second way to make them would
- * mean two answers to "what is deployed". So this shows, points at the
- * command, and gets out of the way — with three exceptions that do not rewrite
- * what should run: taking a backup now, running the restore drill, and
- * forgetting this Base on this computer.
+ * Desired state is read-only here. Config changes are commits to a Git repo
+ * the user owns, and giving the window a second way to make them would mean
+ * two answers to "what is deployed". Actions the window does take never
+ * rewrite what should run: backup now, the restore drill, apply host OS
+ * patches, rescan CVEs, reboot so those patches take effect, and forget this
+ * Base on this computer.
  */
 export function BaseDetail({
   base,
@@ -103,6 +103,7 @@ export function BaseDetail({
             status={status}
             findings={findings}
             onChanged={state.reload}
+            onOpenTab={setTab}
             onRemoved={onRemoved}
           />
         )}
@@ -117,6 +118,7 @@ function Body({
   status,
   findings,
   onChanged,
+  onOpenTab,
   onRemoved,
 }: {
   tab: Tab;
@@ -124,6 +126,7 @@ function Body({
   status: BaseStatus;
   findings: Finding[];
   onChanged: () => void;
+  onOpenTab: (tab: Tab) => void;
   onRemoved: () => void;
 }) {
   switch (tab) {
@@ -133,13 +136,15 @@ function Body({
           base={base}
           status={status}
           findings={findings}
+          onChanged={onChanged}
+          onOpenTab={onOpenTab}
           onRemoved={onRemoved}
         />
       );
     case "services":
       return <Services status={status} />;
     case "security":
-      return <Security base={base} status={status} />;
+      return <Security base={base} status={status} onChanged={onChanged} />;
     case "backups":
       return <Backups base={base} status={status} onChanged={onChanged} />;
     case "updates":
@@ -272,11 +277,15 @@ function Overview({
   base,
   status,
   findings,
+  onChanged,
+  onOpenTab,
   onRemoved,
 }: {
   base: BaseSummary;
   status: BaseStatus;
   findings: Finding[];
+  onChanged: () => void;
+  onOpenTab: (tab: Tab) => void;
   onRemoved: () => void;
 }) {
   const services = status.services ?? [];
@@ -290,7 +299,7 @@ function Overview({
         subtitle={
           findings.length === 0
             ? "The last checkup found no problems."
-            : "Each of these comes with the command that addresses it."
+            : "Only things you can finish. Unfixed CVEs and other readings live on their tabs."
         }
       >
         {findings.length === 0 ? (
@@ -301,16 +310,13 @@ function Overview({
         ) : (
           <ul className="space-y-3">
             {findings.map((finding) => (
-              <li
+              <FindingRow
                 key={finding.summary}
-                className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3.5 py-3"
-              >
-                <span className="text-sm text-amber-100/90">{finding.summary}</span>
-                <span className="flex items-center gap-2">
-                  <CommandLine>{finding.fix}</CommandLine>
-                  <CopyButton value={finding.fix} label="Copy" />
-                </span>
-              </li>
+                base={base.name}
+                finding={finding}
+                onChanged={onChanged}
+                onOpenTab={onOpenTab}
+              />
             ))}
           </ul>
         )}
@@ -383,6 +389,115 @@ function Overview({
 
       <RemoveBase base={base} onRemoved={onRemoved} />
     </div>
+  );
+}
+
+/**
+ * One finding and the control that addresses it.
+ *
+ * The CLI decided the kind (`run` / `open` / `manual`); this component only
+ * switches on it. `run` streams into a LogView below the row the way the
+ * backup drill does. `open` jumps to a tab. `manual` shows the command —
+ * those are the cases where the fix changes desired state or needs input the
+ * app will not drive.
+ */
+function FindingRow({
+  base,
+  finding,
+  onChanged,
+  onOpenTab,
+}: {
+  base: string;
+  finding: Finding;
+  onChanged: () => void;
+  onOpenTab: (tab: Tab) => void;
+}) {
+  const [lines, setLines] = useState<string[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const action = finding.action;
+
+  function runAction() {
+    if (!action.run) return;
+    if (action.confirm && !window.confirm(action.confirm)) return;
+
+    setBusy(true);
+    setError(null);
+    setLines([]);
+    const collected: string[] = [];
+
+    const onEvent = (event: StreamEvent) => {
+      if (event.kind === "stdout" || event.kind === "stderr") {
+        collected.push(event.line);
+        setLines([...collected]);
+      }
+    };
+
+    // `security scan` returns immediately; the others stream for minutes.
+    if (action.run === "security scan") {
+      void api
+        .securityScan(base)
+        .then((out) => {
+          setLines(out.trim().split("\n").filter(Boolean));
+          setBusy(false);
+          onChanged();
+        })
+        .catch((err: unknown) => {
+          setBusy(false);
+          setError(err instanceof Error ? err.message : String(err));
+        });
+      return;
+    }
+
+    const stream =
+      action.run === "security reboot"
+        ? api.securityReboot(base, onEvent)
+        : api.securityFix(base, onEvent);
+
+    stream.done
+      .then((code) => {
+        setBusy(false);
+        if (code !== 0) {
+          setError("The command did not finish cleanly. The output below is what the Base said.");
+        }
+        onChanged();
+      })
+      .catch((err: unknown) => {
+        setBusy(false);
+        setError(err instanceof Error ? err.message : String(err));
+      });
+  }
+
+  return (
+    <li className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-3.5 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <span className="text-sm text-amber-100/90">{finding.summary}</span>
+        <span className="flex items-center gap-2">
+          {action.kind === "run" && (
+            <Button busy={busy} disabled={busy} onClick={runAction}>
+              {action.label}
+            </Button>
+          )}
+          {action.kind === "open" && action.tab && (
+            <Button variant="secondary" onClick={() => onOpenTab(action.tab as Tab)}>
+              {action.label}
+            </Button>
+          )}
+          {action.kind === "manual" && (
+            <>
+              <CommandLine>{finding.fix}</CommandLine>
+              <CopyButton value={finding.fix} label="Copy" />
+            </>
+          )}
+        </span>
+      </div>
+      {error && (
+        <p className="mt-2 text-xs leading-relaxed text-red-300">{error}</p>
+      )}
+      {lines && lines.length > 0 && (
+        <LogView lines={lines} className="mt-3 max-h-48 w-full" />
+      )}
+    </li>
   );
 }
 
@@ -668,12 +783,47 @@ function ServiceRow({ service }: { service: ServiceStatus }) {
 // Security
 // ---------------------------------------------------------------------------
 
-function Security({ base, status }: { base: BaseSummary; status: BaseStatus }) {
-  const { exposure, access, vulns, drift_detected, drift_count, drift_files } =
-    status.security;
+function Security({
+  base,
+  status,
+  onChanged,
+}: {
+  base: BaseSummary;
+  status: BaseStatus;
+  onChanged: () => void;
+}) {
+  const {
+    exposure,
+    access,
+    vulns,
+    drift_detected,
+    drift_count,
+    drift_files,
+    reboot_required,
+    reboot_packages,
+  } = status.security;
 
   return (
     <div className="space-y-5">
+      {reboot_required && (
+        <Panel
+          title="Reboot required"
+          subtitle="Applied packages need a reboot to take effect — usually a new kernel."
+          action={<RebootAction base={base.name} onChanged={onChanged} />}
+        >
+          <p className="text-sm leading-relaxed text-zinc-400">
+            Until the machine restarts, the CVE scan can report clean while the
+            still-running kernel is the vulnerable one. Every service will drop
+            for about 30–60 seconds.
+          </p>
+          {reboot_packages && reboot_packages.length > 0 && (
+            <p className="selectable mt-2 font-mono text-xs leading-relaxed text-zinc-500">
+              {reboot_packages.join("  ")}
+            </p>
+          )}
+        </Panel>
+      )}
+
       <Panel
         title="Network exposure"
         subtitle="What this machine believes is reachable from the internet."
@@ -782,9 +932,10 @@ function Security({ base, status }: { base: BaseSummary; status: BaseStatus }) {
         title="Known vulnerabilities"
         subtitle={
           vulns.scanned_at
-            ? `Last scanned ${ago(vulns.scanned_at)}.`
-            : "Scanned daily by the Base."
+            ? `Last scanned ${ago(vulns.scanned_at)}. Only CVEs with a published patch are actionable.`
+            : "Scanned daily by the Base. Only CVEs with a published patch are actionable."
         }
+        action={<RescanAction base={base.name} onChanged={onChanged} />}
       >
         {!vulns.available ? (
           <Unavailable>
@@ -794,48 +945,41 @@ function Security({ base, status }: { base: BaseSummary; status: BaseStatus }) {
           </Unavailable>
         ) : (
           <>
-            <Row label="Host OS">
-              <Severities summary={vulns.host} />
-            </Row>
-            {vulns.images?.map((image) => (
-              <Row key={image.service} label={image.service} title={image.image}>
-                {image.scan_failed ? (
+            <VulnTarget
+              label="Host OS"
+              summary={vulns.host}
+              defaultOpen
+              fixHint={
+                (vulns.host.fixable_critical ?? 0) + (vulns.host.fixable_high ?? 0) > 0
+                  ? `Apply host patches with ownbasectl security fix ${base.name}`
+                  : undefined
+              }
+            />
+            {vulns.images?.map((image) =>
+              image.scan_failed ? (
+                <Row key={image.service} label={image.service} title={image.image}>
                   <span className="text-amber-300">
                     scan failed{image.scan_error ? ` — ${image.scan_error}` : ""}
                   </span>
-                ) : (
-                  <Severities summary={image.summary} />
-                )}
-              </Row>
-            ))}
-            {vulns.host.top && vulns.host.top.length > 0 && (
-              <ul className="mt-3 divide-y divide-zinc-800 border-t border-zinc-800">
-                {vulns.host.top.slice(0, 8).map((finding) => (
-                  <li key={finding.vuln_id} className="py-2 text-xs">
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="selectable font-mono text-zinc-300">
-                        {finding.vuln_id}
-                      </span>
-                      <Badge
-                        tone={finding.severity.toUpperCase() === "CRITICAL" ? "bad" : "warn"}
-                      >
-                        {finding.severity.toLowerCase()}
-                      </Badge>
-                    </div>
-                    <p className="mt-0.5 text-zinc-500">
-                      {finding.package}
-                      {finding.version ? ` ${finding.version}` : ""}
-                      {finding.fixed_in
-                        ? ` → fixed in ${finding.fixed_in}`
-                        : " — no fix published yet"}
-                    </p>
-                  </li>
-                ))}
-              </ul>
+                </Row>
+              ) : (
+                <VulnTarget
+                  key={image.service}
+                  label={image.service}
+                  title={image.image}
+                  summary={image.summary}
+                />
+              ),
             )}
             <p className="mt-3 text-xs leading-relaxed text-zinc-500">
-              Apply the fixes that exist with{" "}
+              A CVE with no published patch clears when Ubuntu (or the image
+              upstream) ships one — there is nothing to run in the meantime.
+              Host packages with a patch: use the button on Overview, or{" "}
               <CommandLine>ownbasectl security fix {base.name}</CommandLine>.
+              Service images move with{" "}
+              <CommandLine>ownbasectl upgrade {base.name} --apply</CommandLine>{" "}
+              (core) or{" "}
+              <CommandLine>ownbasectl deploy</CommandLine> (your services).
             </p>
           </>
         )}
@@ -874,14 +1018,190 @@ function Security({ base, status }: { base: BaseSummary; status: BaseStatus }) {
 function Severities({ summary }: { summary: VulnSummary }) {
   const total = summary.critical + summary.high + summary.medium + summary.low;
   if (total === 0) return <span className="text-emerald-300">none found</span>;
+  const fixable =
+    (summary.fixable_critical ?? 0) + (summary.fixable_high ?? 0);
+  const unfixed =
+    summary.critical + summary.high - fixable;
   return (
-    <span className="inline-flex items-center gap-2">
+    <span className="inline-flex flex-wrap items-center gap-2">
       {summary.critical > 0 && <Badge tone="bad">{summary.critical} critical</Badge>}
       {summary.high > 0 && <Badge tone="warn">{summary.high} high</Badge>}
       <span className="text-xs text-zinc-500">
         {summary.medium + summary.low} lower
+        {summary.critical + summary.high > 0 && (
+          <>
+            {" · "}
+            {fixable > 0 ? (
+              <span className="text-amber-300">{fixable} with a patch</span>
+            ) : (
+              "none with a patch"
+            )}
+            {unfixed > 0 && <> · {unfixed} with none published</>}
+          </>
+        )}
       </span>
     </span>
+  );
+}
+
+/** One scan target (host or image) with an expandable top-findings list. */
+function VulnTarget({
+  label,
+  title,
+  summary,
+  defaultOpen = false,
+  fixHint,
+}: {
+  label: string;
+  title?: string;
+  summary: VulnSummary;
+  defaultOpen?: boolean;
+  fixHint?: string;
+}) {
+  const top = summary.top ?? [];
+  const [open, setOpen] = useState(defaultOpen && top.length > 0);
+  const hasTop = top.length > 0;
+
+  return (
+    <div className="border-b border-zinc-800 py-2 last:border-b-0">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <button
+          type="button"
+          className={cx(
+            "flex min-w-0 items-center gap-2 text-left text-sm text-zinc-200",
+            hasTop && "cursor-pointer hover:text-zinc-50",
+          )}
+          onClick={() => hasTop && setOpen((v) => !v)}
+          disabled={!hasTop}
+          title={title}
+        >
+          {hasTop && (
+            <span className="font-mono text-xs text-zinc-500">{open ? "▾" : "▸"}</span>
+          )}
+          <span className="truncate">{label}</span>
+        </button>
+        <Severities summary={summary} />
+      </div>
+      {open && hasTop && (
+        <div className="mt-2">
+          <VulnList findings={top} />
+          {top.length >= 20 && (
+            <p className="mt-1 text-xs text-zinc-500">
+              Showing the 20 most severe. Medium and low are counted above but not listed.
+            </p>
+          )}
+          {fixHint && (
+            <p className="mt-2 text-xs text-zinc-500">{fixHint}</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function VulnList({
+  findings,
+}: {
+  findings: NonNullable<VulnSummary["top"]>;
+}) {
+  return (
+    <ul className="divide-y divide-zinc-800 border-t border-zinc-800">
+      {findings.map((finding) => (
+        <li key={`${finding.vuln_id}-${finding.package}`} className="py-2 text-xs">
+          <div className="flex items-center justify-between gap-3">
+            <span className="selectable font-mono text-zinc-300">{finding.vuln_id}</span>
+            <Badge tone={finding.severity.toUpperCase() === "CRITICAL" ? "bad" : "warn"}>
+              {finding.severity.toLowerCase()}
+            </Badge>
+          </div>
+          <p className="mt-0.5 text-zinc-500">
+            {finding.package}
+            {finding.version ? ` ${finding.version}` : ""}
+            {finding.fixed_in
+              ? ` → fixed in ${finding.fixed_in}`
+              : " — no fix published yet"}
+          </p>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function RescanAction({ base, onChanged }: { base: string; onChanged: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  async function rescan() {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const out = await api.securityScan(base);
+      setMsg(out.trim() || "Scan started.");
+      onChanged();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <Button variant="secondary" busy={busy} onClick={() => void rescan()}>
+        Rescan
+      </Button>
+      {msg && <p className="max-w-xs text-right text-xs text-zinc-500">{msg}</p>}
+    </div>
+  );
+}
+
+function RebootAction({ base, onChanged }: { base: string; onChanged: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [lines, setLines] = useState<string[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  function reboot() {
+    if (
+      !window.confirm(
+        "Every service on this Base will stop and restart with the machine. The outage is typically 30–60 seconds. Reboot now?",
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setLines([]);
+    const collected: string[] = [];
+    const stream = api.securityReboot(base, (event: StreamEvent) => {
+      if (event.kind === "stdout" || event.kind === "stderr") {
+        collected.push(event.line);
+        setLines([...collected]);
+      }
+    });
+    stream.done
+      .then((code) => {
+        setBusy(false);
+        if (code !== 0) {
+          setError("The reboot command did not finish cleanly.");
+        }
+        onChanged();
+      })
+      .catch((err: unknown) => {
+        setBusy(false);
+        setError(err instanceof Error ? err.message : String(err));
+      });
+  }
+
+  return (
+    <div className="flex flex-col items-end gap-2">
+      <Button variant="danger" busy={busy} onClick={reboot}>
+        Reboot now
+      </Button>
+      {error && <p className="max-w-xs text-right text-xs text-red-300">{error}</p>}
+      {lines && lines.length > 0 && (
+        <LogView lines={lines} className="max-h-32 w-full min-w-[20rem]" />
+      )}
+    </div>
   );
 }
 

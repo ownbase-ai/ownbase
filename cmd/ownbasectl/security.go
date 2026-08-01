@@ -54,7 +54,7 @@ allowlist. It cannot see an upstream cloud firewall.`,
 	}
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "print the security section of the status payload as JSON")
 
-	cmd.AddCommand(newSecurityFixCmd(), newSecurityScanCmd())
+	cmd.AddCommand(newSecurityFixCmd(), newSecurityScanCmd(), newSecurityRebootCmd())
 	return cmd
 }
 
@@ -211,6 +211,27 @@ func printSecurityReport(base string, body []byte) error {
 	}
 
 	fmt.Println()
+
+	// ── Reboot required ───────────────────────────────────────────────────
+	if reboot, _ := sec["reboot_required"].(bool); reboot {
+		fmt.Println("  Reboot required")
+		fmt.Println("  " + strings.Repeat("─", 68))
+		fmt.Println("    Applied packages need a reboot to take effect (typically a new kernel).")
+		if pkgs, ok := sec["reboot_packages"].([]any); ok && len(pkgs) > 0 {
+			names := make([]string, 0, len(pkgs))
+			for _, p := range pkgs {
+				if s, ok := p.(string); ok {
+					names = append(names, s)
+				}
+			}
+			if len(names) > 0 {
+				fmt.Printf("    Packages: %s\n", strings.Join(names, ", "))
+			}
+		}
+		fmt.Printf("    Run: ownbasectl security reboot %s\n", base)
+		fmt.Println("    Every service will drop for ~30–60s while the machine restarts.")
+		fmt.Println()
+	}
 
 	// ── Vulnerability Scan ────────────────────────────────────────────────
 	fmt.Println("  Vulnerability Scan")
@@ -527,4 +548,94 @@ func runSecurityFix(base string) error {
 		return fmt.Errorf("security fix failed — see output above")
 	}
 	return nil
+}
+
+func newSecurityRebootCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "reboot <name>",
+		Short: "Reboot the Base so applied package upgrades take effect",
+		Long: `Schedule a reboot on the Base one minute out. Use this after
+'security fix' (or unattended-upgrades) leaves /var/run/reboot-required —
+typically a new kernel is installed but not yet running.
+
+Every service drops with the machine and comes back when it returns. The
+outage is typically 30–60 seconds. The one-minute delay lets this command
+print confirmation before the SSH tunnel dies.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runSecurityReboot(args[0])
+		},
+	}
+}
+
+// runSecurityReboot posts to /security/reboot and streams the short
+// confirmation. The daemon schedules `shutdown -r +1` so ---OK--- can leave
+// the box before the network drops; a connection error *after* ---OK--- is
+// therefore success, not failure.
+func runSecurityReboot(base string) error {
+	conn, err := connectToServer(base)
+	if err != nil {
+		return err
+	}
+	defer conn.close()
+	rebootURL := conn.baseURL + "/security/reboot"
+
+	req, err := http.NewRequest(http.MethodPost, rebootURL, nil)
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	if conn.token != "" {
+		req.Header.Set("Authorization", "Bearer "+conn.token)
+	}
+
+	fmt.Println("About to reboot the Base:")
+	fmt.Println("  every service will stop and restart with the machine (~30–60s).")
+	fmt.Println()
+
+	client := &http.Client{Timeout: 2 * time.Minute}
+	resp, err := client.Do(req)
+	if err != nil {
+		// The tunnel can die mid-response once shutdown fires. Without a body
+		// we cannot tell success from failure, so surface the error.
+		return fmt.Errorf("security/reboot API at %s: %w\n  Is the agent running?", rebootURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		return fmt.Errorf("unauthorized — the cached token may be stale; remove the profile and run 'ownbasectl adopt' again")
+	}
+	if resp.StatusCode == http.StatusNotImplemented {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("%s", strings.TrimSpace(string(body)))
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("security/reboot returned %d: %s", resp.StatusCode, body)
+	}
+
+	fmt.Println("OwnBase Security Reboot")
+	fmt.Println(strings.Repeat("─", 60))
+
+	var gotOK bool
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "---OK---" {
+			gotOK = true
+			continue
+		}
+		fmt.Println(line)
+	}
+	// A dropped connection after ---OK--- is expected: the machine is going
+	// down. scanner.Err on a half-closed body is therefore not a failure when
+	// we already saw the sentinel.
+	scanErr := scanner.Err()
+	if gotOK {
+		fmt.Println("\n  Reboot scheduled. The Base will be back in about a minute.")
+		return nil
+	}
+	if scanErr != nil {
+		return scanErr
+	}
+	return fmt.Errorf("security reboot failed — see output above")
 }

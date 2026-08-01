@@ -258,17 +258,60 @@ func runVerifyDrill(conn *connection, jsonOut bool) (string, error) {
 	return resultJSON, fmt.Errorf("verified-restore drill did not complete — see output above")
 }
 
-// checkupFinding is one thing worth a person's attention, paired with the
-// command that addresses it. The fix is part of the finding rather than
-// something the reader has to work out, which is the difference between a
-// report and a to-do list.
-type checkupFinding struct {
-	Summary string `json:"summary"`
-	Fix     string `json:"fix"`
+// Action kinds on a checkupFinding. The CLI decides which one applies so the
+// desktop app never re-implements the rule — it just switches on Kind.
+const (
+	// actionRun: the app (or CLI) can finish this itself. Run is the
+	// ownbasectl subcommand path without the binary name or base
+	// (e.g. "security fix"); the caller appends the base name.
+	actionRun = "run"
+	// actionOpen: there is nothing to execute — open the named tab and read.
+	actionOpen = "open"
+	// actionManual: the fix changes desired state or needs interactive input
+	// the app will not drive. Fix holds the full command to show.
+	actionManual = "manual"
+)
+
+// checkupAction tells a reader (terminal or desktop app) how to address a
+// finding. Kind is the discriminator; the other fields are only meaningful
+// for specific kinds.
+type checkupAction struct {
+	// Kind is one of actionRun / actionOpen / actionManual.
+	Kind string `json:"kind"`
+	// Run is the ownbasectl subcommand path for kind=run, without the binary
+	// name or the base (e.g. "security fix", "security reboot", "security scan").
+	Run string `json:"run,omitempty"`
+	// Tab is the desktop app tab to open for kind=open
+	// ("security" | "backups" | "updates").
+	Tab string `json:"tab,omitempty"`
+	// Label is the button text. Always set.
+	Label string `json:"label"`
+	// Confirm is optional prose shown before a run that has a cost (reboot).
+	Confirm string `json:"confirm,omitempty"`
 }
 
+// checkupFinding is one thing worth a person's attention, paired with the
+// action that addresses it. The action is part of the finding rather than
+// something the reader has to work out, which is the difference between a
+// report and a to-do list.
+//
+// Fix is the full command string kept for terminal output and older clients.
+// Action is what the desktop app switches on.
+type checkupFinding struct {
+	Summary string        `json:"summary"`
+	Fix     string        `json:"fix"`
+	Action  checkupAction `json:"action"`
+}
+
+// scanStaleAfter is how old a successful CVE scan may be before the finding
+// becomes "we don't know". Twice the daemon's 24h cadence — one missed tick
+// is not yet a problem; two is.
+const scanStaleAfter = 48 * time.Hour
+
 // checkupFindings scans the raw status JSON for anything worth flagging at
-// the top of the report, each paired with the exact command to address it.
+// the top of the report. The panel's contract: only things a person can
+// finish. Unfixed CVEs and "banned IPs" (fail2ban working) are readings on
+// the Security tab, not to-dos.
 func checkupFindings(base string, body []byte) []checkupFinding {
 	var s map[string]any
 	if err := json.Unmarshal(body, &s); err != nil {
@@ -293,11 +336,20 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 				findings = append(findings, checkupFinding{
 					Summary: "Backups not configured",
 					Fix:     "ownbasectl backup setup " + base,
+					Action: checkupAction{
+						Kind:  actionManual,
+						Label: "Set up backups",
+					},
 				})
 			} else {
 				findings = append(findings, checkupFinding{
 					Summary: "Backups not yet verified restorable",
 					Fix:     "ownbasectl checkup " + base + " --verify",
+					Action: checkupAction{
+						Kind:  actionOpen,
+						Tab:   "backups",
+						Label: "Go to Backups",
+					},
 				})
 			}
 		}
@@ -308,61 +360,146 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 					findings = append(findings, checkupFinding{
 						Summary: "Firewall (UFW) is not active",
 						Fix:     "ownbasectl security " + base,
+						Action: checkupAction{
+							Kind:  actionOpen,
+							Tab:   "security",
+							Label: "Go to Security",
+						},
 					})
 				}
 				if unexpected, _ := exp["unexpected_count"].(float64); unexpected > 0 {
 					findings = append(findings, checkupFinding{
 						Summary: fmt.Sprintf("%d unexpected internet-reachable port(s)", int(unexpected)),
 						Fix:     "ownbasectl security " + base,
+						Action: checkupAction{
+							Kind:  actionOpen,
+							Tab:   "security",
+							Label: "Go to Security",
+						},
 					})
 				}
 			}
 		}
 
-		if acc, ok := sec["access"].(map[string]any); ok {
-			if available, _ := acc["available"].(bool); available {
-				if bannedRaw, _ := acc["banned_ips"].([]any); len(bannedRaw) > 0 {
-					findings = append(findings, checkupFinding{
-						Summary: fmt.Sprintf("%d banned IP(s) from failed SSH logins", len(bannedRaw)),
-						Fix:     "ownbasectl security " + base,
-					})
-				}
-			}
+		// Banned IPs are fail2ban working, not a to-do. They render on the
+		// Security tab; they do not raise a finding.
+
+		if reboot, _ := sec["reboot_required"].(bool); reboot {
+			findings = append(findings, checkupFinding{
+				Summary: "Host reboot required for applied packages to take effect",
+				Fix:     "ownbasectl security reboot " + base,
+				Action: checkupAction{
+					Kind:    actionRun,
+					Run:     "security reboot",
+					Label:   "Reboot now",
+					Confirm: "Every service on this Base will stop and restart with the machine. The outage is typically 30–60 seconds.",
+				},
+			})
 		}
 
 		if vulns, ok := sec["vulns"].(map[string]any); ok {
-			if available, _ := vulns["available"].(bool); available {
+			trivyInstalled, _ := vulns["trivy_installed"].(bool)
+			available, _ := vulns["available"].(bool)
+			scannedAt, _ := vulns["scanned_at"].(string)
+
+			switch {
+			case !trivyInstalled:
+				// No scanner means unknown, not clean — but the app cannot
+				// install trivy from the window.
+				findings = append(findings, checkupFinding{
+					Summary: "CVE scanner not installed — host and services are unchecked",
+					Fix:     "ownbasectl ssh " + base + "  (install trivy, or re-run create to harden)",
+					Action: checkupAction{
+						Kind:  actionManual,
+						Label: "Inspect on the Base",
+					},
+				})
+			case !available:
+				// A scan that never succeeded, or failed last time. "Unknown,
+				// not clean" — offer a rescan rather than a scary zero.
+				findings = append(findings, checkupFinding{
+					Summary: "Host CVE scan has not succeeded — unknown, not clean",
+					Fix:     "ownbasectl security scan " + base,
+					Action: checkupAction{
+						Kind:  actionRun,
+						Run:   "security scan",
+						Label: "Rescan",
+					},
+				})
+			case scannedAt != "" && scanIsStale(scannedAt):
+				findings = append(findings, checkupFinding{
+					Summary: "CVE scan is more than 48 hours old",
+					Fix:     "ownbasectl security scan " + base,
+					Action: checkupAction{
+						Kind:  actionRun,
+						Run:   "security scan",
+						Label: "Rescan",
+					},
+				})
+			case available:
+				// Only fixable CVEs raise a finding. Unfixed counts live on
+				// the Security tab: there is nothing a person can finish.
 				if host, ok := vulns["host"].(map[string]any); ok {
-					critical, _ := host["critical"].(float64)
 					fixCrit, _ := host["fixable_critical"].(float64)
-					high, _ := host["high"].(float64)
 					fixHigh, _ := host["fixable_high"].(float64)
-					if critical+high > 0 {
-						fix := "ownbasectl security fix " + base
-						if int(fixCrit+fixHigh) == 0 {
-							fix = "ownbasectl security " + base + "  (no fix available yet)"
-						}
+					if n := int(fixCrit + fixHigh); n > 0 {
 						findings = append(findings, checkupFinding{
-							Summary: fmt.Sprintf("%d critical, %d high CVE(s) on host OS", int(critical), int(high)),
-							Fix:     fix,
+							Summary: fmt.Sprintf("%d host CVE(s) have a patch available (%d critical, %d high)",
+								n, int(fixCrit), int(fixHigh)),
+							Fix: "ownbasectl security fix " + base,
+							Action: checkupAction{
+								Kind:  actionRun,
+								Run:   "security fix",
+								Label: "Apply patches",
+							},
 						})
 					}
 				}
 			}
 
-			// Flag any image whose trivy scan failed so operators know a
-			// service is unscanned rather than clean.
+			// Per-image findings: a service with fixable CVEs, or a scan that
+			// failed (unscanned ≠ clean). Image upgrades change desired state
+			// (pull a newer image / move a ref), so they stay manual.
 			imagesRaw, _ := vulns["images"].([]any)
 			for _, raw := range imagesRaw {
 				img, ok := raw.(map[string]any)
 				if !ok {
 					continue
 				}
+				svc, _ := img["service"].(string)
 				if failed, _ := img["scan_failed"].(bool); failed {
-					svc, _ := img["service"].(string)
 					findings = append(findings, checkupFinding{
 						Summary: fmt.Sprintf("CVE scan failed for service %q", svc),
-						Fix:     "ownbasectl security " + base + "  (see error in Vulnerability Scan section)",
+						Fix:     "ownbasectl security " + base,
+						Action: checkupAction{
+							Kind:  actionOpen,
+							Tab:   "security",
+							Label: "Go to Security",
+						},
+					})
+					continue
+				}
+				summary, _ := img["summary"].(map[string]any)
+				if summary == nil {
+					continue
+				}
+				fixCrit, _ := summary["fixable_critical"].(float64)
+				fixHigh, _ := summary["fixable_high"].(float64)
+				if n := int(fixCrit + fixHigh); n > 0 {
+					// Core packages (Caddy) move via `upgrade --apply`;
+					// user services move via `deploy`. The command is a
+					// starting point — the operator still chooses the ref.
+					fix := fmt.Sprintf("ownbasectl upgrade %s --apply", base)
+					if !strings.HasPrefix(svc, "ownbase-core-") {
+						fix = fmt.Sprintf("ownbasectl deploy %s %s --ref <newer>", base, strings.TrimPrefix(svc, "ownbase-"))
+					}
+					findings = append(findings, checkupFinding{
+						Summary: fmt.Sprintf("%d CVE(s) with a patch in image for %q", n, svc),
+						Fix:     fix,
+						Action: checkupAction{
+							Kind:  actionManual,
+							Label: "Update image",
+						},
 					})
 				}
 			}
@@ -372,6 +509,11 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 			findings = append(findings, checkupFinding{
 				Summary: fmt.Sprintf("%d runtime file(s) drifted from desired state", int(driftCount)),
 				Fix:     "ownbasectl plan",
+				Action: checkupAction{
+					Kind:  actionOpen,
+					Tab:   "security",
+					Label: "Go to Security",
+				},
 			})
 		}
 	}
@@ -392,12 +534,32 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 				findings = append(findings, checkupFinding{
 					Summary: fmt.Sprintf("%d service(s) behind their source repo", behind),
 					Fix:     "ownbasectl updates " + base,
+					Action: checkupAction{
+						Kind:  actionOpen,
+						Tab:   "updates",
+						Label: "Go to Updates",
+					},
 				})
 			}
 		}
 	}
 
 	return findings
+}
+
+// scanIsStale reports whether a scanned_at timestamp is older than
+// scanStaleAfter. Unparseable or empty timestamps are not stale — the
+// available=false branch already covers "no successful scan".
+func scanIsStale(scannedAt string) bool {
+	t, err := time.Parse(time.RFC3339, scannedAt)
+	if err != nil {
+		// trivy / encoding may emit RFC3339Nano
+		t, err = time.Parse(time.RFC3339Nano, scannedAt)
+		if err != nil {
+			return false
+		}
+	}
+	return time.Since(t) > scanStaleAfter
 }
 
 // printBackupCheckupSection renders the compact backup-health block at the

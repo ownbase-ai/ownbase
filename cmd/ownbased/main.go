@@ -348,6 +348,7 @@ func run(cfg agentConfig) error {
 		explain.MountAPI(mux, explain.APIConfig{
 			SecretsDir: explain.DefaultSecretsDir,
 			StatusSrv:  statusSrv,
+			AuditLog:   auditLog,
 			// TriggerScan delegates to triggerScan, which is assigned below
 			// once ctx and vulnResultCh are available. Returns false if the daemon
 			// is still initialising and the scan goroutine is not yet wired.
@@ -599,6 +600,7 @@ func run(cfg agentConfig) error {
 	var lastSecProbe time.Time
 	var lastExposure secwatch.ExposureResult
 	var lastAccess secwatch.AccessResult
+	var lastReboot secwatch.RebootResult
 	var lastUnexpectedCount = -1 // -1 = first run; used for transition detection
 
 	// lastVulnStatus holds the most recent trivy scan result. It is only ever
@@ -634,6 +636,10 @@ func run(cfg agentConfig) error {
 		if time.Since(lastSecProbe) >= secProbeInterval && state.Config != nil {
 			lastExposure = secwatch.GatherExposure(ctx, state.Config, cfg.sshPort)
 			lastAccess = secwatch.GatherAccess(ctx)
+			// Reboot marker is a pair of file stats — cheap enough to share the
+			// probe cadence, and the only way a post-upgrade CVE scan stays honest
+			// about a still-running vulnerable kernel.
+			lastReboot = secwatch.GatherRebootRequired()
 			lastSecProbe = time.Now()
 
 			// Emit a port.exposed audit record on transition into/out of unexpected
@@ -679,6 +685,7 @@ func run(cfg agentConfig) error {
 			Exposure:          lastExposure,
 			Access:            lastAccess,
 			Vulns:             lastVulnStatus,
+			Reboot:            lastReboot,
 			JobTimers:         jobTimers,
 			ConfigSource:      configSource,
 		})

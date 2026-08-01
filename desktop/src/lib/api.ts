@@ -190,6 +190,41 @@ export async function backupNow(base: string): Promise<string> {
 }
 
 // ---------------------------------------------------------------------------
+// Security actions (host packages; do not change desired state)
+// ---------------------------------------------------------------------------
+
+/**
+ * Apply available host OS package patches on the Base (`apt-get upgrade`).
+ * Streams apt output. Triggers an automatic CVE rescan on completion.
+ */
+export function securityFix(
+  base: string,
+  onEvent: (event: cli.StreamEvent) => void,
+): cli.StreamHandle {
+  return cli.stream(["security", "fix", base], onEvent);
+}
+
+/**
+ * Trigger an immediate CVE rescan. Returns once the daemon has accepted the
+ * job; results land in status a few minutes later.
+ */
+export async function securityScan(base: string): Promise<string> {
+  return cli.text(["security", "scan", base]);
+}
+
+/**
+ * Schedule a reboot on the Base so applied package upgrades (typically a new
+ * kernel) take effect. Streams a short confirmation; the machine goes down
+ * about a minute later.
+ */
+export function securityReboot(
+  base: string,
+  onEvent: (event: cli.StreamEvent) => void,
+): cli.StreamHandle {
+  return cli.stream(["security", "reboot", base], onEvent);
+}
+
+// ---------------------------------------------------------------------------
 // Sessions
 // ---------------------------------------------------------------------------
 

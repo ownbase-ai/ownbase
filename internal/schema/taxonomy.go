@@ -58,7 +58,13 @@ const (
 	ActionHostConfigureFirewall ActionType = "host.firewall"        // autonomous
 	ActionHostAutoUpdates       ActionType = "host.auto_updates"    // autonomous
 	ActionHostFail2ban          ActionType = "host.fail2ban"        // autonomous
-	ActionPortClose             ActionType = "port.close"           // notify
+	// ActionHostPatch is emitted when the operator applies host OS package
+	// patches via POST /security/fix (apt-get upgrade).
+	ActionHostPatch ActionType = "host.patch" // notify
+	// ActionHostReboot is emitted when the operator reboots the Base via
+	// POST /security/reboot. Tier notify: every service drops for ~30–60s.
+	ActionHostReboot ActionType = "host.reboot" // notify
+	ActionPortClose  ActionType = "port.close"  // notify
 	// ActionPortExposed is emitted on the transition into or out of unexpected
 	// internet-reachable exposure. Recorded by the secwatch probe in the agent.
 	ActionPortExposed ActionType = "port.exposed" // notify
@@ -97,6 +103,8 @@ var defaultTiers = map[ActionType]RiskTier{
 	ActionHostConfigureFirewall: TierAutonomous,
 	ActionHostAutoUpdates:       TierAutonomous,
 	ActionHostFail2ban:          TierAutonomous,
+	ActionHostPatch:             TierNotify,
+	ActionHostReboot:            TierNotify,
 	ActionPortClose:             TierNotify,
 	ActionPortExposed:           TierNotify,
 	ActionCertRenew:             TierAutonomous,
