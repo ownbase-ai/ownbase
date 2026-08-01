@@ -425,9 +425,31 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 			recordPatch(authz.OutcomeError, "apt-get update failed")
 			return
 		}
-		if !runStep("Upgrading packages (apt-get upgrade)", "upgrade", "-y", "-q") {
+		// --with-new-pkgs is required for kernel upgrades: linux-image-generic
+		// is a metapackage whose newer version depends on a *new* package
+		// (linux-image-N.N.N-X-generic). Plain `apt-get upgrade` refuses to
+		// install new packages and silently keeps the kernel back — leaving
+		// every kernel CVE still "fixable" after Apply Patches. full-upgrade
+		// is avoided: it may remove packages; --with-new-pkgs only adds.
+		if !runStep("Upgrading packages (apt-get upgrade --with-new-pkgs)", "upgrade", "-y", "-q", "--with-new-pkgs") {
 			recordPatch(authz.OutcomeError, "apt-get upgrade failed")
 			return
+		}
+		// Old kernel ABIs stay installed after a metapackage bump (they are
+		// not auto-removable). trivy then keeps counting their CVEs as
+		// fixable. Purge every versioned kernel package that is not the
+		// newest installed ABI; a reboot is still required to run it.
+		if obsolete, err := obsoleteKernelPackages(ctx); err != nil {
+			fmt.Fprintf(fw, "WARNING: list obsolete kernels: %v\n", err)
+		} else if len(obsolete) > 0 {
+			args := append([]string{"purge", "-y", "-q"}, obsolete...)
+			if !runStep("Removing obsolete kernel packages", args...) {
+				fmt.Fprintf(fw, "WARNING: could not purge obsolete kernels — they may still appear in CVE scans\n")
+			}
+		}
+		if !runStep("Removing unused packages (apt-get autoremove)", "autoremove", "-y", "-q") {
+			// Non-fatal: the upgrades already applied.
+			fmt.Fprintf(fw, "WARNING: apt-get autoremove failed\n")
 		}
 		recordPatch(authz.OutcomeApplied, "")
 

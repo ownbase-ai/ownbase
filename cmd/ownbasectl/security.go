@@ -479,7 +479,7 @@ func runSecurityScan(base string) error {
 func newSecurityFixCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "fix <name>",
-		Short: "Apply available host OS package patches on the Base (apt-get upgrade)",
+		Short: "Apply available host OS package patches on the Base (apt upgrade --with-new-pkgs)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runSecurityFix(args[0])
@@ -507,7 +507,7 @@ func runSecurityFix(base string) error {
 	}
 
 	fmt.Println("About to apply host OS security patches on the Base:")
-	fmt.Println("  the daemon runs 'apt-get upgrade' for packages with available fixes.")
+	fmt.Println("  the daemon runs 'apt-get upgrade --with-new-pkgs' (and autoremove) for available fixes.")
 	fmt.Println("  This can take several minutes; output streams below.")
 	fmt.Println()
 

@@ -137,7 +137,7 @@ Returns `503` if the daemon is still initialising.
 
 ### `POST /security/fix` — apply host OS package patches
 
-Behind `ownbasectl security fix`. Runs `apt-get update` + `apt-get upgrade -y` on the Base. **Streams** the apt output as `text/plain`, ending with `---OK---` on success. Records a `host.patch` audit action. If `/var/run/reboot-required` is present afterwards, the stream names the packages that need a reboot. Triggers a vulnerability rescan on completion. Returns `501` on non-Ubuntu/Debian platforms.
+Behind `ownbasectl security fix`. Runs `apt-get update` + `apt-get upgrade -y --with-new-pkgs` + `apt-get autoremove -y` on the Base. `--with-new-pkgs` is required so kernel metapackage upgrades can install the new `linux-image-*` ABI; plain `upgrade` keeps those back. `autoremove` drops unused old kernel packages so they stop appearing as fixable CVEs. **Streams** the apt output as `text/plain`, ending with `---OK---` on success. Records a `host.patch` audit action. If `/var/run/reboot-required` is present afterwards, the stream names the packages that need a reboot. Triggers a vulnerability rescan on completion. Returns `501` on non-Ubuntu/Debian platforms.
 
 ### `POST /security/reboot` — reboot the host
 
