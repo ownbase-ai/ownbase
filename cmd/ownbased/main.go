@@ -405,40 +405,23 @@ func run(cfg agentConfig) error {
 				}
 				return res.RestartPending, nil
 			},
-			// UpgradeCore pulls the latest pinned image for Caddy (the sole
-			// core package) and restarts it. Progress is written to w for
-			// streaming to the client.
+			// UpgradeCore rebuilds the hardened Caddy image from the Dockerfile
+			// embedded in this binary and restarts the container. (Caddy is no
+			// longer pulled from a registry — see internal/core.BuildCaddyImage.)
 			UpgradeCore: func(w io.Writer) error {
-				upgradeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+				upgradeCtx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 				defer cancel()
 
-				m := core.Current
-				for _, pkg := range []struct {
-					name      string
-					container string
-					image     string
-					digest    string
-				}{
-					{"Caddy", core.CaddyContainerName, m.CaddyImage, m.CaddyDigest},
-				} {
-					imageRef := pkg.image
-					if pkg.digest != "" {
-						imageRef = pkg.image + "@" + pkg.digest
-					}
-					fmt.Fprintf(w, "==> Pulling %s (%s)...\n", pkg.name, imageRef)
-					cmd := exec.CommandContext(upgradeCtx, "podman", "pull", imageRef)
-					cmd.Stdout = w
-					cmd.Stderr = w
-					if err := cmd.Run(); err != nil {
-						return fmt.Errorf("pull %s: %w", pkg.name, err)
-					}
-					fmt.Fprintf(w, "==> Restarting %s...\n", pkg.name)
-					cmd = exec.CommandContext(upgradeCtx, "podman", "restart", pkg.container)
-					cmd.Stdout = w
-					cmd.Stderr = w
-					if err := cmd.Run(); err != nil {
-						fmt.Fprintf(w, "    warning: restart %s: %v (continuing)\n", pkg.name, err)
-					}
+				fmt.Fprintf(w, "==> Building hardened Caddy image (%s)...\n", core.LocalCaddyImage)
+				if err := core.BuildCaddyImage(upgradeCtx, w); err != nil {
+					return err
+				}
+				fmt.Fprintf(w, "==> Restarting %s...\n", core.CaddyContainerName)
+				cmd := exec.CommandContext(upgradeCtx, "podman", "restart", core.CaddyContainerName)
+				cmd.Stdout = w
+				cmd.Stderr = w
+				if err := cmd.Run(); err != nil {
+					fmt.Fprintf(w, "    warning: restart %s: %v (continuing)\n", core.CaddyContainerName, err)
 				}
 				return nil
 			},
@@ -446,40 +429,36 @@ func run(cfg agentConfig) error {
 			// the core package (Caddy) for `ownbasectl upgrade` (check-only).
 			CoreStatus: func() []explain.CorePackageStatus {
 				m := core.Current
-				var out []explain.CorePackageStatus
-				for _, pkg := range []struct {
-					name      string
-					container string
-					image     string
-					digest    string
-				}{
-					{"Caddy", core.CaddyContainerName, m.CaddyImage, m.CaddyDigest},
-				} {
-					running := false
-					if state, err := exec.Command(
-						"podman", "inspect", "--format", "{{.State.Running}}", pkg.container,
-					).Output(); err == nil {
-						running = strings.TrimSpace(string(state)) == "true"
-					}
-					// RunningDigest is what the container is actually executing.
-					// Compared to Digest (the pin) to decide whether upgrade
-					// --apply would change anything.
-					runningDigest := ""
-					if dig, err := exec.Command(
-						"podman", "inspect", "--format", "{{.ImageDigest}}", pkg.container,
-					).Output(); err == nil {
-						runningDigest = strings.TrimSpace(string(dig))
-					}
-					out = append(out, explain.CorePackageStatus{
-						Name:          pkg.name,
-						Container:     pkg.container,
-						Image:         pkg.image,
-						Digest:        pkg.digest,
-						RunningDigest: runningDigest,
-						Running:       running,
-					})
+				running := false
+				if state, err := exec.Command(
+					"podman", "inspect", "--format", "{{.State.Running}}", core.CaddyContainerName,
+				).Output(); err == nil {
+					running = strings.TrimSpace(string(state)) == "true"
 				}
-				return out
+				runningDigest := ""
+				if dig, err := exec.Command(
+					"podman", "inspect", "--format", "{{.ImageDigest}}", core.CaddyContainerName,
+				).Output(); err == nil {
+					runningDigest = strings.TrimSpace(string(dig))
+				}
+				// Local builds have no registry digest pin; surface the image
+				// id of the tagged local image as Digest when present.
+				digest := m.CaddyDigest
+				if digest == "" {
+					if id, err := exec.Command(
+						"podman", "image", "inspect", "--format", "{{.Id}}", m.CaddyImage,
+					).Output(); err == nil {
+						digest = strings.TrimSpace(string(id))
+					}
+				}
+				return []explain.CorePackageStatus{{
+					Name:          "Caddy",
+					Container:     core.CaddyContainerName,
+					Image:         m.CaddyImage,
+					Digest:        digest,
+					RunningDigest: runningDigest,
+					Running:       running,
+				}}
 			},
 			// GetConfig reads the checkout's ownbase.yaml — the read side of
 			// `ownbasectl config get`.

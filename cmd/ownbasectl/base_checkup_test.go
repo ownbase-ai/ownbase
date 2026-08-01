@@ -111,8 +111,14 @@ func TestCheckupJSON_ShapeIsStableWithoutVerify(t *testing.T) {
 	})
 
 	assertSingleJSONDocument(t, out, false)
-	if !strings.Contains(out, `"findings":[]`) {
-		t.Errorf("findings is not an empty list — a caller would need a nil check:\n%s", out)
+	// findings must be a JSON array (never null) so the desktop can count it
+	// without a nil check. An empty status body legitimately raises the
+	// "config not set up" finding — that is still a list.
+	if !strings.Contains(out, `"findings":[`) {
+		t.Errorf("findings is not a list — a caller would need a nil check:\n%s", out)
+	}
+	if strings.Contains(out, `"findings":null`) {
+		t.Errorf("findings is null:\n%s", out)
 	}
 	if strings.Contains(out, `"verify"`) {
 		t.Errorf("verify present when no drill ran:\n%s", out)

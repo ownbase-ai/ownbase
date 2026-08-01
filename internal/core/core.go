@@ -7,8 +7,9 @@
 //
 //   - User services (declared with repo: in ownbase.yaml) are compiled and
 //     reconciled by the agent's normal path.
-//   - The core package is always present; the installer brings it up from a
-//     pinned image digest; the core package manifest is embedded in the binary.
+//   - The core package is always present; the daemon builds it on the Base
+//     from the Dockerfile embedded in this binary (see BuildCaddyImage) and
+//     `ownbasectl upgrade --apply` rebuilds + restarts it.
 //
 // The core: block in ownbase.yaml configures the core package (domains,
 // ports, TLS email) but never controls which version runs — that is
@@ -33,14 +34,14 @@ type CoreManifest struct {
 	CaddyDigest string // e.g. "sha256:..."
 }
 
-// Current is the pinned core manifest embedded in this binary.
-// Updated with each OwnBase release via ownbasectl upgrade.
+// Current is the core manifest embedded in this binary.
 //
-// Bumped 2026-07-04 to the latest stable release at the time
-// (Caddy 2.11.4-alpine), verified with `skopeo inspect`.
+// Caddy is built on the Base from internal/core/caddy/Dockerfile (Go 1.26.5 +
+// alpine apk upgrade) and tagged LocalCaddyImage. No registry digest: the
+// image is rebuilt by bootstrap and by `ownbasectl upgrade --apply`.
 var Current = CoreManifest{
-	CaddyImage:  "docker.io/library/caddy:2.11.4-alpine",
-	CaddyDigest: "sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648",
+	CaddyImage:  LocalCaddyImage,
+	CaddyDigest: "", // local build — not pulled
 }
 
 // CaddyContainerName is the well-known name for the core Caddy container.

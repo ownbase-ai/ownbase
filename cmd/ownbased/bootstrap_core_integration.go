@@ -49,6 +49,17 @@ func bootstrapCore(ctx context.Context, cfg agentConfig, coreCfg schema.CoreConf
 
 	quadletDir := agentQuadletDir()
 
+	// 0. Ensure the hardened Caddy image exists. Built on the Base from the
+	// Dockerfile embedded in this binary (not pulled). Only build when the
+	// tag is missing — `ownbasectl upgrade --apply` rebuilds explicitly.
+	// Rebuilding on every reconcile would cost seconds even with layer cache.
+	if !core.CaddyImagePresent() {
+		fmt.Fprintln(os.Stderr, "ownbased: bootstrap core: building hardened Caddy image (first run)")
+		if err := core.BuildCaddyImage(ctx, os.Stderr); err != nil {
+			return fmt.Errorf("bootstrap core: build caddy image: %w", err)
+		}
+	}
+
 	// 1. Generate core Quadlet units from the pinned manifest.
 	coreOut := core.BuildCoreOutput(coreCfg, core.Current, hasPublicDomain)
 

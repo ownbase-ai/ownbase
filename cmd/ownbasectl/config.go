@@ -40,7 +40,8 @@ command, safe to script or run from an AI agent.`,
 // pgBackRestRef pins the commit of github.com/ownbase-ai/pgbackrest that the
 // scaffolded config builds both the repository host and the Postgres image
 // from. Bumping the Postgres/pgBackRest pair is a one-line change here.
-const pgBackRestRef = "3ec931b9e2afe5eec934d46442031d21019c2da3"
+// Bumped with pgbackrest harden-images-gosu-go1.26 (rebuild gosu on Go 1.26.5).
+const pgBackRestRef = "d42b650d6f9f3c81c8ba459aa2ea44725ebcc5c7"
 
 // defaultOwnbaseYAML is the config seeded into an empty config repo by
 // `config setup --init`.

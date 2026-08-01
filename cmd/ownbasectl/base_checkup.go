@@ -538,19 +538,20 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 					continue
 				}
 				if strings.HasPrefix(svc, "ownbase-core-") {
-					// Core packages (Caddy): upgrade --apply only helps when
-					// the running digest differs from the pin. When they
-					// match, the fix ships in a newer OwnBase release via
-					// self-update. Without running_digest we offer self-update
-					// (the honest path when the pin is already current).
+					// Caddy is built on the Base from the Dockerfile embedded
+					// in the daemon. upgrade --apply rebuilds it (current Go
+					// + alpine apk upgrade). A daemon that predates that
+					// Dockerfile needs self-update first — the button still
+					// helps after, and is the right action either way once
+					// the Base is on a recent OwnBase.
 					findings = append(findings, checkupFinding{
 						Summary: fmt.Sprintf("%d CVE(s) with a patch in core image %q", n, svc),
-						Fix:     "ownbasectl self-update " + base,
+						Fix:     "ownbasectl upgrade " + base + " --apply",
 						Action: checkupAction{
 							Kind:    actionRun,
-							Run:     "self-update",
-							Label:   "Update OwnBase",
-							Confirm: "Replaces the OwnBase daemon with the latest signed release and restarts it (~10s). The core package pin (Caddy) moves with the new binary.",
+							Run:     "upgrade --apply",
+							Label:   "Rebuild Caddy",
+							Confirm: "Rebuilds the hardened Caddy image on this Base (downloads Go toolchains on first build) and restarts the proxy. Brief interruption to HTTPS.",
 						},
 					})
 					continue

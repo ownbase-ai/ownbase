@@ -309,7 +309,7 @@ func TestCheckupFindings_FlagsIssues(t *testing.T) {
 		{"unexpected internet-reachable port", actionOpen, "", "security", ""},
 		{"Host reboot required", actionRun, "security reboot", "", ""},
 		{"host CVE(s) have a patch available", actionRun, "security fix", "", ""},
-		{"CVE(s) with a patch in core image", actionRun, "self-update", "", ""},
+		{"CVE(s) with a patch in core image", actionRun, "upgrade --apply", "", ""},
 		{"CVE scan failed for service \"ownbase-crm\"", actionOpen, "", "security", ""},
 		{"runtime file(s) drifted", actionOpen, "", "security", ""},
 		{"behind its source repo", actionForm, "", "", "deploy"},
