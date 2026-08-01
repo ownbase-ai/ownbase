@@ -271,6 +271,13 @@ func triggerReconcile(base string) error {
 	}
 	defer conn.close()
 	if _, err := apiCall(conn, http.MethodPost, "/reconcile", nil); err != nil {
+		msg := err.Error()
+		// A 404 almost always means the Base is still running a daemon that
+		// predates the external-config model. The git push already succeeded;
+		// only the "please apply now" kick failed.
+		if strings.Contains(msg, "404") {
+			return fmt.Errorf("trigger reconcile: %w\n  The Base's daemon does not implement POST /reconcile (it is too old).\n  Update it with: ownbasectl self-update %s\n  Or rebuild/reinstall the Base, then retry deploy — your config commit is already on the remote", err, base)
+		}
 		return fmt.Errorf("trigger reconcile: %w", err)
 	}
 	return nil

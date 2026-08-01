@@ -25,6 +25,15 @@ func CaddyImagePresent() bool {
 	return err == nil
 }
 
+// EnsureCaddyImage builds LocalCaddyImage if it is missing. Safe to call from
+// a background goroutine after the status API is listening.
+func EnsureCaddyImage(ctx context.Context, w interface{ Write([]byte) (int, error) }) error {
+	if CaddyImagePresent() {
+		return nil
+	}
+	return BuildCaddyImage(ctx, w)
+}
+
 // BuildCaddyImage builds the hardened Caddy image from the embedded Dockerfile
 // and tags it LocalCaddyImage. Progress is written to w when non-nil.
 func BuildCaddyImage(ctx context.Context, w interface{ Write([]byte) (int, error) }) error {

@@ -620,6 +620,31 @@ func run(cfg agentConfig) error {
 		}()
 	}
 
+	// Build the hardened Caddy image in the background once the API is up.
+	// The first build can take minutes (Go toolchain + module download) and
+	// must not block POST /reconcile after a client-side deploy.
+	go func() {
+		if core.CaddyImagePresent() {
+			return
+		}
+		fmt.Fprintln(os.Stderr, "ownbased: building hardened Caddy image (background)")
+		if err := core.EnsureCaddyImage(context.Background(), os.Stderr); err != nil {
+			fmt.Fprintf(os.Stderr, "ownbased: build caddy image: %v\n", err)
+			return
+		}
+		// Units may already reference the local tag; restart so the container
+		// picks up the image that just landed.
+		coreCfg := schema.CoreConfig{}
+		hasPublicDomain := false
+		if cfgOnDisk, err := schema.ParseConfigFile(filepath.Join(cfg.checkoutPath, "ownbase.yaml")); err == nil {
+			coreCfg = cfgOnDisk.Core
+			hasPublicDomain = cfgOnDisk.HasPublicDomain()
+		}
+		if err := bootstrapCore(context.Background(), cfg, coreCfg, hasPublicDomain); err != nil {
+			fmt.Fprintf(os.Stderr, "ownbased: bootstrap core after caddy build: %v\n", err)
+		}
+	}()
+
 	mode := "dry-run"
 	if !cfg.dryRun {
 		mode = applierMode(applier)
