@@ -254,6 +254,11 @@ export interface VulnStatus {
   host_scan_error?: string;
   host: VulnSummary;
   images?: ImageVulns[];
+  /** True while a trivy run is in flight. */
+  scanning?: boolean;
+  scan_started_at?: string;
+  /** When /security/fix last finished; counts older than this are pre-patch. */
+  last_patch_at?: string;
 }
 
 /** internal/vulnscan.VulnSummary */

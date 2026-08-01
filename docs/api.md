@@ -137,13 +137,13 @@ Returns `503` if the daemon is still initialising.
 
 ### `POST /security/fix` — apply host OS package patches
 
-Behind `ownbasectl security fix`. Runs `apt-get update` + `apt-get upgrade -y --with-new-pkgs` + `apt-get autoremove -y` on the Base. `--with-new-pkgs` is required so kernel metapackage upgrades can install the new `linux-image-*` ABI; plain `upgrade` keeps those back. `autoremove` drops unused old kernel packages so they stop appearing as fixable CVEs. **Streams** the apt output as `text/plain`, ending with `---OK---` on success. Records a `host.patch` audit action. If `/var/run/reboot-required` is present afterwards, the stream names the packages that need a reboot. Triggers a vulnerability rescan on completion. Returns `501` on non-Ubuntu/Debian platforms.
+Behind `ownbasectl security fix`. Runs `apt-get update` + `apt-get upgrade -y --with-new-pkgs`, purges obsolete (non-running, non-newest) kernel ABIs, then `apt-get autoremove -y`. `--with-new-pkgs` is required so kernel metapackage upgrades can install the new `linux-image-*` ABI; plain `upgrade` keeps those back. Stamps `last_patch_at` in `/opt/ownbase/state/security.json` so checkup suppresses "Apply patches" until a post-patch scan lands. **Streams** the apt output as `text/plain`, ending with `---OK---` on success. Records a `host.patch` audit action. If `/var/run/reboot-required` is present afterwards, the stream names the packages that need a reboot and defers the CVE rescan to boot (see `/security/reboot`). Otherwise triggers an immediate vulnerability rescan. Returns `501` on non-Ubuntu/Debian platforms.
 
 ### `POST /security/reboot` — reboot the host
 
-Behind `ownbasectl security reboot`. Schedules `shutdown -r +1` so the `---OK---` sentinel can leave the box before the network drops. **Streams** a short confirmation as `text/plain`. Records a `host.reboot` audit action. Returns `501` when `shutdown` is absent. Every service on the Base drops for roughly 30–60 seconds.
+Behind `ownbasectl security reboot`. Writes `rescan_on_boot` into `/opt/ownbase/state/security.json`, then schedules `shutdown -r +1` so the `---OK---` sentinel can leave the box before the network drops. On the next daemon start the flag triggers an immediate CVE scan instead of the normal 5-minute delay. **Streams** a short confirmation as `text/plain`. Records a `host.reboot` audit action. Returns `501` when `shutdown` is absent. Every service on the Base drops for roughly 30–60 seconds.
 
-The reboot-required state itself is exposed on `GET /status` as `security.reboot_required` and `security.reboot_packages` (from `/var/run/reboot-required[.pkgs]`).
+The reboot-required state itself is exposed on `GET /status` as `security.reboot_required` and `security.reboot_packages` (from `/var/run/reboot-required[.pkgs]`). Scan progress is `security.vulns.scanning` / `scan_started_at`; `last_patch_at` is the durable stamp from the last successful `/security/fix`.
 
 ### `POST /security/scanner/install` — install trivy
 

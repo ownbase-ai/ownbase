@@ -453,6 +453,17 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 		}
 		recordPatch(authz.OutcomeApplied, "")
 
+		// Stamp last_patch_at so checkup suppresses "Apply patches" until a
+		// post-patch scan lands (scanned_at would otherwise keep driving the
+		// pre-patch count).
+		patchedAt := time.Now().UTC()
+		if err := MarkPatched(DefaultSecurityStatePath); err != nil {
+			fmt.Fprintf(fw, "WARNING: persist last_patch_at: %v\n", err)
+		}
+		if cfg.StatusSrv != nil {
+			cfg.StatusSrv.SetLastPatchAt(patchedAt)
+		}
+
 		// A successful upgrade can leave the machine needing a reboot (new
 		// kernel). Surface that here and push it into the cached status so
 		// the next /status read (and therefore the app's refresh) sees it
@@ -466,18 +477,24 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 			if len(reboot.Packages) > 0 {
 				fmt.Fprintf(fw, " (%s)", strings.Join(reboot.Packages, ", "))
 			}
-			fmt.Fprintf(fw, ".\n    Run 'ownbasectl security reboot' when ready — every service will drop for ~30–60s.\n")
+			fmt.Fprintf(fw, ".\n    Run 'ownbasectl security reboot' (or 'security fix --reboot') when ready — every service will drop for ~30–60s.\n")
+			fmt.Fprintf(fw, "    Until then CVE counts still describe the pre-patch packages.\n")
 		}
 
-		fmt.Fprintf(fw, "\n==> Done. Triggering vulnerability rescan...\n")
-		if cfg.TriggerScan != nil {
-			if cfg.TriggerScan() {
-				fmt.Fprintf(fw, "    Scan started — results available in a few minutes.\n")
-				fmt.Fprintf(fw, "    Run 'ownbasectl security' to see updated counts.\n")
-			} else {
-				fmt.Fprintf(fw, "    Vulnerability scan will refresh on its normal schedule.\n")
-				fmt.Fprintf(fw, "    Run 'ownbasectl security' to see updated counts.\n")
+		// When a reboot is required, do not start a multi-minute trivy run
+		// against packages that are about to be left behind — the boot-time
+		// rescan (rescan_on_boot) is the honest measurement.
+		if !reboot.Required {
+			fmt.Fprintf(fw, "\n==> Done. Triggering vulnerability rescan...\n")
+			if cfg.TriggerScan != nil {
+				if cfg.TriggerScan() {
+					fmt.Fprintf(fw, "    Scan started — results available in a few minutes.\n")
+				} else {
+					fmt.Fprintf(fw, "    Vulnerability scan will refresh on its normal schedule.\n")
+				}
 			}
+		} else {
+			fmt.Fprintf(fw, "\n==> Done. Reboot to finish; a CVE rescan will run automatically on boot.\n")
 		}
 		fmt.Fprintf(fw, "---OK---\n")
 	})
@@ -521,8 +538,16 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 			_ = cfg.AuditLog.Record(action, outcome, errMsg)
 		}
 
+		// Ask the next daemon start to scan immediately instead of waiting
+		// the normal 5-minute startup delay — otherwise the Base is blind to
+		// CVEs for minutes after a security reboot.
+		if err := MarkRescanOnBoot(DefaultSecurityStatePath); err != nil {
+			fmt.Fprintf(fw, "WARNING: could not set rescan-on-boot: %v\n", err)
+		}
+
 		fmt.Fprintf(fw, "==> Scheduling reboot in 1 minute\n")
 		fmt.Fprintf(fw, "    Every service on this Base will stop and restart with the machine.\n")
+		fmt.Fprintf(fw, "    A CVE rescan will run automatically when the Base comes back.\n")
 		// `shutdown -r +1` returns immediately; the actual reboot is a minute
 		// later. That window is what lets ---OK--- leave the box before the
 		// network drops. `+0` would race the response.

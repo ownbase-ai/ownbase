@@ -427,20 +427,23 @@ func printSecurityReport(base string, body []byte) error {
 }
 
 func newSecurityScanCmd() *cobra.Command {
-	return &cobra.Command{
+	var wait bool
+	cmd := &cobra.Command{
 		Use:   "scan <name>",
 		Short: "Trigger an immediate vulnerability rescan on the Base",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSecurityScan(args[0])
+			return runSecurityScan(args[0], wait)
 		},
 	}
+	cmd.Flags().BoolVar(&wait, "wait", false, "block until the scan finishes and print updated host counts")
+	return cmd
 }
 
 // runSecurityScan triggers an immediate vulnerability scan on the Base and
-// returns once the daemon confirms the scan has started. The scan runs
-// asynchronously; check 'ownbasectl security' for the updated results.
-func runSecurityScan(base string) error {
+// returns once the daemon confirms the scan has started. With --wait, polls
+// /status until scanning clears (or times out).
+func runSecurityScan(base string, wait bool) error {
 	conn, err := connectToServer(base)
 	if err != nil {
 		return err
@@ -472,25 +475,39 @@ func runSecurityScan(base string) error {
 	}
 
 	fmt.Println("Vulnerability scan started on Base.")
-	fmt.Printf("Results available in a few minutes — run 'ownbasectl security %s' to check.\n", base)
-	return nil
+	if !wait {
+		fmt.Printf("Results available in a few minutes — run 'ownbasectl security %s' to check.\n", base)
+		return nil
+	}
+	fmt.Println("Waiting for the scan to finish...")
+	return waitForScanIdle(base, 20*time.Minute)
 }
 
 func newSecurityFixCmd() *cobra.Command {
-	return &cobra.Command{
+	var reboot bool
+	cmd := &cobra.Command{
 		Use:   "fix <name>",
 		Short: "Apply available host OS package patches on the Base (apt upgrade --with-new-pkgs)",
-		Args:  cobra.ExactArgs(1),
+		Long: `Apply host OS package patches on the Base. Uses apt-get upgrade
+--with-new-pkgs so kernel metapackage upgrades install the new image ABI,
+then removes obsolete kernel packages.
+
+With --reboot, if the Base needs a reboot afterwards (new kernel), schedule
+it and wait until the API answers again. A CVE rescan runs automatically on
+boot.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSecurityFix(args[0])
+			return runSecurityFix(args[0], reboot)
 		},
 	}
+	cmd.Flags().BoolVar(&reboot, "reboot", false, "reboot if required after patching, and wait until the Base is back")
+	return cmd
 }
 
 // runSecurityFix posts to the Base's /security/fix endpoint and streams the
-// upgrade output back. The daemon runs apt-get on the Base as root; this
-// client only needs valid API credentials.
-func runSecurityFix(base string) error {
+// upgrade output back. With reboot, chains into security reboot --wait when
+// the stream reports a reboot is required (or /status says so afterwards).
+func runSecurityFix(base string, reboot bool) error {
 	conn, err := connectToServer(base)
 	if err != nil {
 		return err
@@ -508,6 +525,9 @@ func runSecurityFix(base string) error {
 
 	fmt.Println("About to apply host OS security patches on the Base:")
 	fmt.Println("  the daemon runs 'apt-get upgrade --with-new-pkgs' (and autoremove) for available fixes.")
+	if reboot {
+		fmt.Println("  --reboot: if a reboot is required afterwards, schedule it and wait for the Base to return.")
+	}
 	fmt.Println("  This can take several minutes; output streams below.")
 	fmt.Println()
 
@@ -537,12 +557,18 @@ func runSecurityFix(base string) error {
 	// Stream the response body line-by-line to stdout as the daemon produces it.
 	// The daemon ends with "---OK---" on success; absence means apt-get failed.
 	var gotOK bool
+	var rebootMentioned bool
 	scanner := bufio.NewScanner(resp.Body)
+	// apt can emit very long lines; raise the default 64K token limit.
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "---OK---" {
 			gotOK = true
 			continue
+		}
+		if strings.Contains(line, "reboot is required") || strings.Contains(line, "Reboot to finish") {
+			rebootMentioned = true
 		}
 		fmt.Println(line)
 	}
@@ -552,11 +578,28 @@ func runSecurityFix(base string) error {
 	if !gotOK {
 		return fmt.Errorf("security fix failed — see output above")
 	}
-	return nil
+
+	if !reboot {
+		return nil
+	}
+
+	// Prefer the stream's word; fall back to a fresh /status read in case the
+	// marker was set without the prose line (older daemon).
+	needsReboot := rebootMentioned
+	if !needsReboot {
+		needsReboot = statusRebootRequired(base)
+	}
+	if !needsReboot {
+		fmt.Println("\nNo reboot required.")
+		return nil
+	}
+	fmt.Println()
+	return runSecurityReboot(base, true)
 }
 
 func newSecurityRebootCmd() *cobra.Command {
-	return &cobra.Command{
+	var wait bool
+	cmd := &cobra.Command{
 		Use:   "reboot <name>",
 		Short: "Reboot the Base so applied package upgrades take effect",
 		Long: `Schedule a reboot on the Base one minute out. Use this after
@@ -565,19 +608,24 @@ typically a new kernel is installed but not yet running.
 
 Every service drops with the machine and comes back when it returns. The
 outage is typically 30–60 seconds. The one-minute delay lets this command
-print confirmation before the SSH tunnel dies.`,
+print confirmation before the SSH tunnel dies.
+
+With --wait, block until the Base's API answers again after the reboot. A
+CVE rescan runs automatically on boot.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSecurityReboot(args[0])
+			return runSecurityReboot(args[0], wait)
 		},
 	}
+	cmd.Flags().BoolVar(&wait, "wait", false, "block until the Base is reachable again after the reboot")
+	return cmd
 }
 
 // runSecurityReboot posts to /security/reboot and streams the short
 // confirmation. The daemon schedules `shutdown -r +1` so ---OK--- can leave
 // the box before the network drops; a connection error *after* ---OK--- is
-// therefore success, not failure.
-func runSecurityReboot(base string) error {
+// therefore success, not failure. With wait, polls until /status answers.
+func runSecurityReboot(base string, wait bool) error {
 	conn, err := connectToServer(base)
 	if err != nil {
 		return err
@@ -635,14 +683,94 @@ func runSecurityReboot(base string) error {
 	// down. scanner.Err on a half-closed body is therefore not a failure when
 	// we already saw the sentinel.
 	scanErr := scanner.Err()
-	if gotOK {
+	if !gotOK {
+		if scanErr != nil {
+			return scanErr
+		}
+		return fmt.Errorf("security reboot failed — see output above")
+	}
+
+	if !wait {
 		fmt.Println("\n  Reboot scheduled. The Base will be back in about a minute.")
 		return nil
 	}
-	if scanErr != nil {
-		return scanErr
+
+	// Close the tunnel before waiting — it dies with the host.
+	conn.close()
+	fmt.Println("\nWaiting for the Base to come back...")
+	// Shutdown is +1 minute; allow generous time for boot + PassZero.
+	return waitForBase(base, 10*time.Minute)
+}
+
+// statusRebootRequired is a best-effort /status peek used by security fix
+// --reboot when the stream did not mention a reboot.
+func statusRebootRequired(base string) bool {
+	body, err := fetchStatusBody(base, 15*time.Second)
+	if err != nil {
+		return false
 	}
-	return fmt.Errorf("security reboot failed — see output above")
+	var s map[string]any
+	if err := json.Unmarshal(body, &s); err != nil {
+		return false
+	}
+	sec, _ := s["security"].(map[string]any)
+	reboot, _ := sec["reboot_required"].(bool)
+	return reboot
+}
+
+// waitForBase polls until the Base's /status answers, reconnecting the tunnel
+// on each attempt (the previous one dies with the host).
+func waitForBase(base string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	// Give shutdown a head start so we do not race the still-up machine.
+	time.Sleep(70 * time.Second)
+	attempt := 0
+	for time.Now().Before(deadline) {
+		attempt++
+		_, err := fetchStatusBody(base, 10*time.Second)
+		if err == nil {
+			fmt.Printf("Base is back (attempt %d).\n", attempt)
+			return nil
+		}
+		fmt.Printf("  still down (%v) — retrying in 5s\n", err)
+		time.Sleep(5 * time.Second)
+	}
+	return fmt.Errorf("timed out after %s waiting for %s to come back", timeout, base)
+}
+
+// waitForScanIdle polls /status until vulns.scanning is false (or absent) and
+// a scanned_at newer than when we started is present.
+func waitForScanIdle(base string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	started := time.Now().UTC()
+	for time.Now().Before(deadline) {
+		body, err := fetchStatusBody(base, 15*time.Second)
+		if err != nil {
+			time.Sleep(5 * time.Second)
+			continue
+		}
+		var s map[string]any
+		if err := json.Unmarshal(body, &s); err != nil {
+			time.Sleep(5 * time.Second)
+			continue
+		}
+		sec, _ := s["security"].(map[string]any)
+		vulns, _ := sec["vulns"].(map[string]any)
+		scanning, _ := vulns["scanning"].(bool)
+		scannedAt, _ := vulns["scanned_at"].(string)
+		available, _ := vulns["available"].(bool)
+		if !scanning && available && scannedAt != "" {
+			if t, err := parseStatusTime(scannedAt); err == nil && !t.Before(started.Add(-time.Minute)) {
+				host, _ := vulns["host"].(map[string]any)
+				fc, _ := host["fixable_critical"].(float64)
+				fh, _ := host["fixable_high"].(float64)
+				fmt.Printf("Scan complete. Host fixable: %d critical, %d high.\n", int(fc), int(fh))
+				return nil
+			}
+		}
+		time.Sleep(5 * time.Second)
+	}
+	return fmt.Errorf("timed out after %s waiting for CVE scan on %s", timeout, base)
 }
 
 func newSecurityInstallScannerCmd() *cobra.Command {

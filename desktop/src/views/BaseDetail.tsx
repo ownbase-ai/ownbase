@@ -465,7 +465,9 @@ function FindingRow({
 
     const streamers: Record<string, () => { done: Promise<number> }> = {
       "security fix": () => api.securityFix(base, onEvent),
+      "security fix --reboot": () => api.securityFix(base, onEvent, { reboot: true }),
       "security reboot": () => api.securityReboot(base, onEvent),
+      "security reboot --wait": () => api.securityReboot(base, onEvent, { wait: true }),
       "security install-scanner": () => api.installScanner(base, onEvent),
       "self-update": () => api.selfUpdate(base, onEvent),
       "upgrade --apply": () => api.upgradeApply(base, onEvent),
@@ -1295,7 +1297,7 @@ function Security({
       {reboot_required && (
         <Panel
           title="Reboot required"
-          subtitle="Applied packages need a reboot to take effect — usually a new kernel."
+          subtitle="Applied packages need a reboot to take effect — usually a new kernel. A CVE rescan runs automatically on boot."
           action={<RebootAction base={base.name} onChanged={onChanged} />}
         >
           <p className="text-sm leading-relaxed text-zinc-400">
@@ -1420,17 +1422,26 @@ function Security({
       <Panel
         title="Known vulnerabilities"
         subtitle={
-          vulns.scanned_at
-            ? `Last scanned ${ago(vulns.scanned_at)}. Only CVEs with a published patch are actionable.`
-            : "Scanned daily by the Base. Only CVEs with a published patch are actionable."
+          vulns.scanning
+            ? `Scan in progress${vulns.scan_started_at ? ` (started ${ago(vulns.scan_started_at)})` : ""}. Counts below may be from the previous scan.`
+            : vulns.scanned_at
+              ? `Last scanned ${ago(vulns.scanned_at)}. Only CVEs with a published patch are actionable.`
+              : "Scanned daily by the Base. Only CVEs with a published patch are actionable."
         }
-        action={<RescanAction base={base.name} onChanged={onChanged} />}
+        action={<RescanAction base={base.name} onChanged={onChanged} scanning={!!vulns.scanning} />}
       >
-        {!vulns.available ? (
+        {vulns.scanning && !vulns.available ? (
           <Unavailable>
-            {vulns.trivy_installed
-              ? `The scanner ran but the host scan failed${vulns.host_scan_error ? `: ${vulns.host_scan_error}` : ""}. That is unknown, not clean.`
-              : "No scanner on this machine yet, so nothing has been checked. That is unknown, not clean."}
+            A CVE scan is running. Results will land here when it finishes —
+            unknown until then, not clean.
+          </Unavailable>
+        ) : !vulns.available ? (
+          <Unavailable>
+            {!vulns.trivy_installed
+              ? "No scanner on this machine yet, so nothing has been checked. That is unknown, not clean."
+              : vulns.host_scan_error
+                ? `The scanner ran but the host scan failed: ${vulns.host_scan_error}. That is unknown, not clean.`
+                : "CVE scan still pending — the Base has not finished its first scan yet. That is unknown, not clean."}
           </Unavailable>
         ) : (
           <>
@@ -1440,7 +1451,9 @@ function Security({
               defaultOpen
               fixHint={
                 (vulns.host.fixable_critical ?? 0) + (vulns.host.fixable_high ?? 0) > 0
-                  ? `Apply host patches with ownbasectl security fix ${base.name}`
+                  ? reboot_required
+                    ? `Reboot to finish applying patches — ownbasectl security reboot ${base.name} --wait`
+                    : `Apply host patches with ownbasectl security fix ${base.name} --reboot`
                   : undefined
               }
             />
@@ -1613,7 +1626,15 @@ function VulnList({
   );
 }
 
-function RescanAction({ base, onChanged }: { base: string; onChanged: () => void }) {
+function RescanAction({
+  base,
+  onChanged,
+  scanning,
+}: {
+  base: string;
+  onChanged: () => void;
+  scanning?: boolean;
+}) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
@@ -1633,8 +1654,8 @@ function RescanAction({ base, onChanged }: { base: string; onChanged: () => void
 
   return (
     <div className="flex flex-col items-end gap-1">
-      <Button variant="secondary" busy={busy} onClick={() => void rescan()}>
-        Rescan
+      <Button variant="secondary" busy={busy || !!scanning} disabled={!!scanning} onClick={() => void rescan()}>
+        {scanning ? "Scanning…" : "Rescan"}
       </Button>
       {msg && <p className="max-w-xs text-right text-xs text-zinc-500">{msg}</p>}
     </div>
@@ -1645,35 +1666,46 @@ function RebootAction({ base, onChanged }: { base: string; onChanged: () => void
   const [busy, setBusy] = useState(false);
   const [lines, setLines] = useState<string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [phase, setPhase] = useState<"idle" | "rebooting" | "back">("idle");
 
   function reboot() {
     if (
       !window.confirm(
-        "Every service on this Base will stop and restart with the machine. The outage is typically 30–60 seconds. Reboot now?",
+        "Every service on this Base will stop and restart with the machine. The outage is typically 30–60 seconds. A CVE rescan runs automatically on boot. Reboot now?",
       )
     ) {
       return;
     }
     setBusy(true);
+    setPhase("rebooting");
     setError(null);
     setLines([]);
     const collected: string[] = [];
-    const stream = api.securityReboot(base, (event: StreamEvent) => {
-      if (event.kind === "stdout" || event.kind === "stderr") {
-        collected.push(event.line);
-        setLines([...collected]);
-      }
-    });
+    // --wait blocks until the API answers again after the reboot.
+    const stream = api.securityReboot(
+      base,
+      (event: StreamEvent) => {
+        if (event.kind === "stdout" || event.kind === "stderr") {
+          collected.push(event.line);
+          setLines([...collected]);
+        }
+      },
+      { wait: true },
+    );
     stream.done
       .then((code) => {
         setBusy(false);
         if (code !== 0) {
           setError("The reboot command did not finish cleanly.");
+          setPhase("idle");
+        } else {
+          setPhase("back");
         }
         onChanged();
       })
       .catch((err: unknown) => {
         setBusy(false);
+        setPhase("idle");
         setError(err instanceof Error ? err.message : String(err));
       });
   }
@@ -1681,9 +1713,14 @@ function RebootAction({ base, onChanged }: { base: string; onChanged: () => void
   return (
     <div className="flex flex-col items-end gap-2">
       <Button variant="danger" busy={busy} onClick={reboot}>
-        Reboot now
+        {phase === "rebooting" ? "Waiting for Base…" : phase === "back" ? "Back" : "Reboot now"}
       </Button>
       {error && <p className="max-w-xs text-right text-xs text-red-300">{error}</p>}
+      {phase === "back" && (
+        <p className="max-w-xs text-right text-xs text-zinc-400">
+          Base is back. A CVE rescan is running — counts refresh in a few minutes.
+        </p>
+      )}
       {lines && lines.length > 0 && (
         <LogView lines={lines} className="max-h-32 w-full min-w-[20rem]" />
       )}

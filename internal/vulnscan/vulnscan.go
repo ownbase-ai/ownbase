@@ -113,4 +113,19 @@ type VulnStatus struct {
 	// Images holds per-service image scan results. Empty until the first
 	// scan tick or when no services are running.
 	Images []ImageVulns `json:"images,omitempty"`
+
+	// Scanning is true while a trivy run is in flight. Independent of
+	// Available: a Base can have previous results and still be re-scanning.
+	// Managed by the daemon's StatusServer, not by GatherVulns.
+	Scanning bool `json:"scanning,omitempty"`
+
+	// ScanStartedAt is when the current (or most recent) scan was kicked off.
+	// Zero when no scan has been started this process lifetime.
+	ScanStartedAt time.Time `json:"scan_started_at,omitempty"`
+
+	// LastPatchAt is when /security/fix last finished successfully. Durable
+	// across reboots via /opt/ownbase/state/security.json. When ScannedAt is
+	// older than this, displayed counts are pre-patch and must not drive an
+	// "Apply patches" finding.
+	LastPatchAt time.Time `json:"last_patch_at,omitempty"`
 }

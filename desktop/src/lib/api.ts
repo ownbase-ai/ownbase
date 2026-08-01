@@ -195,34 +195,46 @@ export async function backupNow(base: string): Promise<string> {
 // ---------------------------------------------------------------------------
 
 /**
- * Apply available host OS package patches on the Base (`apt-get upgrade`).
- * Streams apt output. Triggers an automatic CVE rescan on completion.
+ * Apply available host OS package patches on the Base.
+ * With reboot, chains into a wait-for-return if a reboot is required.
+ * Streams apt (and reboot) output.
  */
 export function securityFix(
   base: string,
   onEvent: (event: cli.StreamEvent) => void,
+  opts?: { reboot?: boolean },
 ): cli.StreamHandle {
-  return cli.stream(["security", "fix", base], onEvent);
+  const args = ["security", "fix", base];
+  if (opts?.reboot) args.push("--reboot");
+  return cli.stream(args, onEvent);
 }
 
 /**
  * Trigger an immediate CVE rescan. Returns once the daemon has accepted the
- * job; results land in status a few minutes later.
+ * job; results land in status a few minutes later. With wait, blocks until
+ * the scan finishes.
  */
-export async function securityScan(base: string): Promise<string> {
-  return cli.text(["security", "scan", base]);
+export async function securityScan(
+  base: string,
+  opts?: { wait?: boolean },
+): Promise<string> {
+  const args = ["security", "scan", base];
+  if (opts?.wait) args.push("--wait");
+  return cli.text(args);
 }
 
 /**
  * Schedule a reboot on the Base so applied package upgrades (typically a new
- * kernel) take effect. Streams a short confirmation; the machine goes down
- * about a minute later.
+ * kernel) take effect. With wait, blocks until the API answers again.
  */
 export function securityReboot(
   base: string,
   onEvent: (event: cli.StreamEvent) => void,
+  opts?: { wait?: boolean },
 ): cli.StreamHandle {
-  return cli.stream(["security", "reboot", base], onEvent);
+  const args = ["security", "reboot", base];
+  if (opts?.wait) args.push("--wait");
+  return cli.stream(args, onEvent);
 }
 
 /** Install trivy + enable podman.socket on the Base. Streams progress. */

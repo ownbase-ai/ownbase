@@ -286,15 +286,14 @@ func TestCheckupFindings_FlagsIssues(t *testing.T) {
 	// 1. backups not configured → form
 	// 2. firewall not active
 	// 3. unexpected ports
-	// 4. reboot required
-	// 5. host fixable CVEs
-	// 6. caddy image fixable CVEs → self-update
-	// 7. crm scan failed
-	// 8. drift
-	// 9. crm behind → deploy form
+	// 4. reboot required (covers pending host CVEs — no separate Apply row)
+	// 5. caddy image fixable CVEs → self-update
+	// 6. crm scan failed
+	// 7. drift
+	// 8. crm behind → deploy form
 	// (banned IPs deliberately absent)
-	if len(findings) != 9 {
-		t.Fatalf("expected 9 findings, got %d: %+v", len(findings), findings)
+	if len(findings) != 8 {
+		t.Fatalf("expected 8 findings, got %d: %+v", len(findings), findings)
 	}
 
 	want := []struct {
@@ -307,8 +306,7 @@ func TestCheckupFindings_FlagsIssues(t *testing.T) {
 		{"Backups not configured", actionForm, "", "", "backup-setup"},
 		{"Firewall (UFW) is not active", actionOpen, "", "security", ""},
 		{"unexpected internet-reachable port", actionOpen, "", "security", ""},
-		{"Host reboot required", actionRun, "security reboot", "", ""},
-		{"host CVE(s) have a patch available", actionRun, "security fix", "", ""},
+		{"Reboot to finish applying host patches", actionRun, "security reboot --wait", "", ""},
 		{"CVE(s) with a patch in core image", actionRun, "self-update", "", ""},
 		{"CVE scan failed for service \"ownbase-crm\"", actionOpen, "", "security", ""},
 		{"runtime file(s) drifted", actionOpen, "", "security", ""},
@@ -451,12 +449,79 @@ func TestCheckupFindings_StaleScanStillSurfacesFixableHostCVEs(t *testing.T) {
 		if f.Action.Run == "security scan" {
 			sawStale = true
 		}
-		if f.Action.Run == "security fix" {
+		if f.Action.Run == "security fix --reboot" {
 			sawFixable = true
 		}
 	}
 	if !sawStale || !sawFixable {
-		t.Errorf("want both security scan and security fix actions, got %+v", findings)
+		t.Errorf("want both security scan and security fix --reboot actions, got %+v", findings)
+	}
+}
+
+func TestCheckupFindings_RebootSuppressesApplyPatches(t *testing.T) {
+	body := []byte(`{
+		"config": {"repo_url": "git@example.com/x.git"},
+		"security": {
+			"backup_restorable": true,
+			"reboot_required": true,
+			"vulns": {
+				"available": true,
+				"trivy_installed": true,
+				"scanned_at": "2026-07-31T12:00:00Z",
+				"host": {"fixable_critical": 3, "fixable_high": 5}
+			}
+		}
+	}`)
+	findings := checkupFindings("mybase", body)
+	var sawReboot, sawApply bool
+	for _, f := range findings {
+		if strings.Contains(f.Action.Run, "security reboot") {
+			sawReboot = true
+		}
+		if strings.Contains(f.Action.Run, "security fix") {
+			sawApply = true
+		}
+	}
+	if !sawReboot {
+		t.Fatalf("want reboot finding, got %+v", findings)
+	}
+	if sawApply {
+		t.Fatalf("reboot_required must suppress Apply patches, got %+v", findings)
+	}
+}
+
+func TestCheckupFindings_StaleAfterPatchSuppressesApply(t *testing.T) {
+	// scanned_at before last_patch_at → counts are pre-patch; no Apply row.
+	body := []byte(`{
+		"config": {"repo_url": "git@example.com/x.git"},
+		"security": {
+			"backup_restorable": true,
+			"vulns": {
+				"available": true,
+				"trivy_installed": true,
+				"scanned_at": "2026-07-31T10:00:00Z",
+				"last_patch_at": "2026-07-31T12:00:00Z",
+				"host": {"fixable_critical": 3, "fixable_high": 5}
+			}
+		}
+	}`)
+	findings := checkupFindings("mybase", body)
+	for _, f := range findings {
+		if strings.Contains(f.Action.Run, "security fix") {
+			t.Fatalf("pre-patch counts must not raise Apply patches: %+v", f)
+		}
+	}
+}
+
+func TestScanOlderThan(t *testing.T) {
+	if !scanOlderThan("2026-07-31T10:00:00Z", "2026-07-31T12:00:00Z") {
+		t.Fatal("expected scanned before patch")
+	}
+	if scanOlderThan("2026-07-31T13:00:00Z", "2026-07-31T12:00:00Z") {
+		t.Fatal("post-patch scan is not older")
+	}
+	if scanOlderThan("", "2026-07-31T12:00:00Z") {
+		t.Fatal("empty scanned_at is not comparable")
 	}
 }
 

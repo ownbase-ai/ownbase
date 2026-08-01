@@ -422,15 +422,38 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 		// Banned IPs are fail2ban working, not a to-do. They render on the
 		// Security tab; they do not raise a finding.
 
-		if reboot, _ := sec["reboot_required"].(bool); reboot {
+		// Host CVE / reboot loop. Precedence (first match wins for the
+		// actionable host-patch row):
+		//   1. reboot_required → finish the patches already applied
+		//   2. scanning / pre-patch counts → nothing to click yet
+		//   3. fixable host CVEs → Apply patches and reboot
+		// Reboot is always listed before image findings so the next step is
+		// the first thing on Overview after a patch run.
+		rebootRequired, _ := sec["reboot_required"].(bool)
+		var (
+			fixCrit, fixHigh float64
+			hostFixable      int
+		)
+		if vulns, ok := sec["vulns"].(map[string]any); ok {
+			if host, ok := vulns["host"].(map[string]any); ok {
+				fixCrit, _ = host["fixable_critical"].(float64)
+				fixHigh, _ = host["fixable_high"].(float64)
+				hostFixable = int(fixCrit + fixHigh)
+			}
+		}
+		if rebootRequired {
+			summary := "Reboot to finish applying host patches"
+			if hostFixable > 0 {
+				summary = fmt.Sprintf("Reboot to finish applying host patches (%d CVE(s) pending verification)", hostFixable)
+			}
 			findings = append(findings, checkupFinding{
-				Summary: "Host reboot required for applied packages to take effect",
-				Fix:     "ownbasectl security reboot " + base,
+				Summary: summary,
+				Fix:     "ownbasectl security reboot " + base + " --wait",
 				Action: checkupAction{
 					Kind:    actionRun,
-					Run:     "security reboot",
+					Run:     "security reboot --wait",
 					Label:   "Reboot now",
-					Confirm: "Every service on this Base will stop and restart with the machine. The outage is typically 30–60 seconds.",
+					Confirm: "Every service on this Base will stop and restart with the machine. The outage is typically 30–60 seconds. A CVE rescan runs automatically on boot.",
 				},
 			})
 		}
@@ -439,6 +462,8 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 			trivyInstalled, _ := vulns["trivy_installed"].(bool)
 			available, _ := vulns["available"].(bool)
 			scannedAt, _ := vulns["scanned_at"].(string)
+			scanning, _ := vulns["scanning"].(bool)
+			lastPatchAt, _ := vulns["last_patch_at"].(string)
 
 			switch {
 			case !trivyInstalled:
@@ -451,6 +476,10 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 						Label: "Install scanner",
 					},
 				})
+			case scanning:
+				// In-flight scan is a reading, not a to-do — Security tab shows
+				// the spinner. Do not emit an Overview row that invites a second
+				// click while numbers are mid-flight.
 			case !available:
 				// Distinguish "first scan still pending" (daemon waits ~5 min
 				// after start so reconcile can finish) from a real failure.
@@ -476,11 +505,7 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 					},
 				})
 			default:
-				// available == true. Staleness and fixable CVEs are independent:
-				// a 49-hour-old scan that still lists patches is both "rescan"
-				// and "apply patches". Treating stale as exclusive of available
-				// used to hide Apply patches while per-image findings (below)
-				// still fired from the same payload.
+				// available == true.
 				if scannedAt != "" && scanIsStale(scannedAt) {
 					findings = append(findings, checkupFinding{
 						Summary: "CVE scan is more than 48 hours old",
@@ -492,23 +517,23 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 						},
 					})
 				}
-				// Only fixable CVEs raise a finding. Unfixed counts live on
-				// the Security tab: there is nothing a person can finish.
-				if host, ok := vulns["host"].(map[string]any); ok {
-					fixCrit, _ := host["fixable_critical"].(float64)
-					fixHigh, _ := host["fixable_high"].(float64)
-					if n := int(fixCrit + fixHigh); n > 0 {
-						findings = append(findings, checkupFinding{
-							Summary: fmt.Sprintf("%d host CVE(s) have a patch available (%d critical, %d high)",
-								n, int(fixCrit), int(fixHigh)),
-							Fix: "ownbasectl security fix " + base,
-							Action: checkupAction{
-								Kind:  actionRun,
-								Run:   "security fix",
-								Label: "Apply patches",
-							},
-						})
-					}
+				// Only fixable CVEs raise a finding — and only when the count
+				// is still actionable. After a patch run the scan is still
+				// pre-patch until it completes; after a patch that needs a
+				// reboot the Reboot row above is the finishable step.
+				countsStaleAfterPatch := scanOlderThan(scannedAt, lastPatchAt)
+				if hostFixable > 0 && !rebootRequired && !countsStaleAfterPatch {
+					findings = append(findings, checkupFinding{
+						Summary: fmt.Sprintf("%d host CVE(s) have a patch available (%d critical, %d high)",
+							hostFixable, int(fixCrit), int(fixHigh)),
+						Fix: "ownbasectl security fix " + base + " --reboot",
+						Action: checkupAction{
+							Kind:    actionRun,
+							Run:     "security fix --reboot",
+							Label:   "Apply patches and reboot",
+							Confirm: "Applies host OS package patches, then reboots if a new kernel (or other reboot-required package) was installed. Every service drops for about 30–60 seconds when a reboot is needed. A CVE rescan runs automatically on boot.",
+						},
+					})
 				}
 			}
 
@@ -745,15 +770,34 @@ func coreNeedsSelfUpdate(status map[string]any, imageRef string) bool {
 // scanStaleAfter. Unparseable or empty timestamps are not stale — the
 // available=false branch already covers "no successful scan".
 func scanIsStale(scannedAt string) bool {
-	t, err := time.Parse(time.RFC3339, scannedAt)
+	t, err := parseStatusTime(scannedAt)
 	if err != nil {
-		// trivy / encoding may emit RFC3339Nano
-		t, err = time.Parse(time.RFC3339Nano, scannedAt)
-		if err != nil {
-			return false
-		}
+		return false
 	}
 	return time.Since(t) > scanStaleAfter
+}
+
+// scanOlderThan reports whether scannedAt is strictly before lastPatchAt.
+// Used to suppress "Apply patches" while /status still carries pre-patch
+// counts. Empty either side means "not comparable" → false.
+func scanOlderThan(scannedAt, lastPatchAt string) bool {
+	scanned, err1 := parseStatusTime(scannedAt)
+	patched, err2 := parseStatusTime(lastPatchAt)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return scanned.Before(patched)
+}
+
+func parseStatusTime(s string) (time.Time, error) {
+	if s == "" {
+		return time.Time{}, fmt.Errorf("empty")
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err == nil {
+		return t, nil
+	}
+	return time.Parse(time.RFC3339Nano, s)
 }
 
 // printBackupCheckupSection renders the compact backup-health block at the

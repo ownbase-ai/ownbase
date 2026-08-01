@@ -38,7 +38,7 @@ func NewStatusServer() *StatusServer {
 
 // Update replaces the cached status atomically. Safe for concurrent use.
 //
-// Two fields are not taken from st as-is:
+// Fields not taken from st as-is:
 //   - Updates is preserved from the previous cache so drift data written by
 //     SetUpdates is not lost when a vuln scan or reconcile triggers a full
 //     refresh before the update ticker runs again.
@@ -47,12 +47,27 @@ func NewStatusServer() *StatusServer {
 //     the caller assembled st; publishing st.Reboot as-is would wipe a
 //     just-raised SetReboot. The marker is two cheap stats, so sampling at
 //     publish time is the single source of truth.
+//   - Vulns.Scanning / ScanStartedAt / LastPatchAt are preserved from the
+//     previous cache (or merged with st when st carries a fresher value) so a
+//     full Gather push cannot clear an in-flight scan or the durable
+//     last_patch_at stamp.
 func (s *StatusServer) Update(st *BaseStatus) {
 	reboot := secwatch.GatherRebootRequired()
 	s.mu.Lock()
 	st.Updates = s.status.Updates
 	st.Security.RebootRequired = reboot.Required
 	st.Security.RebootPackages = reboot.Packages
+	// Preserve scan-loop metadata that lives outside Gather.
+	prev := s.status.Security.Vulns
+	if !st.Security.Vulns.Scanning {
+		st.Security.Vulns.Scanning = prev.Scanning
+	}
+	if st.Security.Vulns.ScanStartedAt.IsZero() {
+		st.Security.Vulns.ScanStartedAt = prev.ScanStartedAt
+	}
+	if st.Security.Vulns.LastPatchAt.IsZero() {
+		st.Security.Vulns.LastPatchAt = prev.LastPatchAt
+	}
 	s.status = st
 	s.mu.Unlock()
 }
@@ -87,6 +102,32 @@ func (s *StatusServer) SetReboot(required bool, packages []string) {
 	}
 	s.status.Security.RebootRequired = required
 	s.status.Security.RebootPackages = packages
+}
+
+// SetScanning marks a CVE scan as in-flight (or finished). Safe for concurrent
+// use. When scanning is true, ScanStartedAt is set to now; when false it is
+// left alone so the UI can still show "started N minutes ago" after completion
+// until the next scan begins.
+func (s *StatusServer) SetScanning(scanning bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.status == nil {
+		return
+	}
+	s.status.Security.Vulns.Scanning = scanning
+	if scanning {
+		s.status.Security.Vulns.ScanStartedAt = time.Now().UTC()
+	}
+}
+
+// SetLastPatchAt stamps when host patches last finished. Safe for concurrent use.
+func (s *StatusServer) SetLastPatchAt(t time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.status == nil {
+		return
+	}
+	s.status.Security.Vulns.LastPatchAt = t
 }
 
 // SetToken updates the Bearer token required to access /status. Passing an

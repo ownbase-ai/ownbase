@@ -23,11 +23,13 @@ var kernelPkgPrefixes = []string{
 }
 
 // obsoleteKernelPackages lists installed versioned kernel packages whose ABI
-// is not the newest installed one. apt-get upgrade --with-new-pkgs installs a
-// new linux-image-N package but leaves the previous ABI installed; trivy then
-// keeps reporting every CVE on the old modules as fixable. Purging everything
-// except the newest ABI clears those findings (a reboot is still required to
-// actually run the new kernel).
+// is neither the newest installed nor the currently running kernel.
+//
+// apt-get upgrade --with-new-pkgs installs a new linux-image-N package but
+// leaves previous ABIs installed; trivy then keeps reporting every CVE on the
+// old modules as fixable. Purging only non-running, non-newest ABIs is safe:
+// the running kernel stays bootable until reboot, and after reboot the old
+// ABI becomes non-running and is collected on the next patch run.
 func obsoleteKernelPackages(ctx context.Context) ([]string, error) {
 	out, err := exec.CommandContext(ctx, "dpkg-query", "-W", "-f", "${Package} ${Status}\n").Output()
 	if err != nil {
@@ -60,6 +62,8 @@ func obsoleteKernelPackages(ctx context.Context) ([]string, error) {
 		return nil, nil
 	}
 
+	running := runningKernelABI(ctx)
+
 	abis := make([]string, 0, len(byABI))
 	for abi := range byABI {
 		abis = append(abis, abi)
@@ -71,13 +75,23 @@ func obsoleteKernelPackages(ctx context.Context) ([]string, error) {
 
 	var obsolete []string
 	for abi, pkgs := range byABI {
-		if abi == newest {
+		if abi == newest || (running != "" && abi == running) {
 			continue
 		}
 		obsolete = append(obsolete, pkgs...)
 	}
 	sort.Strings(obsolete)
 	return obsolete, nil
+}
+
+// runningKernelABI returns uname -r (e.g. "7.0.0-14-generic"), or "" when
+// uname is unavailable (tests, non-Linux).
+func runningKernelABI(ctx context.Context) string {
+	out, err := exec.CommandContext(ctx, "uname", "-r").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // kernelABI returns the ABI suffix of a versioned kernel package, or false

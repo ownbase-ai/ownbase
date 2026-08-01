@@ -340,7 +340,9 @@ ownbasectl updates mybase --json      # only the "updates" section
 ownbasectl security mybase                    # exposure + SSH access + CVE report
 ownbasectl security mybase --json             # only the "security" section
 ownbasectl security scan mybase               # immediate CVE rescan (~2–5 min)
-ownbasectl security fix mybase                # apt upgrade --with-new-pkgs on the Base, streamed
+ownbasectl security fix mybase --reboot       # patch, reboot if needed, wait until back
+ownbasectl security reboot mybase --wait      # reboot and wait until the API answers again
+ownbasectl security scan mybase --wait        # rescan and wait for fresh counts
 ownbasectl security reboot mybase             # reboot so applied packages take effect
 ownbasectl security install-scanner mybase    # install trivy + enable podman.socket
 ```

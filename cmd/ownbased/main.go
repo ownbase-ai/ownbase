@@ -813,10 +813,17 @@ func run(cfg agentConfig) error {
 	// Now that ctx and vulnResultCh are available, wire up the scan trigger
 	// used by /security/fix and /security/scan.
 	triggerScan = func() {
+		statusSrv.SetScanning(true)
 		go func() {
 			result := vulnscan.GatherVulns(ctx, vulnscan.RunningContainers(ctx))
 			sendVulnResult(vulnResultCh, result)
 		}()
+	}
+
+	// Seed durable patch stamp so checkup can suppress stale Apply-patches
+	// findings across daemon restarts.
+	if st := explain.LoadSecurityState(explain.DefaultSecurityStatePath); !st.LastPatchAt.IsZero() {
+		statusSrv.SetLastPatchAt(st.LastPatchAt)
 	}
 
 	ticker := time.NewTicker(cfg.tickInterval)
@@ -849,19 +856,26 @@ func run(cfg agentConfig) error {
 		"ownbased: vuln scan enabled (interval=%s, trivy=%v)\n",
 		cfg.vulnScanInterval, vulnscan.TrivyAvailable())
 
-	// Run an initial vulnerability scan shortly after startup so the first
-	// status report includes CVE data. Delay to let the initial reconcile
-	// complete and images be built before scanning them.
+	// Startup CVE scan. Prefer an immediate run when /security/reboot left
+	// rescan_on_boot set — otherwise the Base is blind for ≥5 minutes after
+	// a security reboot. The delayed path lets the first reconcile finish
+	// building images before a cold-start scan.
 	// Result is sent to vulnResultCh (not written directly) so all updates
 	// to lastVulnStatus happen on the main loop — no synchronization needed.
-	go func() {
-		select {
-		case <-time.After(5 * time.Minute):
-			result := vulnscan.GatherVulns(ctx, vulnscan.RunningContainers(ctx))
-			sendVulnResult(vulnResultCh, result)
-		case <-ctx.Done():
-		}
-	}()
+	secState := explain.LoadSecurityState(explain.DefaultSecurityStatePath)
+	if secState.RescanOnBoot {
+		fmt.Fprintln(os.Stderr, "ownbased: rescan-on-boot requested — starting CVE scan now")
+		_ = explain.ClearRescanOnBoot(explain.DefaultSecurityStatePath)
+		triggerScan()
+	} else {
+		go func() {
+			select {
+			case <-time.After(5 * time.Minute):
+				triggerScan()
+			case <-ctx.Done():
+			}
+		}()
+	}
 
 	for {
 		select {
@@ -874,12 +888,7 @@ func run(cfg agentConfig) error {
 		case <-vulnTicker.C:
 			// Run the scan in a goroutine — trivy can take minutes on first run
 			// (DB download) and must not block the main reconcile/backup loop.
-			// Result is sent to vulnResultCh so lastVulnStatus is only ever
-			// written on the main loop, eliminating the need for a mutex.
-			go func() {
-				result := vulnscan.GatherVulns(ctx, vulnscan.RunningContainers(ctx))
-				sendVulnResult(vulnResultCh, result)
-			}()
+			triggerScan()
 		case result := <-vulnResultCh:
 			// Discard this result if a newer scan already finished. ScannedAt
 			// is always set by GatherVulns (even on failure) so that overlapping
@@ -891,7 +900,13 @@ func run(cfg agentConfig) error {
 			}
 			// Always update — even Available=false must replace a stale
 			// Available=true result (e.g. trivy removed after last scan).
+			// Carry durable/in-flight metadata that GatherVulns does not set.
+			result.LastPatchAt = lastVulnStatus.LastPatchAt
+			if st := explain.LoadSecurityState(explain.DefaultSecurityStatePath); !st.LastPatchAt.IsZero() {
+				result.LastPatchAt = st.LastPatchAt
+			}
 			lastVulnStatus = result
+			statusSrv.SetScanning(false)
 			fmt.Fprintf(os.Stderr,
 				"ownbased: vuln scan complete (available=%v, host: %dC/%dH/%dM, %d image(s))\n",
 				result.Available, result.Host.Critical, result.Host.High, result.Host.Medium,
