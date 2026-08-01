@@ -614,25 +614,16 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 		if drift, ok := updates["drift"].([]any); ok {
 			// One finding per behind service, each with a deploy form — so
 			// the operator can finish it without going to the Updates tab
-			// and copying a command.
-			behindCount := 0
+			// and copying a command. Skip when deploy would be a no-op.
 			for _, raw := range drift {
 				d, ok := raw.(map[string]any)
 				if !ok {
 					continue
 				}
-				if upToDate, _ := d["up_to_date"].(bool); upToDate {
-					continue
-				}
-				behindCount++
 				svc, _ := d["service"].(string)
-				suggested := ""
-				if tag, _ := d["newest_tag"].(string); tag != "" {
-					suggested = tag
-				} else if branch, _ := d["branch"].(string); branch != "" {
-					suggested = branch
-				} else {
-					suggested = "main"
+				suggested, canDeploy := deploySuggestionFromDrift(d)
+				if !canDeploy {
+					continue
 				}
 				behind, _ := d["commits_behind"].(float64)
 				// Non-SHA pins can be "behind" solely because a newer tag
@@ -658,11 +649,51 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 					},
 				})
 			}
-			_ = behindCount
 		}
 	}
 
 	return findings
+}
+
+// pickDeployRef chooses a --ref that advances the service.
+//
+// When commits_behind > 0 the default branch tip is the catch-up target.
+// Preferring newest_tag there would often roll a SHA pin backward onto an
+// older release tag. Tag suggestions are only for tip-level tag drift
+// (behind == 0, non-SHA pin with a newer tag).
+func pickDeployRef(behind int, branch, newestTag string) string {
+	if behind > 0 {
+		if branch != "" {
+			return branch
+		}
+		return "main"
+	}
+	if newestTag != "" {
+		return newestTag
+	}
+	if branch != "" {
+		return branch
+	}
+	return "main"
+}
+
+// deploySuggestionFromDrift picks a default --ref from one drift entry.
+// canDeploy is false when a deploy of that ref would be a no-op (already
+// pinned / up_to_date), so callers can skip an unfinishable finding.
+func deploySuggestionFromDrift(d map[string]any) (ref string, canDeploy bool) {
+	if upToDate, _ := d["up_to_date"].(bool); upToDate {
+		return "", false
+	}
+	pinned, _ := d["ref"].(string)
+	behind, _ := d["commits_behind"].(float64)
+	branch, _ := d["branch"].(string)
+	tag, _ := d["newest_tag"].(string)
+	suggested := pickDeployRef(int(behind), branch, tag)
+	// Exact match only. Prefix match falsely blocks v1.0.0-rc1 → v1.0.0.
+	if pinned != "" && pinned == suggested {
+		return suggested, false
+	}
+	return suggested, true
 }
 
 // suggestedDeployRef picks a default --ref for a service from updates.drift.
@@ -684,24 +715,7 @@ func suggestedDeployRef(status map[string]any, service string) (ref string, canD
 		if svc, _ := d["service"].(string); svc != service {
 			continue
 		}
-		if upToDate, _ := d["up_to_date"].(bool); upToDate {
-			return "", false
-		}
-		pinned, _ := d["ref"].(string)
-		suggested := ""
-		if tag, _ := d["newest_tag"].(string); tag != "" {
-			suggested = tag
-		} else if branch, _ := d["branch"].(string); branch != "" {
-			suggested = branch
-		} else {
-			suggested = "main"
-		}
-		// If the suggested ref is already what is pinned (branch name or
-		// matching SHA), deploy would be unchanged.
-		if pinned != "" && (pinned == suggested || strings.HasPrefix(pinned, suggested)) {
-			return suggested, false
-		}
-		return suggested, true
+		return deploySuggestionFromDrift(d)
 	}
 	// Service not in drift list (blank ref, or detection never ran).
 	return "main", true

@@ -700,6 +700,95 @@ func TestCheckupFindings_ImageCVESkippedWhenUpToDate(t *testing.T) {
 	}
 }
 
+func TestSuggestedDeployRef_PrefersBranchWhenBehind(t *testing.T) {
+	// SHA pins that are commits_behind must catch up via the branch tip —
+	// newest_tag often points at an older commit and would roll back.
+	status := map[string]any{
+		"updates": map[string]any{
+			"drift": []any{
+				map[string]any{
+					"service":        "crm",
+					"ref":            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+					"branch":         "main",
+					"commits_behind": float64(5),
+					"newest_tag":     "v1.0.0",
+					"up_to_date":     false,
+				},
+			},
+		},
+	}
+	ref, ok := suggestedDeployRef(status, "crm")
+	if !ok || ref != "main" {
+		t.Fatalf("behind SHA pin: got ref=%q canDeploy=%v, want main/true", ref, ok)
+	}
+}
+
+func TestSuggestedDeployRef_TagDriftAndPrefix(t *testing.T) {
+	// At tip with a newer tag → suggest the tag.
+	status := map[string]any{
+		"updates": map[string]any{
+			"drift": []any{
+				map[string]any{
+					"service":        "crm",
+					"ref":            "v1.0.0-rc1",
+					"branch":         "main",
+					"commits_behind": float64(0),
+					"newest_tag":     "v1.0.0",
+					"up_to_date":     false,
+				},
+			},
+		},
+	}
+	ref, ok := suggestedDeployRef(status, "crm")
+	if !ok || ref != "v1.0.0" {
+		t.Fatalf("tag drift rc1→v1.0.0: got ref=%q canDeploy=%v, want v1.0.0/true", ref, ok)
+	}
+}
+
+func TestSuggestedDeployRef_NoOpWhenPinEqualsSuggestion(t *testing.T) {
+	// Pin already equals the only finishable target → not finishable.
+	status := map[string]any{
+		"updates": map[string]any{
+			"drift": []any{
+				map[string]any{
+					"service":        "crm",
+					"ref":            "main",
+					"branch":         "main",
+					"commits_behind": float64(3),
+					"newest_tag":     "v1.0.0",
+					"up_to_date":     false,
+				},
+			},
+		},
+	}
+	// behind>0 prefers branch; pin already is main → no-op.
+	ref, ok := suggestedDeployRef(status, "crm")
+	if ok {
+		t.Fatalf("pin==branch while behind must be unfinishable, got ref=%q canDeploy=%v", ref, ok)
+	}
+}
+
+func TestCheckupFindings_SkipsUnfinishableUpdate(t *testing.T) {
+	body := []byte(`{
+		"config": {"repo_url": "git@example.com/x.git"},
+		"security": {"backup_restorable": true},
+		"updates": {"drift": [{
+			"service": "crm",
+			"ref": "main",
+			"branch": "main",
+			"commits_behind": 2,
+			"newest_tag": "v1.0.0",
+			"up_to_date": false
+		}]}
+	}`)
+	findings := checkupFindings("mybase", body)
+	for _, f := range findings {
+		if f.Action.Form == "deploy" && f.Action.Service == "crm" {
+			t.Fatalf("unfinishable update must not emit deploy finding: %+v", f)
+		}
+	}
+}
+
 func TestGitVerbSkipsFlagsWithValues(t *testing.T) {
 	cases := []struct {
 		args []string
