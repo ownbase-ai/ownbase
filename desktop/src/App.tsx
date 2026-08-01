@@ -115,9 +115,15 @@ function Shell({ vault }: { vault: Vault }) {
             key={selected.name}
             base={selected}
             onRemoved={() => {
+              // Navigate away before reload finishes — otherwise landing still
+              // points at this Base from the stale list and detail stays mounted.
+              const rest = list.filter((b) => b.name !== selected.name);
+              const next: Route = rest[0]
+                ? { view: "base", name: rest[0].name }
+                : { view: "wizard" };
+              setChosen(next);
               void bases.reload();
               void vault.refresh();
-              setChosen(null);
             }}
           />
         ) : (

@@ -25,19 +25,34 @@ import (
 // ensureConfigKnown makes sure body carries a config section when the Base
 // has one, and that the vault profile matches. Never fails the caller: a
 // missing source or a vault write error is non-fatal for status display.
+//
+// Order: status JSON (new daemons) → vault profile (already backfilled) →
+// SSH read of config-source.yaml (older daemons / first repair only). The
+// profile check avoids an extra SSH round-trip on every status after adopt
+// or a previous backfill.
 func ensureConfigKnown(base string, body []byte) []byte {
-	url, ref := configFromStatusJSON(body)
-	if url == "" {
-		url, ref = configFromBaseSSH(base)
+	if url, ref := configFromStatusJSON(body); url != "" {
+		syncProfileConfig(base, url, ref)
+		return body
 	}
+
+	if p, err := loadProfile(base); err == nil {
+		if url := strings.TrimSpace(p.ConfigRepoURL); url != "" {
+			ref := strings.TrimSpace(p.ConfigRef)
+			if enriched, err := injectStatusConfig(body, url, ref); err == nil {
+				return enriched
+			}
+			return body
+		}
+	}
+
+	url, ref := configFromBaseSSH(base)
 	if url == "" {
 		return body
 	}
 	syncProfileConfig(base, url, ref)
-	if existing, _ := configFromStatusJSON(body); existing == "" {
-		if enriched, err := injectStatusConfig(body, url, ref); err == nil {
-			return enriched
-		}
+	if enriched, err := injectStatusConfig(body, url, ref); err == nil {
+		return enriched
 	}
 	return body
 }

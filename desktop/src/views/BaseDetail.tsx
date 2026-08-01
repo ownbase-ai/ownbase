@@ -226,7 +226,8 @@ function NotReachableYet({
               <CommandLine>
                 ownbasectl create {base.name} --remote root@&lt;ip&gt; --wait
               </CommandLine>
-              , or use <em>Set up a Base</em> for a local VM on this computer.
+              . For a local Multipass VM under this same name, remove this Base first
+              (below) so the key is free, then use <em>Set up a Base</em>.
             </p>
           </EmptyState>
         )}

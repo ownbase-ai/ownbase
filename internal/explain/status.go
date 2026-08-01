@@ -27,8 +27,8 @@ const DefaultAuditMaxRecords = 20
 // consumer (opterm). SchemaVersion guards against silent breaking changes.
 // Field names must not change without bumping SchemaVersion.
 type BaseStatus struct {
-	GeneratedAt   time.Time       `json:"generated_at"`
-	SchemaVersion string          `json:"schema_version"`
+	GeneratedAt   time.Time `json:"generated_at"`
+	SchemaVersion string    `json:"schema_version"`
 	// Config is the external config repo this Base tracks. Omitted when
 	// `ownbasectl config setup` has never run on this machine — the vault
 	// profile can also hold a copy for client-side commits, but the Base is

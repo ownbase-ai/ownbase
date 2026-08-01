@@ -245,8 +245,8 @@ mod tests {
         // the allowlist is the XSS boundary, so they must stay out until one
         // does — see the ALLOWED doc comment.
         for cmd in [
-            "deploy", "config", "secrets", "restore", "service", "security", "status",
-            "updates", "upgrade", "ssh-key", "db", "version",
+            "deploy", "config", "secrets", "restore", "service", "security", "status", "updates",
+            "upgrade", "ssh-key", "db", "version",
         ] {
             assert!(
                 check_allowed(&args(&[cmd])).is_err(),
