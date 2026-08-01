@@ -2,6 +2,7 @@ package explain
 
 import (
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/ownbase/ownbase/internal/authz"
@@ -59,6 +60,10 @@ type GatherInput struct {
 	// call per cfg.Jobs entry. A missing entry (or nil map) produces a
 	// JobStatus with only the config-derived fields populated.
 	JobTimers map[string]runtime.JobTimerInfo
+
+	// ConfigSource is the external config repo this Base tracks
+	// (/opt/ownbase/config-source.yaml). Zero value = never set up.
+	ConfigSource ConfigSourceStatus
 }
 
 // Gather assembles a BaseStatus from all available on-Base sources.
@@ -75,6 +80,11 @@ func Gather(in GatherInput) *BaseStatus {
 	if in.Config != nil {
 		s.Services = gatherServices(in.Config, in.RunningContainers)
 		s.Jobs = gatherJobs(in.Config, in.JobTimers)
+	}
+
+	if strings.TrimSpace(in.ConfigSource.RepoURL) != "" {
+		cs := in.ConfigSource
+		s.Config = &cs
 	}
 
 	s.Security = gatherSecurity(in.BackupStatus, in.DriftEvents, in.Exposure, in.Access, in.Vulns)

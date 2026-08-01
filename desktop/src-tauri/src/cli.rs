@@ -36,17 +36,18 @@ const SIDECAR: &str = "ownbasectl";
 ///
 /// This is exactly the set [desktop/src/lib/api.ts](../../src/lib/api.ts)
 /// calls today, not everything `ownbasectl` can do. The allowlist is the
-/// stated XSS boundary, so a subcommand the UI does not use yet — `delete`,
-/// `deploy`, `restore`, `secrets`, and the rest — stays out until some screen
-/// actually calls it; adding one here is one line, at the point a caller in
-/// `api.ts` needs it.
+/// stated XSS boundary, so a subcommand the UI does not use yet — `deploy`,
+/// `restore`, `secrets`, and the rest — stays out until some screen actually
+/// calls it; adding one here is one line, at the point a caller in `api.ts`
+/// needs it.
 ///
 /// `ssh` and `tunnel` are absent for a second reason on top of that: both take
 /// an arbitrary command or hold an interactive session open, which is exactly
 /// the shape of thing this list exists to keep out of the webview's reach.
 /// The app reads *recordings* of sessions; it does not open them.
 const ALLOWED: &[&str] = &[
-    "adopt", "agent", "backup", "checkup", "create", "keygen", "list", "sessions", "vault",
+    "adopt", "agent", "backup", "checkup", "create", "delete", "keygen", "list", "sessions",
+    "vault",
 ];
 
 /// What one `ownbasectl` invocation produced.
@@ -228,7 +229,8 @@ mod tests {
     #[test]
     fn allows_every_subcommand_api_ts_calls() {
         for cmd in [
-            "adopt", "agent", "backup", "checkup", "create", "keygen", "list", "sessions", "vault",
+            "adopt", "agent", "backup", "checkup", "create", "delete", "keygen", "list",
+            "sessions", "vault",
         ] {
             assert!(
                 check_allowed(&args(&[cmd])).is_ok(),
@@ -243,8 +245,8 @@ mod tests {
         // the allowlist is the XSS boundary, so they must stay out until one
         // does — see the ALLOWED doc comment.
         for cmd in [
-            "delete", "deploy", "config", "secrets", "restore", "service", "security", "status",
-            "updates", "upgrade", "ssh-key", "db", "version",
+            "deploy", "config", "secrets", "restore", "service", "security", "status", "updates",
+            "upgrade", "ssh-key", "db", "version",
         ] {
             assert!(
                 check_allowed(&args(&[cmd])).is_err(),

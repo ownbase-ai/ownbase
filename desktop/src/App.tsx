@@ -111,7 +111,21 @@ function Shell({ vault }: { vault: Vault }) {
         ) : route.view === "vault" ? (
           <VaultView vault={vault} bases={list} />
         ) : selected ? (
-          <BaseDetail key={selected.name} base={selected} />
+          <BaseDetail
+            key={selected.name}
+            base={selected}
+            onRemoved={() => {
+              // Navigate away before reload finishes — otherwise landing still
+              // points at this Base from the stale list and detail stays mounted.
+              const rest = list.filter((b) => b.name !== selected.name);
+              const next: Route = rest[0]
+                ? { view: "base", name: rest[0].name }
+                : { view: "wizard" };
+              setChosen(next);
+              void bases.reload();
+              void vault.refresh();
+            }}
+          />
         ) : (
           <div className="flex h-full items-center justify-center">
             <Spinner className="text-zinc-700" />

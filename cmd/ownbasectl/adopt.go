@@ -187,6 +187,14 @@ func runAdopt(name string, opts adoptOpts) error {
 		}
 	}
 
+	// Config repo lives on the Base (/opt/ownbase/config-source.yaml). Copy it
+	// into the profile now so list/the app show it without a later checkup,
+	// and so client-side deploy/config mutations know where to commit.
+	if url, ref := configFromTarget(target); url != "" {
+		applyConfigSource(&profile, url, ref)
+		fmt.Fprintf(os.Stderr, "ownbasectl: config repo %s (%s)\n", url, profile.EffectiveConfigRef())
+	}
+
 	if err := putProfile(name, profile); err != nil {
 		return err
 	}

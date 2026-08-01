@@ -662,6 +662,14 @@ func run(cfg agentConfig) error {
 			}
 		}
 
+		var configSource explain.ConfigSourceStatus
+		if src, err := configsource.Load(configsource.DefaultStatePath); err == nil && src.Configured() {
+			configSource = explain.ConfigSourceStatus{
+				RepoURL: src.RepoURL,
+				Ref:     src.EffectiveRef(),
+			}
+		}
+
 		status := explain.Gather(explain.GatherInput{
 			Config:            state.Config,
 			RunningContainers: state.Current.RunningContainers,
@@ -672,6 +680,7 @@ func run(cfg agentConfig) error {
 			Access:            lastAccess,
 			Vulns:             lastVulnStatus,
 			JobTimers:         jobTimers,
+			ConfigSource:      configSource,
 		})
 		statusSrv.Update(status)
 	}

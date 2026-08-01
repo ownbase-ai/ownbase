@@ -28,6 +28,35 @@ func TestSplitUserHost(t *testing.T) {
 	}
 }
 
+func TestIsReleaseBuild(t *testing.T) {
+	orig := version
+	t.Cleanup(func() { version = orig })
+
+	cases := []struct {
+		v    string
+		want bool
+	}{
+		{"dev", false},
+		{"v0.3.3-dev", false},
+		{"0.3.4-dev", false},
+		{"v0.3.3-27-g97150bb", false},
+		{"v0.3.3-27-g97150bb-dirty", false},
+		{"v0.3.3-rc.1", false},
+		{"v0.3.3", true},
+		{"v1.0.0", true},
+		{"v10.2.3", true},
+		{"1.0.0", false},
+		{"", false},
+		{"latest", false},
+	}
+	for _, c := range cases {
+		version = c.v
+		if got := isReleaseBuild(); got != c.want {
+			t.Errorf("isReleaseBuild() with version=%q = %v, want %v", c.v, got, c.want)
+		}
+	}
+}
+
 func TestFindRepoRoot(t *testing.T) {
 	tmp := t.TempDir()
 	if err := os.WriteFile(filepath.Join(tmp, "go.mod"), []byte("module x\n"), 0o644); err != nil {

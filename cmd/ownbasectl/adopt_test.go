@@ -58,6 +58,39 @@ func TestRunAdopt_Succeeds(t *testing.T) {
 	}
 }
 
+// Adopting a Base that already tracks a config repo must copy that URL into
+// the vault profile — otherwise the app lists "config not set up yet" and
+// client-side deploy has nowhere to commit.
+func TestRunAdopt_CopiesConfigSourceFromBase(t *testing.T) {
+	startTestAgent(t)
+
+	cfgPath := filepath.Join(t.TempDir(), "config-source.yaml")
+	if err := os.WriteFile(cfgPath, []byte("repo_url: git@github.com:org/ownbase-config.git\nref: main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldCmd := configSourceReadCmd
+	configSourceReadCmd = "cat " + cfgPath
+	t.Cleanup(func() { configSourceReadCmd = oldCmd })
+
+	privPEM, _, clientPub := newTestOwnerKey(t)
+	sshSrv := startTestSSHServer(t, clientPub)
+	keyFile := writeKeyFile(t, privPEM)
+
+	if err := runAdopt("cfgbase", fullAdopt("127.0.0.1", "testuser", keyFile, sshSrv.port(), 7070, "tok")); err != nil {
+		t.Fatalf("adopt: %v", err)
+	}
+	p, err := loadProfile("cfgbase")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.ConfigRepoURL != "git@github.com:org/ownbase-config.git" {
+		t.Errorf("ConfigRepoURL = %q", p.ConfigRepoURL)
+	}
+	if p.ConfigRef != "main" {
+		t.Errorf("ConfigRef = %q", p.ConfigRef)
+	}
+}
+
 // Adopting without --ssh-key must work against a key the Base already has —
 // the connectivity check has to go through the agent rather than requiring
 // key material the CLI process never holds.

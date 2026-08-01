@@ -20,23 +20,34 @@ import type { KeygenResult } from "../lib/types";
 /**
  * The setup walkthrough, in the same order as the README.
  *
- * There are two shapes, both fixed by something outside OwnBase. A new server
- * needs a provider to authorize a key before the machine boots, so this
- * cannot be one button: it is a key, a pause while the user goes to their
- * provider, and then an install that takes minutes and is worth watching. A
- * server that already runs OwnBase needs none of that — it already has a key
- * it trusts, so the whole thing is a connectivity check.
+ * Three shapes. A new remote server needs a provider to authorize a key before
+ * the machine boots, so this cannot be one button: it is a key, a pause while
+ * the user goes to their provider, and then an install that takes minutes. A
+ * local Multipass VM is provisioned entirely here — no provider step. A server
+ * that already runs OwnBase needs none of that — it already has a key it
+ * trusts, so the whole thing is a connectivity check.
  */
-type Mode = "create" | "adopt";
+type Mode = "create-remote" | "create-local" | "adopt";
 type Step = "path" | "name" | "key" | "server" | "finish" | "done";
 
 function stepsFor(mode: Mode): Array<{ id: Step; label: string }> {
+  if (mode === "create-local") {
+    return [
+      { id: "name", label: "Name" },
+      { id: "key", label: "SSH key" },
+      { id: "finish", label: "Install" },
+    ];
+  }
   return [
     { id: "name", label: "Name" },
     { id: "key", label: "SSH key" },
     { id: "server", label: "Server" },
-    { id: "finish", label: mode === "create" ? "Install" : "Register" },
+    { id: "finish", label: mode === "create-remote" ? "Install" : "Register" },
   ];
+}
+
+function isCreate(mode: Mode): boolean {
+  return mode === "create-remote" || mode === "create-local";
 }
 
 export function SetupWizard({
@@ -50,7 +61,7 @@ export function SetupWizard({
   onCancel: () => void;
 }) {
   const [step, setStep] = useState<Step>("path");
-  const [mode, setMode] = useState<Mode>("create");
+  const [mode, setMode] = useState<Mode>("create-remote");
   const [name, setName] = useState("");
   const [key, setKey] = useState<KeygenResult | null>(null);
   const [keySource, setKeySource] = useState<"generated" | "imported" | null>(null);
@@ -67,10 +78,12 @@ export function SetupWizard({
         <h1 className="text-lg font-medium text-zinc-100">Set up a Base</h1>
         <p className="mt-1 text-sm leading-relaxed text-zinc-500">
           {step === "path"
-            ? "Every Base starts one of two ways: a server you want OwnBase to set up, or one that already runs it."
-            : mode === "create"
+            ? "A remote server, a local VM on this computer, or one that already runs OwnBase."
+            : mode === "create-remote"
               ? "About ten minutes, most of it waiting. One step needs you to visit your server provider; the rest happens here."
-              : "A few seconds — verify the connection, and it's registered."}
+              : mode === "create-local"
+                ? "A Multipass VM on this computer. Needs Multipass installed; no provider, no public IP."
+                : "A few seconds — verify the connection, and it's registered."}
         </p>
       </header>
 
@@ -96,9 +109,10 @@ export function SetupWizard({
         />
       )}
 
-      {step === "key" && mode === "create" && (
+      {step === "key" && isCreate(mode) && (
         <KeyStep
           base={name}
+          local={mode === "create-local"}
           result={key}
           source={keySource}
           onResult={(result, source) => {
@@ -106,7 +120,7 @@ export function SetupWizard({
             setKeySource(source);
           }}
           onBack={() => setStep("name")}
-          onNext={() => setStep("server")}
+          onNext={() => setStep(mode === "create-local" ? "finish" : "server")}
         />
       )}
 
@@ -119,7 +133,7 @@ export function SetupWizard({
         />
       )}
 
-      {step === "server" && mode === "create" && (
+      {step === "server" && mode === "create-remote" && (
         <ServerStep
           publicKey={key?.public_key ?? ""}
           address={address}
@@ -148,13 +162,14 @@ export function SetupWizard({
         />
       )}
 
-      {step === "finish" && mode === "create" && (
+      {step === "finish" && isCreate(mode) && (
         <InstallStep
           base={name}
+          local={mode === "create-local"}
           address={address}
           sshUser={sshUser}
           caddyEmail={caddyEmail}
-          onBack={() => setStep("server")}
+          onBack={() => setStep(mode === "create-local" ? "key" : "server")}
           onDone={() => setStep("done")}
         />
       )}
@@ -228,7 +243,12 @@ function PathStep({
         <PathOption
           title="Set up a new server"
           description="A machine with no OwnBase on it yet. You'll generate a key, paste it into your provider when you create the server, and OwnBase installs itself."
-          onClick={() => onChoose("create")}
+          onClick={() => onChoose("create-remote")}
+        />
+        <PathOption
+          title="Local VM on this computer"
+          description="A Multipass Ubuntu VM for trying OwnBase without a cloud bill. Needs Multipass installed. No public IP and no provider console."
+          onClick={() => onChoose("create-local")}
         />
         <PathOption
           title="Add a server that's already running OwnBase"
@@ -340,6 +360,7 @@ function NameStep({
 
 function KeyStep({
   base,
+  local,
   result,
   source,
   onResult,
@@ -347,6 +368,7 @@ function KeyStep({
   onNext,
 }: {
   base: string;
+  local: boolean;
   result: KeygenResult | null;
   source: "generated" | "imported" | null;
   onResult: (result: KeygenResult, source: "generated" | "imported") => void;
@@ -401,6 +423,13 @@ function KeyStep({
         The private half is in your vault and will never be written to disk. When
         something needs to prove it is you, the credential agent signs for it. Each
         Base gets its own key, so retiring one Base revokes exactly one credential.
+        {local && (
+          <>
+            {" "}
+            For a local VM the key is injected when the VM is created — nothing to
+            paste anywhere.
+          </>
+        )}
       </p>
 
       {!result && (
@@ -424,15 +453,17 @@ function KeyStep({
         <div className="mt-4">
           <div className="flex items-center justify-between gap-3">
             <Badge tone={badge.tone}>{badge.label}</Badge>
-            <CopyButton value={result.public_key} label="Copy public key" />
+            {!local && <CopyButton value={result.public_key} label="Copy public key" />}
           </div>
           <pre className="selectable mt-3 max-h-32 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-zinc-800 bg-zinc-950 p-3 font-mono text-xs leading-relaxed text-zinc-300">
             {result.public_key}
           </pre>
-          <p className="mt-3 text-sm leading-relaxed text-zinc-500">
-            You will paste this into your provider's <em>SSH key</em> field in a
-            moment. Copy it now.
-          </p>
+          {!local && (
+            <p className="mt-3 text-sm leading-relaxed text-zinc-500">
+              You will paste this into your provider's <em>SSH key</em> field in a
+              moment. Copy it now.
+            </p>
+          )}
         </div>
       )}
 
@@ -440,8 +471,13 @@ function KeyStep({
         <Button variant="ghost" onClick={onBack}>
           Back
         </Button>
-        <Button variant="primary" busy={busy} disabled={!result} onClick={onNext}>
-          Continue
+        <Button
+          variant="primary"
+          busy={busy}
+          disabled={!result}
+          onClick={onNext}
+        >
+          {local ? "Create the VM" : "Continue"}
         </Button>
       </Footer>
     </Card>
@@ -787,7 +823,7 @@ function Requirement({ children }: { children: React.ReactNode }) {
  * it, and a line that matches nothing simply scrolls past in the log below. An
  * unrecognised phase therefore costs a checkmark, never correctness.
  */
-const phases: Array<{ label: string; match: RegExp }> = [
+const remotePhases: Array<{ label: string; match: RegExp }> = [
   { label: "Waiting for the server to accept SSH", match: /waiting for ssh|accept ssh/i },
   { label: "Checking the machine is fit", match: /preflight|checking/i },
   { label: "Installing the daemon", match: /installing ownbase/i },
@@ -796,8 +832,18 @@ const phases: Array<{ label: string; match: RegExp }> = [
   { label: "Hardening the host", match: /hardening/i },
 ];
 
+const localPhases: Array<{ label: string; match: RegExp }> = [
+  { label: "Provisioning the local VM", match: /provisioning local vm/i },
+  { label: "Launching the VM", match: /vm launched|waiting until the vm/i },
+  { label: "Installing OwnBase inside the VM", match: /building ownbased|transferring|running the installer/i },
+  { label: "Reading the API token", match: /reading the api token/i },
+  { label: "Registering the Base in your vault", match: /registered/i },
+  { label: "Hardening the host", match: /hardening/i },
+];
+
 function InstallStep({
   base,
+  local,
   address,
   sshUser,
   caddyEmail,
@@ -805,12 +851,14 @@ function InstallStep({
   onDone,
 }: {
   base: string;
+  local: boolean;
   address: string;
   sshUser: string;
   caddyEmail: string;
   onBack: () => void;
   onDone: () => void;
 }) {
+  const phases = local ? localPhases : remotePhases;
   const [lines, setLines] = useState<string[]>([]);
   const [reached, setReached] = useState<number>(-1);
   const [error, setError] = useState<string | null>(null);
@@ -818,49 +866,67 @@ function InstallStep({
   const handle = useRef<StreamHandle | null>(null);
 
   useEffect(() => {
-    const onEvent = (event: StreamEvent) => {
-      if (event.kind === "stdout" || event.kind === "stderr") {
-        const line = event.line;
-        setLines((prev) => [...prev, line]);
-        // Phases only ever advance. A retry loop that logs "waiting for SSH"
-        // again must not walk the checklist backwards.
-        setReached((prev) => {
-          const hit = phases.findIndex((p) => p.match.test(line));
-          return hit > prev ? hit : prev;
-        });
-      }
-    };
+    // Defer the start past React Strict Mode's mount→unmount→mount cycle.
+    // Starting multipass create immediately on mount races two installs
+    // against the same VM name (delete/launch/transfer interleaved), which
+    // is how "instance does not exist" and "is not running" show up together.
+    let cancelled = false;
+    let stream: StreamHandle | null = null;
 
-    const stream = api.createBase(
-      base.trim(),
-      {
-        remote: `${sshUser}@${address.trim()}`,
-        caddyEmail: caddyEmail.trim() || undefined,
-        sshUser,
-      },
-      onEvent,
-    );
-    handle.current = stream;
+    const timer = window.setTimeout(() => {
+      if (cancelled) return;
 
-    stream.done
-      .then((code) => {
-        setRunning(false);
-        if (code === 0) {
-          setReached(phases.length);
-          onDone();
-        } else {
-          setError(installFailure(code));
+      const onEvent = (event: StreamEvent) => {
+        if (event.kind === "stdout" || event.kind === "stderr") {
+          const line = event.line;
+          setLines((prev) => [...prev, line]);
+          // Phases only ever advance. A retry loop that logs "waiting for SSH"
+          // again must not walk the checklist backwards.
+          setReached((prev) => {
+            const hit = phases.findIndex((p) => p.match.test(line));
+            return hit > prev ? hit : prev;
+          });
         }
-      })
-      .catch((err: unknown) => {
-        setRunning(false);
-        setError(err instanceof Error ? err.message : String(err));
-      });
+      };
+
+      stream = api.createBase(
+        base.trim(),
+        local
+          ? {}
+          : {
+              remote: `${sshUser}@${address.trim()}`,
+              caddyEmail: caddyEmail.trim() || undefined,
+              sshUser,
+            },
+        onEvent,
+      );
+      handle.current = stream;
+
+      stream.done
+        .then((code) => {
+          if (cancelled) return;
+          setRunning(false);
+          if (code === 0) {
+            setReached(phases.length);
+            onDone();
+          } else {
+            setError(installFailure(code, local));
+          }
+        })
+        .catch((err: unknown) => {
+          if (cancelled) return;
+          setRunning(false);
+          setError(err instanceof Error ? err.message : String(err));
+        });
+    }, 0);
 
     return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
       // Leaving the screen must not leave a half-finished install running
       // against a machine the user thinks nothing is touching.
-      void stream.cancel();
+      void stream?.cancel();
+      handle.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -868,14 +934,18 @@ function InstallStep({
   return (
     <Card>
       <h2 className="text-base font-medium text-zinc-100">
-        {running ? "Installing OwnBase" : error ? "Install failed" : "Installed"}
+        {running
+          ? local
+            ? "Creating the local VM"
+            : "Installing OwnBase"
+          : error
+            ? "Install failed"
+            : "Installed"}
       </h2>
       <p className="mt-1.5 text-sm leading-relaxed text-zinc-500">
-        Unattended from here. The daemon is installed and signature-verified, the
-        host is hardened, and the Base is registered in your vault. The last phase
-        is the daemon doing its first pass — Podman, the firewall, fail2ban,
-        automatic security updates — which is why this waits rather than claiming
-        to be done early.
+        {local
+          ? "Unattended from here. Multipass launches an Ubuntu VM, OwnBase installs inside it, and the Base is registered in your vault. First launch may download an image."
+          : "Unattended from here. The daemon is installed and signature-verified, the host is hardened, and the Base is registered in your vault. The last phase is the daemon doing its first pass — Podman, the firewall, fail2ban, automatic security updates — which is why this waits rather than claiming to be done early."}
       </p>
 
       <ol className="mt-5 space-y-2">
@@ -933,12 +1003,16 @@ function InstallStep({
  * The CLI's own message is already in the log above, so this adds what the exit
  * code alone tells us about where to look next.
  */
-function installFailure(code: number): string {
+function installFailure(code: number, local: boolean): string {
   switch (code) {
     case 3:
-      return "The server was checked before anything was changed on it, and it did not pass. Nothing was installed. The output above says which check failed — usually the Ubuntu version, the architecture, or the machine being too small.";
+      return local
+        ? "The local VM was checked before install finished, and something did not pass. The output above says which check failed."
+        : "The server was checked before anything was changed on it, and it did not pass. Nothing was installed. The output above says which check failed — usually the Ubuntu version, the architecture, or the machine being too small.";
     case 4:
-      return "The installer ran on the server and failed partway through. The output above has the installer's own error.";
+      return local
+        ? "The installer ran inside the local VM and failed partway through. The output above has the installer's own error — often Multipass missing, or (on a dev build) Go not being able to build the daemon from this checkout."
+        : "The installer ran on the server and failed partway through. The output above has the installer's own error.";
     case 5:
       return "OwnBase was installed, but the daemon did not report healthy in time. The machine is probably still hardening — open the Base and check its status in a minute.";
     case 6:
@@ -1072,12 +1146,14 @@ function DoneStep({ base, mode, onOpen }: { base: string; mode: Mode; onOpen: ()
   return (
     <Card>
       <h2 className="text-base font-medium text-zinc-100">
-        {mode === "create" ? `${base} is up and hardened` : `${base} is registered`}
+        {isCreate(mode) ? `${base} is up and hardened` : `${base} is registered`}
       </h2>
       <p className="mt-1.5 text-sm leading-relaxed text-zinc-500">
-        {mode === "create"
-          ? "Nothing but SSH is exposed, so there is no rush to the next step. When you are ready, two things are worth doing."
-          : "It's in your vault now. Two things are worth checking, if this Base doesn't already have them."}
+        {mode === "create-local"
+          ? "A Multipass VM on this computer. Nothing is exposed on the public internet. When you are ready, two things are worth doing."
+          : isCreate(mode)
+            ? "Nothing but SSH is exposed, so there is no rush to the next step. When you are ready, two things are worth doing."
+            : "It's in your vault now. Two things are worth checking, if this Base doesn't already have them."}
       </p>
 
       <ul className="mt-4 space-y-3 text-sm leading-relaxed text-zinc-300">

@@ -17,6 +17,8 @@ There are four levels, from gentlest to most complete:
 ownbasectl delete <name> --keep-vm   # removes only the profile from the vault
 ```
 
+Or in the app: open the Base → Overview → *Remove from this computer* (type the name to confirm). For a local Multipass VM you can also destroy the VM from that screen.
+
 For a local VM, plain `ownbasectl delete <name>` also destroys the VM (it asks first). A profile known to be a remote server is never destroyed by `delete` — only its local profile is removed.
 
 This deletes the Base's owner SSH key along with the profile, so it is the last thing to do, not the first: without that key you cannot log in to the machine to export anything. Do level 2 first.

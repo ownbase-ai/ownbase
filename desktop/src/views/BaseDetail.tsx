@@ -8,6 +8,8 @@ import {
   Dot,
   EmptyState,
   ErrorNote,
+  Field,
+  Input,
   LogView,
   Panel,
   Row,
@@ -35,19 +37,26 @@ type Tab = "overview" | "services" | "security" | "backups" | "updates" | "activ
 /**
  * Everything known about one Base.
  *
- * Read-only by design. Config changes are commits to a Git repo the user owns,
- * and giving the window a second way to make them would mean two answers to
- * "what is deployed". So this shows, points at the command, and gets out of the
- * way — with two exceptions that change nothing about the desired state: taking
- * a backup now, and running the restore drill.
+ * Read-only by design for desired state. Config changes are commits to a Git
+ * repo the user owns, and giving the window a second way to make them would
+ * mean two answers to "what is deployed". So this shows, points at the
+ * command, and gets out of the way — with three exceptions that do not rewrite
+ * what should run: taking a backup now, running the restore drill, and
+ * forgetting this Base on this computer.
  */
-export function BaseDetail({ base }: { base: BaseSummary }) {
+export function BaseDetail({
+  base,
+  onRemoved,
+}: {
+  base: BaseSummary;
+  onRemoved: () => void;
+}) {
   const [tab, setTab] = useState<Tab>("overview");
   const load = useCallback(() => api.checkup(base.name), [base.name]);
   const state = useAsync<Checkup>(load);
 
   if (!base.registered || !base.host) {
-    return <NotReachableYet base={base} />;
+    return <NotReachableYet base={base} onRemoved={onRemoved} />;
   }
 
   const findings = state.data?.findings ?? [];
@@ -83,7 +92,10 @@ export function BaseDetail({ base }: { base: BaseSummary }) {
             <Spinner /> Asking {base.name} how it is doing…
           </div>
         ) : state.error || !status ? (
-          <UnreachableNote base={base} detail={state.error} onRetry={state.reload} />
+          <div className="space-y-8">
+            <UnreachableNote base={base} detail={state.error} onRetry={state.reload} />
+            <RemoveBase base={base} onRemoved={onRemoved} />
+          </div>
         ) : (
           <Body
             tab={tab}
@@ -91,6 +103,7 @@ export function BaseDetail({ base }: { base: BaseSummary }) {
             status={status}
             findings={findings}
             onChanged={state.reload}
+            onRemoved={onRemoved}
           />
         )}
       </div>
@@ -104,16 +117,25 @@ function Body({
   status,
   findings,
   onChanged,
+  onRemoved,
 }: {
   tab: Tab;
   base: BaseSummary;
   status: BaseStatus;
   findings: Finding[];
   onChanged: () => void;
+  onRemoved: () => void;
 }) {
   switch (tab) {
     case "overview":
-      return <Overview base={base} status={status} findings={findings} />;
+      return (
+        <Overview
+          base={base}
+          status={status}
+          findings={findings}
+          onRemoved={onRemoved}
+        />
+      );
     case "services":
       return <Services status={status} />;
     case "security":
@@ -174,19 +196,25 @@ function Header({
 }
 
 /** A Base that exists in the vault as a key, with no machine behind it yet. */
-function NotReachableYet({ base }: { base: BaseSummary }) {
+function NotReachableYet({
+  base,
+  onRemoved,
+}: {
+  base: BaseSummary;
+  onRemoved: () => void;
+}) {
   const unregistered = base.kind === "unregistered-vm";
   return (
     <div className="flex h-full flex-col px-8 py-8">
       <h1 className="text-lg font-medium text-zinc-100">{base.name}</h1>
-      <div className="mt-6">
+      <div className="mt-6 space-y-8">
         {unregistered ? (
           <EmptyState title="A local VM with this name, but no Base">
             <p>
               Multipass has a VM called <strong>{base.name}</strong> that OwnBase does
               not know about. Adopt it with{" "}
-              <CommandLine>ownbasectl adopt {base.name}</CommandLine>, or delete it
-              with <CommandLine>ownbasectl delete {base.name}</CommandLine>.
+              <CommandLine>ownbasectl adopt {base.name}</CommandLine>, or destroy it
+              below.
             </p>
           </EmptyState>
         ) : (
@@ -198,10 +226,12 @@ function NotReachableYet({ base }: { base: BaseSummary }) {
               <CommandLine>
                 ownbasectl create {base.name} --remote root@&lt;ip&gt; --wait
               </CommandLine>
-              .
+              . For a local Multipass VM under this same name, remove this Base first
+              (below) so the key is free, then use <em>Set up a Base</em>.
             </p>
           </EmptyState>
         )}
+        <RemoveBase base={base} onRemoved={onRemoved} />
       </div>
     </div>
   );
@@ -242,10 +272,12 @@ function Overview({
   base,
   status,
   findings,
+  onRemoved,
 }: {
   base: BaseSummary;
   status: BaseStatus;
   findings: Finding[];
+  onRemoved: () => void;
 }) {
   const services = status.services ?? [];
   const running = services.filter((s) => s.running).length;
@@ -296,8 +328,16 @@ function Overview({
             {base.ssh_user}@{base.host}:{base.ssh_port ?? 22}
           </Row>
           <Row label="Config repo">
-            {base.config_repo_url ? (
-              <span className="font-mono text-xs">{base.config_repo_url}</span>
+            {status.config?.repo_url || base.config_repo_url ? (
+              <span className="font-mono text-xs">
+                {status.config?.repo_url || base.config_repo_url}
+                {(status.config?.ref || base.config_ref) && (
+                  <span className="text-zinc-500">
+                    {" "}
+                    ({status.config?.ref || base.config_ref})
+                  </span>
+                )}
+              </span>
             ) : (
               <span className="text-zinc-500">not set up yet</span>
             )}
@@ -340,7 +380,177 @@ function Overview({
           ) : null}
         </Panel>
       </div>
+
+      <RemoveBase base={base} onRemoved={onRemoved} />
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Remove from this computer
+// ---------------------------------------------------------------------------
+
+/**
+ * Forget a Base locally — vault profile + owner key — with an optional
+ * Multipass destroy for local VMs. Never implies a remote cloud instance is
+ * gone; that is the provider's console, not this button.
+ */
+function RemoveBase({
+  base,
+  onRemoved,
+}: {
+  base: BaseSummary;
+  onRemoved: () => void;
+}) {
+  const isLocalVM = base.kind === "vm" || base.kind === "unregistered-vm";
+  const hasProfile = base.registered || base.has_key;
+  const [open, setOpen] = useState(false);
+  const [confirm, setConfirm] = useState("");
+  const [destroyVM, setDestroyVM] = useState(base.kind === "unregistered-vm");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const ready = confirm.trim() === base.name;
+
+  async function remove() {
+    if (!ready) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.deleteBase(base.name, {
+        keepVm: isLocalVM ? !destroyVM : true,
+      });
+      // Parent navigates away; clear busy so Cancel is not stuck disabled if
+      // the list reload is slow and this panel is still briefly mounted.
+      setBusy(false);
+      onRemoved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setBusy(false);
+    }
+  }
+
+  const title =
+    base.kind === "unregistered-vm"
+      ? "Destroy this local VM"
+      : "Remove from this computer";
+
+  return (
+    <Panel title={title}>
+      {!open ? (
+        <div className="space-y-3">
+          <p className="text-sm leading-relaxed text-zinc-500">
+            {base.kind === "unregistered-vm" ? (
+              <>
+                Deletes the Multipass VM named <strong className="text-zinc-300">{base.name}</strong>.
+                There is no OwnBase profile for it.
+              </>
+            ) : (
+              <>
+                Removes the vault profile and owner key for{" "}
+                <strong className="text-zinc-300">{base.name}</strong> from this computer.
+                It does not uninstall OwnBase on the machine, delete the config repo,
+                or destroy a cloud server — only what this laptop knows.
+              </>
+            )}
+          </p>
+          <Button
+            variant="danger"
+            onClick={() => {
+              setOpen(true);
+              setConfirm("");
+              setError(null);
+              setDestroyVM(base.kind === "unregistered-vm");
+            }}
+          >
+            {title}…
+          </Button>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <p className="text-sm leading-relaxed text-zinc-400">
+            {hasProfile && (
+              <>
+                This deletes the only client copy of the owner SSH key. Export anything
+                you still need from the machine first — without that key you cannot log
+                in again.
+              </>
+            )}
+            {base.kind === "remote" && (
+              <>
+                {" "}
+                The remote server keeps running and billing until you stop it at your
+                provider or uninstall OwnBase on the box.
+              </>
+            )}
+            {isLocalVM && destroyVM && hasProfile && (
+              <> The local Multipass VM will be destroyed and its data lost.</>
+            )}
+            {isLocalVM && destroyVM && !hasProfile && (
+              <> The Multipass VM will be destroyed and its data lost.</>
+            )}
+            {isLocalVM && !destroyVM && (
+              <> The Multipass VM will be left running.</>
+            )}
+          </p>
+
+          {isLocalVM && hasProfile && (
+            <label className="flex cursor-pointer items-start gap-3 text-sm text-zinc-300">
+              <input
+                type="checkbox"
+                className="mt-1"
+                checked={destroyVM}
+                onChange={(e) => setDestroyVM(e.target.checked)}
+              />
+              <span>
+                Also destroy the local Multipass VM
+                <span className="mt-0.5 block text-xs text-zinc-500">
+                  All data on the VM is lost. Leave unchecked to only forget the profile.
+                </span>
+              </span>
+            </label>
+          )}
+
+          <Field
+            label={`Type ${base.name} to confirm`}
+            hint="The name must match exactly."
+          >
+            <Input
+              autoFocus
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+              placeholder={base.name}
+              spellCheck={false}
+              autoCapitalize="off"
+              disabled={busy}
+            />
+          </Field>
+
+          {error && <ErrorNote title="Could not remove this Base" detail={error} />}
+
+          <div className="flex flex-wrap gap-3">
+            <Button variant="danger" busy={busy} disabled={!ready} onClick={() => void remove()}>
+              {base.kind === "unregistered-vm"
+                ? "Destroy VM"
+                : destroyVM && isLocalVM
+                  ? "Remove and destroy VM"
+                  : "Remove from this computer"}
+            </Button>
+            <Button
+              variant="ghost"
+              disabled={busy}
+              onClick={() => {
+                setOpen(false);
+                setConfirm("");
+                setError(null);
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+    </Panel>
   );
 }
 

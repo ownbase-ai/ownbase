@@ -131,5 +131,5 @@ func fetchStatusBody(base string, timeout time.Duration) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("status API returned %d: %s", resp.StatusCode, body)
 	}
-	return body, nil
+	return ensureConfigKnown(base, body), nil
 }
