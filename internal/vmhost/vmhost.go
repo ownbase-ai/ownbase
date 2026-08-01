@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Runner executes one `multipass <args...>` invocation and returns its
@@ -85,6 +86,9 @@ func (o LaunchOptions) withDefaults() LaunchOptions {
 
 // Launch creates a new VM named name. It does not delete an existing VM with
 // the same name — callers that want a fresh VM should call Delete first.
+// multipass launch blocks until the instance is created; callers that need
+// SSH/transfer should still WaitUntilRunning — a killed launch can leave the
+// VM in Starting, and transfer refuses anything but Running.
 func (m *Multipass) Launch(ctx context.Context, name string, opts LaunchOptions) error {
 	opts = opts.withDefaults()
 	args := []string{
@@ -101,12 +105,14 @@ func (m *Multipass) Launch(ctx context.Context, name string, opts LaunchOptions)
 	return err
 }
 
-// Delete deletes and purges the named VM. It is not an error to delete a VM
-// that does not exist — multipass reports an error in that case, but callers
-// generally call Delete defensively before Launch, so DeleteIfExists is
-// usually the better choice.
+// Delete deletes and purges the named VM. Missing instances are success —
+// multipass returns exit 2 for "does not exist", and callers often delete
+// defensively after a raced Exists check or a cancelled prior create.
 func (m *Multipass) Delete(ctx context.Context, name string) error {
 	_, err := m.Runner.Run(ctx, "delete", "--purge", name)
+	if err != nil && isMultipassMissing(err) {
+		return nil
+	}
 	return err
 }
 
@@ -121,6 +127,18 @@ func (m *Multipass) DeleteIfExists(ctx context.Context, name string) error {
 		return nil
 	}
 	return m.Delete(ctx, name)
+}
+
+// isMultipassMissing reports whether err is multipass saying the instance is
+// already gone. Matched on stderr text because multipass uses exit 2 for
+// several failures, not only this one.
+func isMultipassMissing(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "does not exist") ||
+		strings.Contains(msg, "not found")
 }
 
 // VMSummary is one entry from `multipass list`.
@@ -230,10 +248,44 @@ func (m *Multipass) RunSudoScript(ctx context.Context, name, scriptPath string, 
 	return m.Exec(ctx, name, "sudo", "bash", "-c", b.String())
 }
 
-// Transfer copies a local file into the VM at remotePath.
+// Transfer copies a local file into the VM at remotePath. The VM must be
+// Running; call WaitUntilRunning after Launch when the previous create may
+// have been interrupted.
 func (m *Multipass) Transfer(ctx context.Context, localPath, name, remotePath string) error {
 	_, err := m.Runner.Run(ctx, "transfer", localPath, name+":"+remotePath)
 	return err
+}
+
+// WaitUntilRunning polls until the named VM reports state Running or ctx is
+// done. timeout caps how long to wait when ctx has no deadline.
+func (m *Multipass) WaitUntilRunning(ctx context.Context, name string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	var last string
+	for {
+		state, err := m.State(ctx, name)
+		if err == nil && strings.EqualFold(state, "Running") {
+			return nil
+		}
+		if err == nil {
+			last = state
+		} else {
+			last = err.Error()
+		}
+		if time.Now().After(deadline) {
+			if last == "" {
+				return fmt.Errorf("timed out waiting for VM %q to reach Running", name)
+			}
+			return fmt.Errorf("timed out waiting for VM %q to reach Running (last: %s)", name, last)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
 }
 
 // shellQuote wraps s in single quotes, escaping any embedded single quotes,

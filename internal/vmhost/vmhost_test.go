@@ -2,8 +2,10 @@ package vmhost
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeRunner records every invocation and returns canned responses keyed by
@@ -81,6 +83,51 @@ func TestDelete(t *testing.T) {
 	if got != "delete --purge ownbase-fresh" {
 		t.Errorf("unexpected delete args: %q", got)
 	}
+}
+
+func TestDelete_MissingIsOK(t *testing.T) {
+	r := newFakeRunner()
+	r.errs["delete"] = fmt.Errorf("multipass delete --purge test: exit status 2\ndelete failed: instance \"test\" does not exist")
+	m := &Multipass{Runner: r}
+	if err := m.Delete(context.Background(), "test"); err != nil {
+		t.Fatalf("Delete missing VM: %v", err)
+	}
+}
+
+func TestWaitUntilRunning(t *testing.T) {
+	r := newFakeRunner()
+	// First poll Starting, then Running.
+	n := 0
+	r.responses["info"] = `{"info":{"vm":{"ipv4":[],"state":"Starting"}}}`
+	orig := r.Run
+	_ = orig
+	m := &Multipass{Runner: runnerFunc(func(ctx context.Context, args ...string) (string, error) {
+		r.calls = append(r.calls, args)
+		key := strings.Join(args, " ")
+		if strings.HasPrefix(key, "info") {
+			n++
+			if n >= 2 {
+				return `{"info":{"vm":{"ipv4":["1.2.3.4"],"state":"Running"}}}`, nil
+			}
+			return `{"info":{"vm":{"ipv4":[],"state":"Starting"}}}`, nil
+		}
+		return "", nil
+	})}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := m.WaitUntilRunning(ctx, "vm", time.Second); err != nil {
+		t.Fatalf("WaitUntilRunning: %v", err)
+	}
+	if n < 2 {
+		t.Fatalf("expected at least 2 info polls, got %d", n)
+	}
+}
+
+// runnerFunc adapts a function to the Runner interface for one-off tests.
+type runnerFunc func(ctx context.Context, args ...string) (string, error)
+
+func (f runnerFunc) Run(ctx context.Context, args ...string) (string, error) {
+	return f(ctx, args...)
 }
 
 func TestDeleteIfExists_SkipsWhenAbsent(t *testing.T) {

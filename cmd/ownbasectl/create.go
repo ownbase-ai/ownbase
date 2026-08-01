@@ -312,14 +312,31 @@ func baseCreateVM(name string, opts vmhost.LaunchOptions, ownerPubKey string, ex
 		if !confirm(fmt.Sprintf("A local VM named %q already exists and will be DELETED (all its data is lost). Continue?", name), f.assumeYes) {
 			return errAborted
 		}
+		// Delete is idempotent (missing = ok). A prior create that was
+		// cancelled mid-launch often leaves the name in Starting; purge it
+		// before we try again.
 		if err := m.Delete(ctx, name); err != nil {
 			return fmt.Errorf("clear existing VM %q: %w", name, err)
 		}
 	}
 	if err := m.Launch(ctx, name, opts); err != nil {
-		return fmt.Errorf("launch VM %q: %w", name, err)
+		// A parallel create (or a launch that outlived a cancelled ownbasectl)
+		// may already own this name — multipass then refuses a second launch.
+		// Wait for that instance instead of failing the install.
+		if vmNameInUse(err) {
+			progress("    VM already present; waiting until it is running ...")
+		} else {
+			return fmt.Errorf("launch VM %q: %w", name, err)
+		}
+	} else {
+		progress("    VM launched.")
 	}
-	progress("    VM launched.")
+	// transfer/exec require Running. launch usually blocks until then, but a
+	// killed prior multipass leave the instance Starting with no IP yet.
+	progress("    Waiting until the VM accepts commands ...")
+	if err := m.WaitUntilRunning(ctx, name, 5*time.Minute); err != nil {
+		return fmt.Errorf("VM %q not ready: %w", name, err)
+	}
 
 	if repoRoot != "" {
 		progress("==> Building ownbased for the VM (go build -tags=integration) ...")
@@ -524,6 +541,18 @@ func waitForDaemonReady(name string, timeout time.Duration) error {
 		}
 		time.Sleep(5 * time.Second)
 	}
+}
+
+// vmNameInUse reports whether multipass refused launch because the name is
+// already taken (including a half-started instance left by a killed create).
+func vmNameInUse(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "already exists") ||
+		strings.Contains(msg, "already taken") ||
+		strings.Contains(msg, "is already in use")
 }
 
 // buildOwnbasedBinary cross-compiles the daemon for Linux (matching the host

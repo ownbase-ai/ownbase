@@ -833,10 +833,10 @@ const remotePhases: Array<{ label: string; match: RegExp }> = [
 ];
 
 const localPhases: Array<{ label: string; match: RegExp }> = [
-  { label: "Provisioning the local VM", match: /provisioning local vm|multipass/i },
-  { label: "Launching the VM", match: /vm launched/i },
-  { label: "Installing OwnBase inside the VM", match: /installer|transferring|building ownbased/i },
-  { label: "Reading the API token", match: /api token/i },
+  { label: "Provisioning the local VM", match: /provisioning local vm/i },
+  { label: "Launching the VM", match: /vm launched|waiting until the vm/i },
+  { label: "Installing OwnBase inside the VM", match: /building ownbased|transferring|running the installer/i },
+  { label: "Reading the API token", match: /reading the api token/i },
   { label: "Registering the Base in your vault", match: /registered/i },
   { label: "Hardening the host", match: /hardening/i },
 ];
@@ -866,51 +866,67 @@ function InstallStep({
   const handle = useRef<StreamHandle | null>(null);
 
   useEffect(() => {
-    const onEvent = (event: StreamEvent) => {
-      if (event.kind === "stdout" || event.kind === "stderr") {
-        const line = event.line;
-        setLines((prev) => [...prev, line]);
-        // Phases only ever advance. A retry loop that logs "waiting for SSH"
-        // again must not walk the checklist backwards.
-        setReached((prev) => {
-          const hit = phases.findIndex((p) => p.match.test(line));
-          return hit > prev ? hit : prev;
-        });
-      }
-    };
+    // Defer the start past React Strict Mode's mount→unmount→mount cycle.
+    // Starting multipass create immediately on mount races two installs
+    // against the same VM name (delete/launch/transfer interleaved), which
+    // is how "instance does not exist" and "is not running" show up together.
+    let cancelled = false;
+    let stream: StreamHandle | null = null;
 
-    const stream = api.createBase(
-      base.trim(),
-      local
-        ? {}
-        : {
-            remote: `${sshUser}@${address.trim()}`,
-            caddyEmail: caddyEmail.trim() || undefined,
-            sshUser,
-          },
-      onEvent,
-    );
-    handle.current = stream;
+    const timer = window.setTimeout(() => {
+      if (cancelled) return;
 
-    stream.done
-      .then((code) => {
-        setRunning(false);
-        if (code === 0) {
-          setReached(phases.length);
-          onDone();
-        } else {
-          setError(installFailure(code, local));
+      const onEvent = (event: StreamEvent) => {
+        if (event.kind === "stdout" || event.kind === "stderr") {
+          const line = event.line;
+          setLines((prev) => [...prev, line]);
+          // Phases only ever advance. A retry loop that logs "waiting for SSH"
+          // again must not walk the checklist backwards.
+          setReached((prev) => {
+            const hit = phases.findIndex((p) => p.match.test(line));
+            return hit > prev ? hit : prev;
+          });
         }
-      })
-      .catch((err: unknown) => {
-        setRunning(false);
-        setError(err instanceof Error ? err.message : String(err));
-      });
+      };
+
+      stream = api.createBase(
+        base.trim(),
+        local
+          ? {}
+          : {
+              remote: `${sshUser}@${address.trim()}`,
+              caddyEmail: caddyEmail.trim() || undefined,
+              sshUser,
+            },
+        onEvent,
+      );
+      handle.current = stream;
+
+      stream.done
+        .then((code) => {
+          if (cancelled) return;
+          setRunning(false);
+          if (code === 0) {
+            setReached(phases.length);
+            onDone();
+          } else {
+            setError(installFailure(code, local));
+          }
+        })
+        .catch((err: unknown) => {
+          if (cancelled) return;
+          setRunning(false);
+          setError(err instanceof Error ? err.message : String(err));
+        });
+    }, 0);
 
     return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
       // Leaving the screen must not leave a half-finished install running
       // against a machine the user thinks nothing is touching.
-      void stream.cancel();
+      void stream?.cancel();
+      handle.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
