@@ -215,13 +215,24 @@ jobs:
       - name: Build the bundle
         working-directory: desktop
         env:
-          # Empty when the certificate secrets are unset, which Tauri reads as
-          # "do not sign" — an unsigned bundle rather than a failed release.
+          # Present only when the Apple secrets are configured. An *empty*
+          # APPLE_SIGNING_IDENTITY is not "skip signing" in Tauri — it is
+          # `codesign -s ""`, which fails the keychain lookup and aborts the
+          # bundle. Unset blanks below so a release without certs still ships
+          # an unsigned .app/.dmg (right-click → Open on first launch).
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: npm run tauri -- build --target ${{ matrix.target }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for v in APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!v:-}" ]; then
+              unset "$v"
+            fi
+          done
+          npm run tauri -- build --target ${{ matrix.target }}
 
       # Uploaded by explicit path rather than by a release-creating action: the
       # release already exists, and `--clobber` makes a re-run of this job
