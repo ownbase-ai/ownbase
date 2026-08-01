@@ -182,6 +182,10 @@ type reconcileState struct {
 	Config      *schema.OwnbaseConfig // nil when ownbase.yaml failed to parse
 	DriftEvents []reconcile.DriftEvent
 	Current     runtime.CurrentState
+	// ImagesRebuilt is true when this cycle built or rebuilt at least one
+	// container image. Callers use it to kick a vuln rescan so Overview does
+	// not keep showing fixable CVEs from the pre-rebuild image.
+	ImagesRebuilt bool
 }
 
 // MinVulnScanInterval is the lowest accepted value for --vuln-scan-interval.
@@ -786,6 +790,12 @@ func run(cfg agentConfig) error {
 		}
 		afterReconcile(state)
 		lastReconcileState = state
+		// A deploy that rebuilt images leaves CVE counts pointing at the old
+		// layers until the next daily scan. Kick one now so Overview clears.
+		if state.ImagesRebuilt && triggerScan != nil {
+			fmt.Fprintln(os.Stderr, "ownbased: images rebuilt — triggering vulnerability rescan")
+			triggerScan()
+		}
 	}
 
 	// Run immediately on start.
@@ -1308,6 +1318,12 @@ func reconcileLoop(
 	}
 	if err := reconcile.Apply(plan, checkpoint, applier, auditLog); err != nil {
 		return state, err
+	}
+	for _, pa := range plan.Actions {
+		if pa.Action.Type == schema.ActionBuildImage {
+			state.ImagesRebuilt = true
+			break
+		}
 	}
 	// After a successful apply, sync ALL compiler output into runtime/ so
 	// the drift detector sees the full desired snapshot on the next tick.
