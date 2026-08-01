@@ -125,6 +125,14 @@ func collectBases() (bases []listedBase, vmErr error, err error) {
 			ConfigRepoURL: p.ConfigRepoURL,
 			ConfigRef:     p.ConfigRef,
 		}
+		// A profile always claims its name: drop any same-named Multipass VM
+		// from vmState so we never emit a second "unregistered-vm" row. That
+		// used to happen for key-only profiles (keygen done, create not), and
+		// the desktop sidebar keys rows by name.
+		if state, ok := vmState[n]; ok {
+			b.VMState = state
+			delete(vmState, n)
+		}
 		// Trust the profile's own record of what it is when it is known —
 		// the same field delete checks — rather than inferring it from
 		// whether a same-named Multipass VM happens to exist. A profile
@@ -133,18 +141,20 @@ func collectBases() (bases []listedBase, vmErr error, err error) {
 		switch {
 		case p.Host == "":
 			// keygen has run but create has not: the vault holds an owner
-			// key waiting for a machine to authorize it.
-			b.Kind = "key-only"
+			// key waiting for a machine. If Multipass already has the VM
+			// (create died mid-flight), surface it as a local VM rather
+			// than a bare key-only row with a twin unregistered entry.
+			if b.VMState != "" {
+				b.Kind = "vm"
+			} else {
+				b.Kind = "key-only"
+			}
 		case p.KnownRemote():
 			b.Kind = "remote"
+		case b.VMState != "" || p.KnownLocalVM():
+			b.Kind = "vm"
 		default:
 			b.Kind = "remote"
-			if state, ok := vmState[n]; ok {
-				b.Kind, b.VMState = "vm", state
-				delete(vmState, n) // seen — don't list again below
-			} else if p.KnownLocalVM() {
-				b.Kind = "vm"
-			}
 		}
 		bases = append(bases, b)
 	}

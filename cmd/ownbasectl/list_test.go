@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,15 +11,24 @@ import (
 	"github.com/ownbase/ownbase/internal/vault"
 )
 
-// stubMultipass puts a fake "multipass" ahead of the real one on PATH, always
-// reporting no VMs. collectBases has no injection seam for vmhost.New(), so
-// this is what keeps the test from seeing whatever Multipass VMs happen to
-// exist on the machine running it.
-func stubMultipass(t *testing.T) {
+// stubMultipass puts a fake "multipass" ahead of the real one on PATH.
+// collectBases has no injection seam for vmhost.New(), so this is what keeps
+// the test from seeing whatever Multipass VMs happen to exist on the machine
+// running it. Pass VM names to have list report them as Running.
+func stubMultipass(t *testing.T, vmNames ...string) {
 	t.Helper()
 	binDir := t.TempDir()
+	listJSON := `{"list":[]}`
+	if len(vmNames) > 0 {
+		var entries []string
+		for _, n := range vmNames {
+			entries = append(entries, fmt.Sprintf(
+				`{"name":%q,"state":"Running","ipv4":["192.0.2.1"],"release":"22.04"}`, n))
+		}
+		listJSON = `{"list":[` + strings.Join(entries, ",") + `]}`
+	}
 	script := "#!/bin/sh\ncase \"$*\" in\n" +
-		"'list --format json') echo '{\"list\":[]}' ;;\n" +
+		"'list --format json') echo '" + listJSON + "' ;;\n" +
 		"*) ;;\n" +
 		"esac\n"
 	if err := os.WriteFile(filepath.Join(binDir, "multipass"), []byte(script), 0o755); err != nil {
@@ -80,5 +90,39 @@ func TestRunBaseList_JSONWithBases(t *testing.T) {
 	}
 	if len(bases) != 1 || bases[0].Name != "mybase" {
 		t.Errorf("bases = %+v, want one entry named mybase", bases)
+	}
+}
+
+// A key-only profile (keygen done, create not) plus a same-named Multipass VM
+// must produce one row, not a key-only row and an unregistered-vm twin. The
+// desktop sidebar keys rows by name, so duplicates break it.
+func TestCollectBases_KeyOnlyClaimsSameNamedVM(t *testing.T) {
+	startTestAgent(t)
+	stubMultipass(t, "mybase")
+	privPEM, pubLine, _ := newTestOwnerKey(t)
+	// Host empty = key-only.
+	putTestProfile(t, "mybase", vault.Profile{PrivateKey: privPEM, PublicKey: pubLine})
+
+	bases, vmErr, err := collectBases()
+	if err != nil {
+		t.Fatalf("collectBases: %v", err)
+	}
+	if vmErr != nil {
+		t.Fatalf("vmErr: %v", vmErr)
+	}
+	if len(bases) != 1 {
+		t.Fatalf("got %d bases %+v, want 1 (no unregistered-vm twin)", len(bases), bases)
+	}
+	if bases[0].Name != "mybase" {
+		t.Errorf("name = %q, want mybase", bases[0].Name)
+	}
+	if bases[0].Kind != "vm" {
+		t.Errorf("kind = %q, want vm (key present + Multipass VM)", bases[0].Kind)
+	}
+	if bases[0].VMState != "Running" {
+		t.Errorf("VMState = %q, want Running", bases[0].VMState)
+	}
+	if !bases[0].HasKey || !bases[0].Registered {
+		t.Errorf("HasKey=%v Registered=%v, want both true", bases[0].HasKey, bases[0].Registered)
 	}
 }

@@ -87,7 +87,7 @@ Splitting them is what keeps private keys inside the agent. A command asking for
 
 Those socket permissions are the whole access-control story: any process running as your user can use the agent while it is unlocked. That is the same trust boundary as `ssh-agent`, and the same as a browser holding your session cookies. What it buys is that the *file* stays encrypted at rest and the *keys* never hit disk.
 
-The agent refuses `ssh-add` and `ssh-add -d`. The vault decides which keys exist; a client that could add one could also quietly swap the key a Base is reached with.
+The agent refuses `ssh-add`, `ssh-add -d`, and `ssh-add -x`. The vault decides which keys exist and when they are locked; a client that could add or lock one could also quietly swap the key a Base is reached with, or force a full re-unlock from a routine `ssh` helper. Lock the vault with `ownbasectl vault lock` (or the desktop app on quit).
 
 ### Auto-locking
 

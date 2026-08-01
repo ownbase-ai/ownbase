@@ -208,13 +208,15 @@ func EnsureRunning(exePath string) error {
 	cmd := exec.Command(exePath, "agent", "run")
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
+	// Setsid detaches the agent from this process's session/terminal so it
+	// survives the shell that started it. The agent is still our child until
+	// it exits — Wait (not Release) is what reaps it; Release leaves a zombie
+	// under long-lived parents like the desktop app.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start the OwnBase agent: %w", err)
 	}
-	// Not waited on deliberately: the agent outlives us. Release the child
-	// so it is reparented to init instead of lingering as a zombie.
-	go func() { _ = cmd.Process.Release() }()
+	go func() { _ = cmd.Wait() }()
 
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {

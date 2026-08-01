@@ -431,9 +431,13 @@ func (a *readOnlyAgent) Remove(ssh.PublicKey) error {
 
 func (a *readOnlyAgent) RemoveAll() error { return a.Remove(nil) }
 
+// Lock is the ssh-agent protocol's temporary lock (ssh-add -x), not the vault
+// lock. Mapping it onto lockVault would drop the master password and every key
+// on a routine client call — including anything that points SSH_AUTH_SOCK here
+// as the docs recommend. Refuse it the same way we refuse ssh-add mutations;
+// locking the vault is `ownbasectl vault lock` (or the desktop app on quit).
 func (a *readOnlyAgent) Lock([]byte) error {
-	a.s.lockVault()
-	return nil
+	return errors.New("the OwnBase agent does not support ssh-agent lock; use 'ownbasectl vault lock'")
 }
 
 func (a *readOnlyAgent) Unlock([]byte) error {
