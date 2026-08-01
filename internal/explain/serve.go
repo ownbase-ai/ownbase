@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ownbase/ownbase/internal/secwatch"
 )
 
 // StatusServer caches the most recently gathered BaseStatus and serves it
@@ -35,12 +37,22 @@ func NewStatusServer() *StatusServer {
 }
 
 // Update replaces the cached status atomically. Safe for concurrent use.
-// The Updates field from the previous status is preserved so that drift data
-// written by SetUpdates is not lost when a vuln scan or reconcile triggers a
-// full status refresh before the update ticker runs again.
+//
+// Two fields are not taken from st as-is:
+//   - Updates is preserved from the previous cache so drift data written by
+//     SetUpdates is not lost when a vuln scan or reconcile triggers a full
+//     refresh before the update ticker runs again.
+//   - RebootRequired / RebootPackages are re-sampled from the marker file
+//     under the lock. A concurrent security fix can write the marker after
+//     the caller assembled st; publishing st.Reboot as-is would wipe a
+//     just-raised SetReboot. The marker is two cheap stats, so sampling at
+//     publish time is the single source of truth.
 func (s *StatusServer) Update(st *BaseStatus) {
+	reboot := secwatch.GatherRebootRequired()
 	s.mu.Lock()
 	st.Updates = s.status.Updates
+	st.Security.RebootRequired = reboot.Required
+	st.Security.RebootPackages = reboot.Packages
 	s.status = st
 	s.mu.Unlock()
 }
@@ -59,6 +71,22 @@ func (s *StatusServer) SetUpdates(u UpdateStatus) {
 	s.mu.Lock()
 	s.status.Updates = u
 	s.mu.Unlock()
+}
+
+// SetReboot updates the reboot-required fields on the cached status so a
+// just-finished security fix is visible on the next /status read without
+// waiting for the next reconcile. Safe for concurrent use.
+//
+// Prefer passing the result of secwatch.GatherRebootRequired rather than a
+// stale copy: Update also re-samples the marker, and the two paths must agree.
+func (s *StatusServer) SetReboot(required bool, packages []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.status == nil {
+		return
+	}
+	s.status.Security.RebootRequired = required
+	s.status.Security.RebootPackages = packages
 }
 
 // SetToken updates the Bearer token required to access /status. Passing an

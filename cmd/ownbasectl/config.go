@@ -40,7 +40,8 @@ command, safe to script or run from an AI agent.`,
 // pgBackRestRef pins the commit of github.com/ownbase-ai/pgbackrest that the
 // scaffolded config builds both the repository host and the Postgres image
 // from. Bumping the Postgres/pgBackRest pair is a one-line change here.
-const pgBackRestRef = "3ec931b9e2afe5eec934d46442031d21019c2da3"
+// Bumped with pgbackrest harden-images-gosu-go1.26 (rebuild gosu on Go 1.26.5).
+const pgBackRestRef = "d42b650d6f9f3c81c8ba459aa2ea44725ebcc5c7"
 
 // defaultOwnbaseYAML is the config seeded into an empty config repo by
 // `config setup --init`.
@@ -149,7 +150,7 @@ var defaultOwnbaseYAML = fmt.Sprintf(defaultOwnbaseYAMLTemplate, pgBackRestRef)
 
 func newConfigSetupCmd() *cobra.Command {
 	var repo, ref string
-	var doInit bool
+	var doInit, jsonOut bool
 	cmd := &cobra.Command{
 		Use:   "setup <name> --repo <git-url>",
 		Short: "Point a Base at its external config repo (optionally seeding it)",
@@ -163,16 +164,17 @@ The Base needs READ access to the repo — add its deploy key first with
 		Example: `  ownbasectl config setup mybase --repo git@github.com:org/ownbase-config.git --init`,
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runConfigSetup(args[0], repo, ref, doInit)
+			return runConfigSetup(args[0], repo, ref, doInit, jsonOut)
 		},
 	}
 	cmd.Flags().StringVar(&repo, "repo", "", "git URL of the config repo (required)")
 	cmd.Flags().StringVar(&ref, "ref", "", "branch/ref of the config repo to track (default: main)")
 	cmd.Flags().BoolVar(&doInit, "init", false, "seed a default ownbase.yaml into an empty config repo")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "print the result as JSON")
 	return cmd
 }
 
-func runConfigSetup(base, repo, ref string, doInit bool) error {
+func runConfigSetup(base, repo, ref string, doInit, jsonOut bool) error {
 	if repo == "" {
 		return fmt.Errorf("--repo is required, e.g. --repo git@github.com:org/ownbase-config.git")
 	}
@@ -188,6 +190,7 @@ func runConfigSetup(base, repo, ref string, doInit bool) error {
 		return fmt.Errorf("save config repo to profile: %w", err)
 	}
 
+	seeded := false
 	if doInit {
 		profile, err := loadProfile(base)
 		if err != nil {
@@ -206,8 +209,11 @@ func runConfigSetup(base, repo, ref string, doInit bool) error {
 			if err := cr.writeCommitPush(defaultOwnbaseYAML, "init: seed ownbase.yaml"); err != nil && err != errNoConfigChange {
 				return fmt.Errorf("seed config repo: %w", err)
 			}
-			fmt.Println("Seeded default ownbase.yaml into the config repo.")
-		} else {
+			seeded = true
+			if !jsonOut {
+				fmt.Println("Seeded default ownbase.yaml into the config repo.")
+			}
+		} else if !jsonOut {
 			fmt.Println("Config repo already has an ownbase.yaml — leaving it untouched.")
 		}
 	}
@@ -221,6 +227,16 @@ func runConfigSetup(base, repo, ref string, doInit bool) error {
 	payload, _ := json.Marshal(map[string]string{"repo_url": repo, "ref": ref})
 	if _, err := apiCall(conn, http.MethodPost, "/config/source", payload); err != nil {
 		return fmt.Errorf("set config source on Base: %w", err)
+	}
+	if jsonOut {
+		// stdout must be one JSON document — no progress lines above.
+		return printJSON(map[string]any{
+			"status":   "configured",
+			"base":     base,
+			"repo_url": repo,
+			"ref":      ref,
+			"seeded":   seeded,
+		})
 	}
 	fmt.Printf("Config source set to %s (%s) for %q — the Base will pull and reconcile.\n", repo, ref, base)
 	return nil

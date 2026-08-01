@@ -137,3 +137,23 @@ func TestBuildCaddyModel_NoDomainPublishesNoPorts(t *testing.T) {
 		}
 	}
 }
+
+func TestWithPreservedImageLine(t *testing.T) {
+	existing := "[Container]\nImage=docker.io/library/caddy:2-alpine\nPublishPort=80:80\n"
+	desired := "[Container]\nImage=localhost/ownbase-core-caddy:local\nPublishPort=80:80\nPublishPort=443:443\n"
+	got := core.WithPreservedImageLine(existing, desired)
+	if want := "Image=docker.io/library/caddy:2-alpine"; !strings.Contains(got, want) {
+		t.Fatalf("expected preserved %q in:\n%s", want, got)
+	}
+	if strings.Contains(got, "Image=localhost/ownbase-core-caddy:local") {
+		t.Fatalf("local image must not replace working registry image:\n%s", got)
+	}
+	if !strings.Contains(got, "PublishPort=443:443") {
+		t.Fatalf("other desired changes must remain:\n%s", got)
+	}
+	// Same image → unchanged desired.
+	same := core.WithPreservedImageLine(desired, desired)
+	if same != desired {
+		t.Fatalf("identical Image= must leave desired unchanged")
+	}
+}

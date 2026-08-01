@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/ownbase/ownbase/internal/schema"
 	"github.com/ownbase/ownbase/internal/vault"
@@ -26,6 +27,11 @@ import (
 
 // ownbaseYAMLName is the config file committed to the config repo.
 const ownbaseYAMLName = "ownbase.yaml"
+
+// gitTimeout bounds every client-side git invocation. Without it an HTTPS
+// remote missing cached credentials (or an SSH key waiting on a passphrase)
+// hangs forever — a stuck terminal in the CLI, a dead spinner in the app.
+const gitTimeout = 60 * time.Second
 
 // configRepo is a temporary client-side clone of a Base's external config
 // repo. Call close() to remove the working directory.
@@ -72,13 +78,65 @@ func cloneConfigRepo(profile vault.Profile) (*configRepo, error) {
 
 func (c *configRepo) close() { _ = os.RemoveAll(c.dir) }
 
+// gitEnv returns an environment that never prompts for credentials. The app
+// (and unattended CLI runs) cannot answer a password prompt; failing fast
+// with a readable error is the only honest outcome.
+func gitEnv() []string {
+	env := os.Environ()
+	env = append(env,
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_ASKPASS=",
+		"SSH_ASKPASS=",
+		"GIT_SSH_COMMAND=ssh -oBatchMode=yes -oStrictHostKeyChecking=accept-new",
+	)
+	return env
+}
+
 func (c *configRepo) git(args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(context.Background(), "git", args...)
-	return cmd.CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Env = gitEnv()
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return out, fmt.Errorf("git %s timed out after %s — the remote may need credentials this process does not have (run the equivalent git command once in a terminal, or switch the remote to SSH with an agent key)", gitVerb(args), gitTimeout)
+	}
+	return out, err
 }
 
 func (c *configRepo) gitIn(args ...string) ([]byte, error) {
 	return c.git(append([]string{"-C", c.dir}, args...)...)
+}
+
+// gitVerb returns the git subcommand from an argv, skipping leading flags and
+// their values (-C <dir>, -c <key=val>, …) so timeout errors say "push" not "-C".
+func gitVerb(args []string) string {
+	takesValue := map[string]bool{
+		"-C": true, "-c": true, "--git-dir": true, "--work-tree": true,
+		"--namespace": true, "--config-env": true,
+	}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			if i+1 < len(args) {
+				return args[i+1]
+			}
+			break
+		}
+		if strings.HasPrefix(a, "-") {
+			// -c=foo or --git-dir=path form
+			if name, _, ok := strings.Cut(a, "="); ok {
+				_ = name
+				continue
+			}
+			if takesValue[a] {
+				i++ // skip the value
+			}
+			continue
+		}
+		return a
+	}
+	return "command"
 }
 
 // readOwnbaseYAML returns the current ownbase.yaml text, or "" when the file
@@ -125,34 +183,114 @@ var errNoConfigChange = fmt.Errorf("no change to ownbase.yaml")
 // ownbase.yaml text, validates the result, commits+pushes it, and triggers a
 // reconcile on the Base. edit returns the new content and a commit message.
 func mutateConfig(base string, edit func(current string) (newContent, commitMsg string, err error)) error {
+	_, _, err := mutateConfigInner(base, edit, false)
+	return err
+}
+
+// configPreview is the dry-run result of an edit: the would-be YAML change and
+// the commit message. The app shows this before the user confirms a push.
+type configPreview struct {
+	Current       string `json:"current"`
+	Proposed      string `json:"proposed"`
+	Diff          string `json:"diff"`
+	CommitMessage string `json:"commit_message"`
+	WouldChange   bool   `json:"would_change"`
+}
+
+// previewConfig runs edit against a fresh clone and returns the resulting
+// diff without committing, pushing, or reconciling. Secrets are never
+// written — this is pure config-repo math.
+func previewConfig(base string, edit func(current string) (newContent, commitMsg string, err error)) (configPreview, error) {
+	p, _, err := mutateConfigInner(base, edit, true)
+	return p, err
+}
+
+// mutateConfigInner is the shared body of mutateConfig and previewConfig.
+// dryRun=true stops after computing the edit.
+func mutateConfigInner(base string, edit func(current string) (newContent, commitMsg string, err error), dryRun bool) (configPreview, string, error) {
 	profile, err := loadProfile(base)
 	if err != nil {
-		return err
+		return configPreview{}, "", err
 	}
 	cr, err := cloneConfigRepo(profile)
 	if err != nil {
-		return err
+		return configPreview{}, "", err
 	}
 	defer cr.close()
 
 	current, err := cr.readOwnbaseYAML()
 	if err != nil {
-		return err
+		return configPreview{}, "", err
 	}
 	newContent, msg, err := edit(current)
 	if err != nil {
-		return err
+		return configPreview{}, "", err
 	}
 	if _, err := schema.ParseConfig(strings.NewReader(newContent)); err != nil {
-		return fmt.Errorf("resulting ownbase.yaml would be invalid: %w", err)
+		return configPreview{}, "", fmt.Errorf("resulting ownbase.yaml would be invalid: %w", err)
+	}
+
+	preview := configPreview{
+		Current:       current,
+		Proposed:      newContent,
+		Diff:          unifiedDiff(ownbaseYAMLName, current, newContent),
+		CommitMessage: msg,
+		WouldChange:   current != newContent,
+	}
+	if dryRun {
+		return preview, newContent, nil
 	}
 	if err := cr.writeCommitPush(newContent, msg); err != nil {
 		if err == errNoConfigChange {
-			return err
+			return preview, newContent, err
 		}
-		return err
+		return preview, newContent, err
 	}
-	return triggerReconcile(base)
+	if err := triggerReconcile(base); err != nil {
+		return preview, newContent, err
+	}
+	return preview, newContent, nil
+}
+
+// unifiedDiff is a minimal line-oriented diff good enough for a confirm
+// dialog. It is not a full Myers diff — added/removed lines only — and that
+// is intentional: the app needs something a person can skim, not a patch tool.
+func unifiedDiff(name, before, after string) string {
+	if before == after {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "--- a/%s\n+++ b/%s\n", name, name)
+	beforeLines := strings.Split(before, "\n")
+	afterLines := strings.Split(after, "\n")
+	// Simple LCS-free presentation: emit the whole file with -/+ markers for
+	// lines that differ by index, then any trailing adds/removes. Good enough
+	// for the small ownbase.yaml documents we edit.
+	n := len(beforeLines)
+	if len(afterLines) > n {
+		n = len(afterLines)
+	}
+	for i := 0; i < n; i++ {
+		var oldLine, newLine string
+		if i < len(beforeLines) {
+			oldLine = beforeLines[i]
+		}
+		if i < len(afterLines) {
+			newLine = afterLines[i]
+		}
+		switch {
+		case i >= len(beforeLines):
+			fmt.Fprintf(&b, "+%s\n", newLine)
+		case i >= len(afterLines):
+			fmt.Fprintf(&b, "-%s\n", oldLine)
+		case oldLine == newLine:
+			fmt.Fprintf(&b, " %s\n", oldLine)
+		default:
+			fmt.Fprintf(&b, "-%s\n", oldLine)
+			fmt.Fprintf(&b, "+%s\n", newLine)
+		}
+	}
+	return b.String()
 }
 
 // triggerReconcile asks the Base's daemon to pull the config repo and
@@ -164,6 +302,13 @@ func triggerReconcile(base string) error {
 	}
 	defer conn.close()
 	if _, err := apiCall(conn, http.MethodPost, "/reconcile", nil); err != nil {
+		msg := err.Error()
+		// A 404 almost always means the Base is still running a daemon that
+		// predates the external-config model. The git push already succeeded;
+		// only the "please apply now" kick failed.
+		if strings.Contains(msg, "404") {
+			return fmt.Errorf("trigger reconcile: %w\n  The Base's daemon does not implement POST /reconcile (it is too old).\n  Update it with: ownbasectl self-update %s\n  Or rebuild/reinstall the Base, then retry deploy — your config commit is already on the remote", err, base)
+		}
 		return fmt.Errorf("trigger reconcile: %w", err)
 	}
 	return nil

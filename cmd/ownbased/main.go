@@ -1,6 +1,9 @@
 // Command ownbased is the on-Base daemon: reconcile, watch, explain,
 // recover. It implements the "thermostat loop" from the Reconstruction Model:
 //
+// Build metadata is injected at release via
+// -ldflags "-X main.version=...".
+//
 //	desired = compile(checkout, secrets)
 //	current = query(podman, systemd)
 //	reconcile(desired, current)
@@ -49,6 +52,7 @@ import (
 	"github.com/ownbase/ownbase/internal/schema"
 	"github.com/ownbase/ownbase/internal/secrets"
 	"github.com/ownbase/ownbase/internal/secwatch"
+	"github.com/ownbase/ownbase/internal/selfupdate"
 	"github.com/ownbase/ownbase/internal/update"
 	"github.com/ownbase/ownbase/internal/vulnscan"
 )
@@ -77,7 +81,21 @@ const (
 	DefaultStatusAddr = "127.0.0.1:7070"
 )
 
+// version is injected at release via -ldflags "-X main.version=vX.Y.Z".
+// "dev" means an unreleased / locally-built binary.
+var version = "dev"
+
 func main() {
+	// --version is handled before flag.Parse so it works even when other
+	// required paths would fail. Used by selfupdate to identify a just-
+	// downloaded binary.
+	for _, a := range os.Args[1:] {
+		if a == "--version" || a == "-version" {
+			fmt.Printf("ownbased %s\n", version)
+			os.Exit(0)
+		}
+	}
+
 	fs := flag.NewFlagSet("ownbased", flag.ExitOnError)
 	checkoutPath := fs.String("checkout", DefaultCheckoutPath,
 		"path to the ownbase checkout (contains ownbase.yaml)")
@@ -164,6 +182,10 @@ type reconcileState struct {
 	Config      *schema.OwnbaseConfig // nil when ownbase.yaml failed to parse
 	DriftEvents []reconcile.DriftEvent
 	Current     runtime.CurrentState
+	// ImagesRebuilt is true when this cycle built or rebuilt at least one
+	// container image. Callers use it to kick a vuln rescan so Overview does
+	// not keep showing fixable CVEs from the pre-rebuild image.
+	ImagesRebuilt bool
 }
 
 // MinVulnScanInterval is the lowest accepted value for --vuln-scan-interval.
@@ -337,6 +359,9 @@ func run(cfg agentConfig) error {
 	// the closure can reference them. The API handler captures the variable by
 	// pointer — any call after the assignment will invoke the real function.
 	var triggerScan func()
+	// notifyReboot is assigned below once lastReboot lives; the MountAPI
+	// closure forwards so wiring can happen before the main-loop locals exist.
+	var notifyReboot func(secwatch.RebootResult)
 
 	if cfg.statusAddr != "" {
 		mux := http.NewServeMux()
@@ -346,8 +371,10 @@ func run(cfg agentConfig) error {
 		mux.Handle("/health", statusHandler)
 		// Mount management API (secrets, credentials, token reset) — M15.
 		explain.MountAPI(mux, explain.APIConfig{
-			SecretsDir: explain.DefaultSecretsDir,
-			StatusSrv:  statusSrv,
+			SecretsDir:    explain.DefaultSecretsDir,
+			StatusSrv:     statusSrv,
+			AuditLog:      auditLog,
+			DaemonVersion: version,
 			// TriggerScan delegates to triggerScan, which is assigned below
 			// once ctx and vulnResultCh are available. Returns false if the daemon
 			// is still initialising and the scan goroutine is not yet wired.
@@ -358,40 +385,47 @@ func run(cfg agentConfig) error {
 				}
 				return false
 			},
-			// UpgradeCore pulls the latest pinned image for Caddy (the sole
-			// core package) and restarts it. Progress is written to w for
-			// streaming to the client.
+			// NotifyReboot keeps lastReboot + the cached /status in sync the
+			// moment security fix finishes, so a desktop refresh sees the
+			// reboot finding without waiting for the secwatch tick.
+			NotifyReboot: func(r secwatch.RebootResult) {
+				if notifyReboot != nil {
+					notifyReboot(r)
+				}
+			},
+			// SelfUpdate downloads a signed ownbased binary, swaps it in place,
+			// and signals the handler to exit so systemd Restart=always boots
+			// the new inode.
+			SelfUpdate: func(w io.Writer, want string) (bool, error) {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+				defer cancel()
+				res, err := selfupdate.Apply(ctx, selfupdate.Options{
+					Version:        want,
+					CurrentVersion: version,
+					Writer:         w,
+				})
+				if err != nil {
+					return false, err
+				}
+				return res.RestartPending, nil
+			},
+			// UpgradeCore rebuilds the hardened Caddy image from the Dockerfile
+			// embedded in this binary and restarts the container. (Caddy is no
+			// longer pulled from a registry — see internal/core.BuildCaddyImage.)
 			UpgradeCore: func(w io.Writer) error {
-				upgradeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+				upgradeCtx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 				defer cancel()
 
-				m := core.Current
-				for _, pkg := range []struct {
-					name      string
-					container string
-					image     string
-					digest    string
-				}{
-					{"Caddy", core.CaddyContainerName, m.CaddyImage, m.CaddyDigest},
-				} {
-					imageRef := pkg.image
-					if pkg.digest != "" {
-						imageRef = pkg.image + "@" + pkg.digest
-					}
-					fmt.Fprintf(w, "==> Pulling %s (%s)...\n", pkg.name, imageRef)
-					cmd := exec.CommandContext(upgradeCtx, "podman", "pull", imageRef)
-					cmd.Stdout = w
-					cmd.Stderr = w
-					if err := cmd.Run(); err != nil {
-						return fmt.Errorf("pull %s: %w", pkg.name, err)
-					}
-					fmt.Fprintf(w, "==> Restarting %s...\n", pkg.name)
-					cmd = exec.CommandContext(upgradeCtx, "podman", "restart", pkg.container)
-					cmd.Stdout = w
-					cmd.Stderr = w
-					if err := cmd.Run(); err != nil {
-						fmt.Fprintf(w, "    warning: restart %s: %v (continuing)\n", pkg.name, err)
-					}
+				fmt.Fprintf(w, "==> Building hardened Caddy image (%s)...\n", core.LocalCaddyImage)
+				if err := core.BuildCaddyImage(upgradeCtx, w); err != nil {
+					return err
+				}
+				fmt.Fprintf(w, "==> Restarting %s...\n", core.CaddyContainerName)
+				cmd := exec.CommandContext(upgradeCtx, "podman", "restart", core.CaddyContainerName)
+				cmd.Stdout = w
+				cmd.Stderr = w
+				if err := cmd.Run(); err != nil {
+					fmt.Fprintf(w, "    warning: restart %s: %v (continuing)\n", core.CaddyContainerName, err)
 				}
 				return nil
 			},
@@ -399,30 +433,36 @@ func run(cfg agentConfig) error {
 			// the core package (Caddy) for `ownbasectl upgrade` (check-only).
 			CoreStatus: func() []explain.CorePackageStatus {
 				m := core.Current
-				var out []explain.CorePackageStatus
-				for _, pkg := range []struct {
-					name      string
-					container string
-					image     string
-					digest    string
-				}{
-					{"Caddy", core.CaddyContainerName, m.CaddyImage, m.CaddyDigest},
-				} {
-					running := false
-					if state, err := exec.Command(
-						"podman", "inspect", "--format", "{{.State.Running}}", pkg.container,
-					).Output(); err == nil {
-						running = strings.TrimSpace(string(state)) == "true"
-					}
-					out = append(out, explain.CorePackageStatus{
-						Name:      pkg.name,
-						Container: pkg.container,
-						Image:     pkg.image,
-						Digest:    pkg.digest,
-						Running:   running,
-					})
+				running := false
+				if state, err := exec.Command(
+					"podman", "inspect", "--format", "{{.State.Running}}", core.CaddyContainerName,
+				).Output(); err == nil {
+					running = strings.TrimSpace(string(state)) == "true"
 				}
-				return out
+				runningDigest := ""
+				if dig, err := exec.Command(
+					"podman", "inspect", "--format", "{{.ImageDigest}}", core.CaddyContainerName,
+				).Output(); err == nil {
+					runningDigest = strings.TrimSpace(string(dig))
+				}
+				// Local builds have no registry digest pin; surface the image
+				// id of the tagged local image as Digest when present.
+				digest := m.CaddyDigest
+				if digest == "" {
+					if id, err := exec.Command(
+						"podman", "image", "inspect", "--format", "{{.Id}}", m.CaddyImage,
+					).Output(); err == nil {
+						digest = strings.TrimSpace(string(id))
+					}
+				}
+				return []explain.CorePackageStatus{{
+					Name:          "Caddy",
+					Container:     core.CaddyContainerName,
+					Image:         m.CaddyImage,
+					Digest:        digest,
+					RunningDigest: runningDigest,
+					Running:       running,
+				}}
 			},
 			// GetConfig reads the checkout's ownbase.yaml — the read side of
 			// `ownbasectl config get`.
@@ -584,6 +624,31 @@ func run(cfg agentConfig) error {
 		}()
 	}
 
+	// Build the hardened Caddy image in the background once the API is up.
+	// The first build can take minutes (Go toolchain + module download) and
+	// must not block POST /reconcile after a client-side deploy.
+	go func() {
+		if core.CaddyImagePresent() {
+			return
+		}
+		fmt.Fprintln(os.Stderr, "ownbased: building hardened Caddy image (background)")
+		if err := core.EnsureCaddyImage(context.Background(), os.Stderr); err != nil {
+			fmt.Fprintf(os.Stderr, "ownbased: build caddy image: %v\n", err)
+			return
+		}
+		// Units may already reference the local tag; restart so the container
+		// picks up the image that just landed.
+		coreCfg := schema.CoreConfig{}
+		hasPublicDomain := false
+		if cfgOnDisk, err := schema.ParseConfigFile(filepath.Join(cfg.checkoutPath, "ownbase.yaml")); err == nil {
+			coreCfg = cfgOnDisk.Core
+			hasPublicDomain = cfgOnDisk.HasPublicDomain()
+		}
+		if err := bootstrapCore(context.Background(), cfg, coreCfg, hasPublicDomain); err != nil {
+			fmt.Fprintf(os.Stderr, "ownbased: bootstrap core after caddy build: %v\n", err)
+		}
+	}()
+
 	mode := "dry-run"
 	if !cfg.dryRun {
 		mode = applierMode(applier)
@@ -599,7 +664,16 @@ func run(cfg agentConfig) error {
 	var lastSecProbe time.Time
 	var lastExposure secwatch.ExposureResult
 	var lastAccess secwatch.AccessResult
+	var lastReboot secwatch.RebootResult
 	var lastUnexpectedCount = -1 // -1 = first run; used for transition detection
+
+	// Wired once StatusSrv is live. Only touches the status cache — lastReboot
+	// is main-loop-only (written in afterReconcile) so a concurrent HTTP
+	// handler never races the select loop on that variable. Update re-samples
+	// the marker under its lock, so a later afterReconcile cannot wipe this.
+	notifyReboot = func(r secwatch.RebootResult) {
+		statusSrv.SetReboot(r.Required, r.Packages)
+	}
 
 	// lastVulnStatus holds the most recent trivy scan result. It is only ever
 	// read and written on the main select loop (via vulnResultCh below), so
@@ -627,11 +701,18 @@ func run(cfg agentConfig) error {
 	afterReconcile := func(state reconcileState) {
 		ctx := context.Background()
 
+		// Reboot marker is two file stats — cheap enough to re-read on every
+		// status push, so a security-fix → rescan path cannot clobber a
+		// NotifyReboot update with a stale lastReboot from the previous tick.
+		lastReboot = secwatch.GatherRebootRequired()
+
 		// Run security probes at most once per secProbeInterval.
-		// Skip when config is nil (parse failure): the expected-port allowlist
-		// would be incomplete, producing false port.exposed audit events until
-		// the config is repaired and the next probe runs with valid state.
-		if time.Since(lastSecProbe) >= secProbeInterval && state.Config != nil {
+		// Config may be nil (config setup not run yet, or parse failure):
+		// ExpectedAllowlist still covers SSH/80/443, and access monitoring
+		// does not need ownbase.yaml at all. Skipping when config is nil left
+		// fresh Bases stuck on available=false forever, which the UI rendered
+		// as "dev machine missing ss/ufw" even when the tools were present.
+		if time.Since(lastSecProbe) >= secProbeInterval {
 			lastExposure = secwatch.GatherExposure(ctx, state.Config, cfg.sshPort)
 			lastAccess = secwatch.GatherAccess(ctx)
 			lastSecProbe = time.Now()
@@ -671,6 +752,7 @@ func run(cfg agentConfig) error {
 		}
 
 		status := explain.Gather(explain.GatherInput{
+			Version:           version,
 			Config:            state.Config,
 			RunningContainers: state.Current.RunningContainers,
 			BackupStatus:      backupStatus,
@@ -679,6 +761,7 @@ func run(cfg agentConfig) error {
 			Exposure:          lastExposure,
 			Access:            lastAccess,
 			Vulns:             lastVulnStatus,
+			Reboot:            lastReboot,
 			JobTimers:         jobTimers,
 			ConfigSource:      configSource,
 		})
@@ -707,6 +790,12 @@ func run(cfg agentConfig) error {
 		}
 		afterReconcile(state)
 		lastReconcileState = state
+		// A deploy that rebuilt images leaves CVE counts pointing at the old
+		// layers until the next daily scan. Kick one now so Overview clears.
+		if state.ImagesRebuilt && triggerScan != nil {
+			fmt.Fprintln(os.Stderr, "ownbased: images rebuilt — triggering vulnerability rescan")
+			triggerScan()
+		}
 	}
 
 	// Run immediately on start.
@@ -988,13 +1077,20 @@ func reconcileLoop(
 
 	// 1. Sync the checkout with the external config repo (read-only). A no-op
 	// until a config source is set via `ownbasectl config setup`.
-	if src, err := configsource.Load(configsource.DefaultStatePath); err != nil {
-		fmt.Fprintf(os.Stderr, "ownbased: load config source: %v\n", err)
+	src, srcErr := configsource.Load(configsource.DefaultStatePath)
+	if srcErr != nil {
+		fmt.Fprintf(os.Stderr, "ownbased: load config source: %v\n", srcErr)
 	} else if src.Configured() {
 		if err := configsource.EnsureCheckout(context.Background(), src, checkoutPath, gitssh.Env()); err != nil {
 			// Non-fatal — reconcile continues with whatever is already on disk.
 			fmt.Fprintf(os.Stderr, "ownbased: sync config repo: %v\n", err)
 		}
+	} else {
+		// Fresh Base: wizard/create finished but config setup has not run.
+		// Do not treat a missing checkout as a parse error every tick — that
+		// spams the journal and left the Security panel looking broken.
+		// afterReconcile still runs (secwatch, vulns) with Config=nil.
+		return state, nil
 	}
 
 	// 2. Parse ownbase.yaml from the checkout.
@@ -1222,6 +1318,12 @@ func reconcileLoop(
 	}
 	if err := reconcile.Apply(plan, checkpoint, applier, auditLog); err != nil {
 		return state, err
+	}
+	for _, pa := range plan.Actions {
+		if pa.Action.Type == schema.ActionBuildImage {
+			state.ImagesRebuilt = true
+			break
+		}
 	}
 	// After a successful apply, sync ALL compiler output into runtime/ so
 	// the drift detector sees the full desired snapshot on the next tick.

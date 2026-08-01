@@ -18,6 +18,9 @@ import (
 // All fields are optional — Gather produces a best-effort status for whatever
 // is provided. The zero value is safe and results in a minimal status.
 type GatherInput struct {
+	// Version is the running ownbased binary's release tag (e.g. "v0.4.0").
+	Version string
+
 	// Config is the parsed ownbase.yaml. When nil, Services will be empty.
 	Config *schema.OwnbaseConfig
 
@@ -55,6 +58,10 @@ type GatherInput struct {
 	// (Available=false) means no scan has run yet.
 	Vulns vulnscan.VulnStatus
 
+	// Reboot is whether the host needs a reboot for applied packages to
+	// take effect. Zero value (Required=false) means no marker present.
+	Reboot secwatch.RebootResult
+
 	// JobTimers is the live systemd timer state for each scheduled job,
 	// keyed by the job's ownbase.yaml key. From runtime.QueryJobTimer, one
 	// call per cfg.Jobs entry. A missing entry (or nil map) produces a
@@ -75,6 +82,7 @@ func Gather(in GatherInput) *BaseStatus {
 	s := &BaseStatus{
 		GeneratedAt:   time.Now().UTC(),
 		SchemaVersion: StatusSchemaVersion,
+		Version:       in.Version,
 	}
 
 	if in.Config != nil {
@@ -87,7 +95,7 @@ func Gather(in GatherInput) *BaseStatus {
 		s.Config = &cs
 	}
 
-	s.Security = gatherSecurity(in.BackupStatus, in.DriftEvents, in.Exposure, in.Access, in.Vulns)
+	s.Security = gatherSecurity(in.BackupStatus, in.DriftEvents, in.Exposure, in.Access, in.Vulns, in.Reboot)
 
 	maxRecs := in.AuditMaxRecords
 	if maxRecs <= 0 {
@@ -162,12 +170,14 @@ func gatherJobs(cfg *schema.OwnbaseConfig, timers map[string]runtime.JobTimerInf
 	return result
 }
 
-func gatherSecurity(bs backup.Status, driftEvents []reconcile.DriftEvent, exposure secwatch.ExposureResult, access secwatch.AccessResult, vulns vulnscan.VulnStatus) SecurityStatus {
+func gatherSecurity(bs backup.Status, driftEvents []reconcile.DriftEvent, exposure secwatch.ExposureResult, access secwatch.AccessResult, vulns vulnscan.VulnStatus, reboot secwatch.RebootResult) SecurityStatus {
 	sec := SecurityStatus{
 		BackupRestorable: bs.Restorable,
 		Exposure:         exposure,
 		Access:           access,
 		Vulns:            vulns,
+		RebootRequired:   reboot.Required,
+		RebootPackages:   reboot.Packages,
 	}
 	if !bs.LastBackup.IsZero() {
 		t := bs.LastBackup

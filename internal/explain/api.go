@@ -11,8 +11,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/ownbase/ownbase/internal/authz"
+	"github.com/ownbase/ownbase/internal/install"
+	"github.com/ownbase/ownbase/internal/schema"
 	"github.com/ownbase/ownbase/internal/secrets"
+	"github.com/ownbase/ownbase/internal/secwatch"
 )
 
 const (
@@ -41,6 +46,20 @@ type APIConfig struct {
 	// the daemon is still initializing and the scan cannot be started yet.
 	// Called by /security/fix (after upgrade) and /security/scan (on-demand).
 	TriggerScan func() bool
+	// NotifyReboot, when non-nil, is called after /security/fix with the
+	// current reboot-required marker so the daemon's cached status reflects
+	// the marker immediately (not on the next 5-minute secwatch tick).
+	NotifyReboot func(secwatch.RebootResult)
+	// SelfUpdate, when non-nil, downloads and installs a newer ownbased
+	// binary. Called by POST /self-update. The handler exits the process
+	// after a successful swap so systemd restarts into the new binary.
+	SelfUpdate func(w io.Writer, version string) (restart bool, err error)
+	// DaemonVersion is the running binary's release tag, reported on
+	// GET /version and folded into /status.
+	DaemonVersion string
+	// AuditLog, when non-nil, receives one record per host-mutating security
+	// action (patch, reboot, scanner install, self-update). Nil is safe.
+	AuditLog authz.AuditLogger
 	// UpgradeCore, when non-nil, pulls the latest pinned image for the core
 	// package (Caddy) and restarts it. Progress lines are written
 	// to w so the HTTP handler can stream them to the client. A non-nil error
@@ -119,7 +138,11 @@ type CorePackageStatus struct {
 	Container string `json:"container"` // e.g. "ownbase-core-caddy"
 	Image     string `json:"image"`     // e.g. "docker.io/library/caddy:2-alpine"
 	Digest    string `json:"digest,omitempty"`
-	Running   bool   `json:"running"`
+	// RunningDigest is the image digest the container is actually executing,
+	// when podman can report it. Compared to Digest to decide whether
+	// `upgrade --apply` would change anything.
+	RunningDigest string `json:"running_digest,omitempty"`
+	Running       bool   `json:"running"`
 }
 
 // BackupRunStatus is the JSON-friendly result of an immediate backup run,
@@ -371,6 +394,16 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 		fw := &flushWriter{w: w, flush: flush}
 
 		ctx := r.Context()
+		recordPatch := func(outcome, errMsg string) {
+			if cfg.AuditLog == nil {
+				return
+			}
+			action, err := schema.NewAction(schema.ActionHostPatch, "host OS packages")
+			if err != nil {
+				return
+			}
+			_ = cfg.AuditLog.Record(action, outcome, errMsg)
+		}
 
 		// runStep executes apt-get with its stdout/stderr written directly to
 		// the flushing response writer, avoiding any intermediate pipe or
@@ -389,10 +422,29 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 		}
 
 		if !runStep("Refreshing package index (apt-get update)", "update", "-q") {
+			recordPatch(authz.OutcomeError, "apt-get update failed")
 			return
 		}
 		if !runStep("Upgrading packages (apt-get upgrade)", "upgrade", "-y", "-q") {
+			recordPatch(authz.OutcomeError, "apt-get upgrade failed")
 			return
+		}
+		recordPatch(authz.OutcomeApplied, "")
+
+		// A successful upgrade can leave the machine needing a reboot (new
+		// kernel). Surface that here and push it into the cached status so
+		// the next /status read (and therefore the app's refresh) sees it
+		// without waiting for the 5-minute secwatch tick.
+		reboot := secwatch.GatherRebootRequired()
+		if cfg.NotifyReboot != nil {
+			cfg.NotifyReboot(reboot)
+		}
+		if reboot.Required {
+			fmt.Fprintf(fw, "\n==> A reboot is required for some upgrades to take effect")
+			if len(reboot.Packages) > 0 {
+				fmt.Fprintf(fw, " (%s)", strings.Join(reboot.Packages, ", "))
+			}
+			fmt.Fprintf(fw, ".\n    Run 'ownbasectl security reboot' when ready — every service will drop for ~30–60s.\n")
 		}
 
 		fmt.Fprintf(fw, "\n==> Done. Triggering vulnerability rescan...\n")
@@ -406,6 +458,64 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 			}
 		}
 		fmt.Fprintf(fw, "---OK---\n")
+	})
+
+	// /security/reboot — schedule a host reboot one minute out and stream a
+	// short confirmation. The delay lets ---OK--- reach the client before the
+	// SSH tunnel dies with the machine. Requires POST.
+	mux.HandleFunc("/security/reboot", func(w http.ResponseWriter, r *http.Request) {
+		if !authRequired(w, r, cfg.StatusSrv) {
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if _, err := exec.LookPath("shutdown"); err != nil {
+			http.Error(w, "shutdown not found — this endpoint is only available on Linux", http.StatusNotImplemented)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.WriteHeader(http.StatusOK)
+
+		flusher, canFlush := w.(http.Flusher)
+		flush := func() {
+			if canFlush {
+				flusher.Flush()
+			}
+		}
+		fw := &flushWriter{w: w, flush: flush}
+
+		recordReboot := func(outcome, errMsg string) {
+			if cfg.AuditLog == nil {
+				return
+			}
+			action, err := schema.NewAction(schema.ActionHostReboot, "host")
+			if err != nil {
+				return
+			}
+			_ = cfg.AuditLog.Record(action, outcome, errMsg)
+		}
+
+		fmt.Fprintf(fw, "==> Scheduling reboot in 1 minute\n")
+		fmt.Fprintf(fw, "    Every service on this Base will stop and restart with the machine.\n")
+		// `shutdown -r +1` returns immediately; the actual reboot is a minute
+		// later. That window is what lets ---OK--- leave the box before the
+		// network drops. `+0` would race the response.
+		cmd := exec.Command("shutdown", "-r", "+1", "OwnBase security reboot")
+		cmd.Stdout = fw
+		cmd.Stderr = fw
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintf(fw, "ERROR: shutdown: %v\n", err)
+			recordReboot(authz.OutcomeError, err.Error())
+			return
+		}
+		recordReboot(authz.OutcomeApplied, "")
+		fmt.Fprintf(fw, "==> Reboot scheduled at %s UTC\n", time.Now().UTC().Add(time.Minute).Format(time.RFC3339))
+		fmt.Fprintf(fw, "---OK---\n")
+		flush()
 	})
 
 	// /upgrade — pull updated core package images and restart containers.
@@ -648,6 +758,140 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 			"status":  "started",
 			"message": "Scan started — results available in a few minutes. Check 'ownbasectl security'.",
 		})
+	})
+
+	// /security/scanner/install — install trivy + enable podman.socket, streaming
+	// progress. Same path PassZero uses at bootstrap. Requires POST.
+	mux.HandleFunc("/security/scanner/install", func(w http.ResponseWriter, r *http.Request) {
+		if !authRequired(w, r, cfg.StatusSrv) {
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.WriteHeader(http.StatusOK)
+		flusher, canFlush := w.(http.Flusher)
+		flush := func() {
+			if canFlush {
+				flusher.Flush()
+			}
+		}
+		fw := &flushWriter{w: w, flush: flush}
+		fmt.Fprintf(fw, "==> Installing trivy vulnerability scanner\n")
+		st := install.EnsureTrivy(r.Context(), install.PassZeroConfig{})
+		if st.Err != nil {
+			fmt.Fprintf(fw, "ERROR: %v\n", st.Err)
+			if cfg.AuditLog != nil {
+				if a, err := schema.NewAction(schema.ActionHostInstallScanner, "trivy"); err == nil {
+					_ = cfg.AuditLog.Record(a, authz.OutcomeError, st.Err.Error())
+				}
+			}
+			return
+		}
+		if st.AlreadyOK {
+			fmt.Fprintf(fw, "==> Already installed: %s\n", st.Detail)
+		} else {
+			fmt.Fprintf(fw, "==> Installed: %s\n", st.Detail)
+		}
+		if cfg.AuditLog != nil {
+			if a, err := schema.NewAction(schema.ActionHostInstallScanner, "trivy"); err == nil {
+				_ = cfg.AuditLog.Record(a, authz.OutcomeApplied, "")
+			}
+		}
+		if cfg.TriggerScan != nil {
+			fmt.Fprintf(fw, "==> Triggering first vulnerability scan...\n")
+			_ = cfg.TriggerScan()
+		}
+		fmt.Fprintf(fw, "---OK---\n")
+	})
+
+	// /version — the running daemon's release tag. Public-ish but still auth'd
+	// so a random port scanner cannot fingerprint OwnBase versions.
+	mux.HandleFunc("/version", func(w http.ResponseWriter, r *http.Request) {
+		if !authRequired(w, r, cfg.StatusSrv) {
+			return
+		}
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		v := cfg.DaemonVersion
+		if v == "" {
+			v = "dev"
+		}
+		writeJSON(w, map[string]string{"version": v})
+	})
+
+	// /self-update — download a newer ownbased, verify, install, then exit so
+	// systemd Restart=always boots the new binary. Streams progress.
+	mux.HandleFunc("/self-update", func(w http.ResponseWriter, r *http.Request) {
+		if !authRequired(w, r, cfg.StatusSrv) {
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if cfg.SelfUpdate == nil {
+			http.Error(w, "self-update not configured", http.StatusNotImplemented)
+			return
+		}
+		var body struct {
+			Version string `json:"version"`
+		}
+		if r.Body != nil {
+			_ = json.NewDecoder(r.Body).Decode(&body)
+		}
+		if body.Version == "" {
+			body.Version = "latest"
+		}
+
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.WriteHeader(http.StatusOK)
+		flusher, canFlush := w.(http.Flusher)
+		flush := func() {
+			if canFlush {
+				flusher.Flush()
+			}
+		}
+		fw := &flushWriter{w: w, flush: flush}
+
+		restart, err := cfg.SelfUpdate(fw, body.Version)
+		if err != nil {
+			fmt.Fprintf(fw, "ERROR: %v\n", err)
+			if cfg.AuditLog != nil {
+				if a, e := schema.NewAction(schema.ActionHostSelfUpdate, body.Version); e == nil {
+					_ = cfg.AuditLog.Record(a, authz.OutcomeError, err.Error())
+				}
+			}
+			return
+		}
+		if cfg.AuditLog != nil {
+			if a, e := schema.NewAction(schema.ActionHostSelfUpdate, body.Version); e == nil {
+				_ = cfg.AuditLog.Record(a, authz.OutcomeApplied, "")
+			}
+		}
+		// Distinct trailers so the CLI can tell a no-op from a real restart
+		// (both end with ---OK--- for back-compat with stream parsers).
+		if restart {
+			fmt.Fprintf(fw, "==> Restart pending — process will exit for systemd\n")
+		} else {
+			fmt.Fprintf(fw, "==> Already current — no restart\n")
+		}
+		fmt.Fprintf(fw, "---OK---\n")
+		flush()
+		if restart {
+			// Give the response a moment to leave the box, then exit so
+			// systemd Restart=always boots the new binary.
+			go func() {
+				time.Sleep(500 * time.Millisecond)
+				os.Exit(0)
+			}()
+		}
 	})
 
 	// /token/reset — generate a new Bearer token, hot-swap it, persist to file.

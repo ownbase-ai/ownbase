@@ -87,3 +87,19 @@ export function bytes(n: number): string {
 export function shortRef(ref: string): string {
   return /^[0-9a-f]{40}$/i.test(ref) ? ref.slice(0, 8) : ref;
 }
+
+/**
+ * Default --ref for deploy, matching cmd/ownbasectl pickDeployRef.
+ * When behind on commits, prefer the branch tip — newest_tag can point at
+ * an older release and would roll a SHA pin backward.
+ */
+export function pickDeployRef(
+  commitsBehind: number,
+  branch?: string,
+  newestTag?: string,
+): string {
+  if (commitsBehind > 0) {
+    return branch || "main";
+  }
+  return newestTag || branch || "main";
+}

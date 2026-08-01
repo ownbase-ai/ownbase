@@ -236,7 +236,7 @@ Verified-restore drill
 
 Without `--verify`, the report shows the last drill the Base ran on its own schedule, which may be up to a day old. A failed drill names the failing check and exits non-zero; the report still prints.
 
-`--json` is one document: `{"findings": [{"summary", "fix"}…], "status": {…}}`, plus a `"verify"` key when `--verify` ran. The findings are in the payload because deciding what counts as a problem is this command's job — the desktop app renders that verdict rather than recomputing it, which is what keeps the two from disagreeing about whether a Base is healthy. For the machine's own words with no verdict attached, use `status --json`. A failed drill still exits non-zero with its message on stderr, so stdout stays parseable.
+`--json` is one document: `{"findings": [{"summary", "fix", "action"}…], "status": {…}}`, plus a `"verify"` key when `--verify` ran. Each finding's `action` is `{kind: "run"|"open"|"manual", …}` — the CLI decides both what counts as a problem and how to address it, and the desktop app switches on `kind` rather than recomputing either. For the machine's own words with no verdict attached, use `status --json`. A failed drill still exits non-zero with its message on stderr, so stdout stays parseable.
 
 ### `backup setup|run|status <name>`
 
@@ -334,20 +334,44 @@ ownbasectl updates mybase
 ownbasectl updates mybase --json      # only the "updates" section
 ```
 
-### `security <name>` / `security scan` / `security fix`
+### `security <name>` / `security scan` / `security fix` / `security reboot` / `security install-scanner`
 
-```bash
-ownbasectl security mybase            # exposure + SSH access + CVE report
-ownbasectl security mybase --json     # only the "security" section
-ownbasectl security scan mybase       # immediate CVE rescan (~2–5 min)
-ownbasectl security fix mybase        # apt-get upgrade on the Base, streamed
+```
+ownbasectl security mybase                    # exposure + SSH access + CVE report
+ownbasectl security mybase --json             # only the "security" section
+ownbasectl security scan mybase               # immediate CVE rescan (~2–5 min)
+ownbasectl security fix mybase                # apt-get upgrade on the Base, streamed
+ownbasectl security reboot mybase             # reboot so applied packages take effect
+ownbasectl security install-scanner mybase    # install trivy + enable podman.socket
 ```
 
-| CVE location | Command |
+`security fix` only moves CVEs that have a published patch. Unfixed counts
+(no upstream fix yet) are a reading, not a to-do — they clear when Ubuntu
+ships one. After a kernel upgrade the report can look clean while the old
+kernel is still running; `security reboot` is what closes that gap
+(`shutdown -r +1`, every service drops for ~30–60s).
+
+| What | How to address it |
 |---|---|
-| Host OS packages | `ownbasectl security fix <name>` — auto-rescans after |
-| Caddy image | `ownbasectl upgrade <name> --apply` — auto-rescans after |
+| Host OS packages with a patch | `ownbasectl security fix <name>` — auto-rescans after; may leave a reboot required |
+| Reboot required | `ownbasectl security reboot <name>` |
+| Scanner missing | `ownbasectl security install-scanner <name>` |
+| Caddy image CVE (local-build daemon) | `ownbasectl upgrade <name> --apply` — rebuilds hardened Caddy on the Base |
+| Caddy image CVE (old registry-pinned daemon) | `ownbasectl self-update <name>` first, then `upgrade --apply` |
+| Service image CVE / behind source | `ownbasectl deploy <name> <svc> --ref <tag>` (use `--dry-run --json` first) |
 | Image CVE with no fix available | Wait for the upstream maintainer |
+
+### `self-update <name>`
+
+```
+ownbasectl self-update mybase
+ownbasectl self-update mybase --version v0.4.1
+```
+
+Downloads a signed `ownbased` from the release server, verifies the minisign
+signature, atomically replaces `/opt/ownbase/bin/ownbased`, and lets systemd
+`Restart=always` boot the new process. This is how a Base picks up a newer
+Caddy pin — `core.Current` is compiled into the daemon.
 
 ### `upgrade <name>`
 

@@ -424,6 +424,22 @@ func waitForLive(t *testing.T, live *atomic.Int32, want int32) {
 	t.Fatalf("agent live connections = %d, want %d", live.Load(), want)
 }
 
+// waitForTotal spins until the agent has accepted at least want connections.
+// net.Dial("unix") can return before Accept runs total.Add — under CI load
+// that window is wide enough for a bare total.Load() right after Dial to
+// still see 0 and flake.
+func waitForTotal(t *testing.T, total *atomic.Int32, want int32) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if total.Load() >= want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("agent accepted %d connections, want >= %d", total.Load(), want)
+}
+
 // Dial used to leave every agent unix conn open for the process lifetime.
 // After a successful handshake the agent is no longer needed (rekey does not
 // re-auth), so the FD must be released — otherwise create --wait and similar
@@ -497,12 +513,9 @@ func TestDial_ClosesAgentSocketOnDialFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("Dial: expected connection error, got nil")
 	}
-	// buildAuthMethods dials the agent before TCP; if that unix dial failed we
-	// never opened a connection to clean up — fail with a clearer signal than
-	// "want 1".
-	if n := total.Load(); n == 0 {
-		t.Fatalf("agent accepted 0 connections; Dial failed before opening the agent (%v)", err)
-	}
+	// buildAuthMethods dials the agent before TCP. Accept can lag the
+	// successful unix Dial; wait before asserting or CI flakes with total=0.
+	waitForTotal(t, total, 1)
 	waitForLive(t, live, 0)
 	if n := total.Load(); n != 1 {
 		t.Errorf("agent accepted %d connections, want 1", n)

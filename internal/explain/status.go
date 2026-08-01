@@ -29,6 +29,9 @@ const DefaultAuditMaxRecords = 20
 type BaseStatus struct {
 	GeneratedAt   time.Time `json:"generated_at"`
 	SchemaVersion string    `json:"schema_version"`
+	// Version is the running ownbased binary's release tag (e.g. "v0.4.0"),
+	// or "dev" for unreleased builds. Empty on daemons that predate the field.
+	Version string `json:"version,omitempty"`
 	// Config is the external config repo this Base tracks. Omitted when
 	// `ownbasectl config setup` has never run on this machine — the vault
 	// profile can also hold a copy for client-side commits, but the Base is
@@ -146,6 +149,14 @@ type SecurityStatus struct {
 	// Vulns is the vulnerability scan result. Populated by the daily
 	// vulnscan tick; zero value (Available=false) means no scan has run yet.
 	Vulns vulnscan.VulnStatus `json:"vulns"`
+
+	// RebootRequired is true when /var/run/reboot-required is present — usually
+	// after a kernel package upgrade. Without this, a post-upgrade CVE scan
+	// can report clean while the machine still runs the old kernel.
+	RebootRequired bool `json:"reboot_required"`
+	// RebootPackages lists the packages that triggered the reboot marker.
+	// Empty when RebootRequired is false or the pkgs file is missing.
+	RebootPackages []string `json:"reboot_packages,omitempty"`
 }
 
 // UpdateStatus summarises how far behind each service is from its source.

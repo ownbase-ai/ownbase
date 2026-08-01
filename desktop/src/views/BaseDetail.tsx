@@ -21,12 +21,13 @@ import type { Tone } from "../components/ui";
 import * as api from "../lib/api";
 import type { StreamEvent } from "../lib/cli";
 import { cx } from "../lib/cx";
-import { absolute, ago, shortRef, until } from "../lib/format";
+import { absolute, ago, pickDeployRef, shortRef, until } from "../lib/format";
 import type {
   BaseStatus,
   BaseSummary,
   Checkup,
   Finding,
+  ServiceDrift,
   ServiceStatus,
   VulnSummary,
 } from "../lib/types";
@@ -37,12 +38,12 @@ type Tab = "overview" | "services" | "security" | "backups" | "updates" | "activ
 /**
  * Everything known about one Base.
  *
- * Read-only by design for desired state. Config changes are commits to a Git
- * repo the user owns, and giving the window a second way to make them would
- * mean two answers to "what is deployed". So this shows, points at the
- * command, and gets out of the way — with three exceptions that do not rewrite
- * what should run: taking a backup now, running the restore drill, and
- * forgetting this Base on this computer.
+ * Desired state is read-only here. Config changes are commits to a Git repo
+ * the user owns, and giving the window a second way to make them would mean
+ * two answers to "what is deployed". Actions the window does take never
+ * rewrite what should run: backup now, the restore drill, apply host OS
+ * patches, rescan CVEs, reboot so those patches take effect, and forget this
+ * Base on this computer.
  */
 export function BaseDetail({
   base,
@@ -103,6 +104,7 @@ export function BaseDetail({
             status={status}
             findings={findings}
             onChanged={state.reload}
+            onOpenTab={setTab}
             onRemoved={onRemoved}
           />
         )}
@@ -117,6 +119,7 @@ function Body({
   status,
   findings,
   onChanged,
+  onOpenTab,
   onRemoved,
 }: {
   tab: Tab;
@@ -124,6 +127,7 @@ function Body({
   status: BaseStatus;
   findings: Finding[];
   onChanged: () => void;
+  onOpenTab: (tab: Tab) => void;
   onRemoved: () => void;
 }) {
   switch (tab) {
@@ -133,17 +137,19 @@ function Body({
           base={base}
           status={status}
           findings={findings}
+          onChanged={onChanged}
+          onOpenTab={onOpenTab}
           onRemoved={onRemoved}
         />
       );
     case "services":
       return <Services status={status} />;
     case "security":
-      return <Security base={base} status={status} />;
+      return <Security base={base} status={status} onChanged={onChanged} />;
     case "backups":
       return <Backups base={base} status={status} onChanged={onChanged} />;
     case "updates":
-      return <Updates base={base} status={status} />;
+      return <Updates base={base} status={status} onChanged={onChanged} />;
     case "activity":
       return <Activity status={status} />;
   }
@@ -272,11 +278,15 @@ function Overview({
   base,
   status,
   findings,
+  onChanged,
+  onOpenTab,
   onRemoved,
 }: {
   base: BaseSummary;
   status: BaseStatus;
   findings: Finding[];
+  onChanged: () => void;
+  onOpenTab: (tab: Tab) => void;
   onRemoved: () => void;
 }) {
   const services = status.services ?? [];
@@ -290,7 +300,7 @@ function Overview({
         subtitle={
           findings.length === 0
             ? "The last checkup found no problems."
-            : "Each of these comes with the command that addresses it."
+            : "Only things you can finish. Unfixed CVEs and other readings live on their tabs."
         }
       >
         {findings.length === 0 ? (
@@ -301,16 +311,13 @@ function Overview({
         ) : (
           <ul className="space-y-3">
             {findings.map((finding) => (
-              <li
+              <FindingRow
                 key={finding.summary}
-                className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/20 bg-amber-500/5 px-3.5 py-3"
-              >
-                <span className="text-sm text-amber-100/90">{finding.summary}</span>
-                <span className="flex items-center gap-2">
-                  <CommandLine>{finding.fix}</CommandLine>
-                  <CopyButton value={finding.fix} label="Copy" />
-                </span>
-              </li>
+                base={base.name}
+                finding={finding}
+                onChanged={onChanged}
+                onOpenTab={onOpenTab}
+              />
             ))}
           </ul>
         )}
@@ -382,6 +389,601 @@ function Overview({
       </div>
 
       <RemoveBase base={base} onRemoved={onRemoved} />
+    </div>
+  );
+}
+
+/**
+ * One finding and the control that addresses it.
+ *
+ * The CLI decided the kind (`run` / `open` / `form` / `manual`); this
+ * component only switches on it. `run` streams into a LogView. `open` jumps
+ * to a tab. `form` expands an inline form that dry-runs then confirms. 
+ * `manual` is plain text — a genuine dead-end with no in-app path.
+ */
+function FindingRow({
+  base,
+  finding,
+  onChanged,
+  onOpenTab,
+}: {
+  base: string;
+  finding: Finding;
+  onChanged: () => void;
+  onOpenTab: (tab: Tab) => void;
+}) {
+  const [lines, setLines] = useState<string[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [formOpen, setFormOpen] = useState(false);
+  const action = finding.action ?? { kind: "manual" as const, label: "See command" };
+
+  function finishStream(stream: { done: Promise<number> }) {
+    stream.done
+      .then((code) => {
+        setBusy(false);
+        if (code !== 0) {
+          setError("The command did not finish cleanly. The output below is what the Base said.");
+        }
+        onChanged();
+      })
+      .catch((err: unknown) => {
+        setBusy(false);
+        setError(err instanceof Error ? err.message : String(err));
+      });
+  }
+
+  function runAction() {
+    if (!action.run) return;
+    if (action.confirm && !window.confirm(action.confirm)) return;
+
+    setBusy(true);
+    setError(null);
+    setLines([]);
+    const collected: string[] = [];
+    const onEvent = (event: StreamEvent) => {
+      if (event.kind === "stdout" || event.kind === "stderr") {
+        collected.push(event.line);
+        setLines([...collected]);
+      }
+    };
+
+    if (action.run === "security scan") {
+      void api
+        .securityScan(base)
+        .then((out) => {
+          setLines(out.trim().split("\n").filter(Boolean));
+          setBusy(false);
+          onChanged();
+        })
+        .catch((err: unknown) => {
+          setBusy(false);
+          setError(err instanceof Error ? err.message : String(err));
+        });
+      return;
+    }
+
+    const streamers: Record<string, () => { done: Promise<number> }> = {
+      "security fix": () => api.securityFix(base, onEvent),
+      "security reboot": () => api.securityReboot(base, onEvent),
+      "security install-scanner": () => api.installScanner(base, onEvent),
+      "self-update": () => api.selfUpdate(base, onEvent),
+      "upgrade --apply": () => api.upgradeApply(base, onEvent),
+    };
+    const start = streamers[action.run];
+    if (!start) {
+      setBusy(false);
+      setError(`Unknown action: ${action.run}`);
+      return;
+    }
+    finishStream(start());
+  }
+
+  return (
+    <li className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-3.5 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <span className="text-sm text-amber-100/90">{finding.summary}</span>
+        <span className="flex items-center gap-2">
+          {action.kind === "run" && (
+            <Button busy={busy} disabled={busy} onClick={runAction}>
+              {action.label}
+            </Button>
+          )}
+          {action.kind === "open" && action.tab && (
+            <Button variant="secondary" onClick={() => onOpenTab(action.tab as Tab)}>
+              {action.label}
+            </Button>
+          )}
+          {action.kind === "form" && (
+            <Button
+              variant={formOpen ? "ghost" : "secondary"}
+              onClick={() => setFormOpen((v) => !v)}
+            >
+              {formOpen ? "Cancel" : action.label}
+            </Button>
+          )}
+          {action.kind === "manual" && (
+            <span className="text-xs text-zinc-500">{finding.fix}</span>
+          )}
+        </span>
+      </div>
+      {action.kind === "form" && formOpen && action.form === "backup-setup" && (
+        <div className="mt-3 border-t border-amber-500/10 pt-3">
+          <BackupSetupForm
+            base={base}
+            onDone={() => {
+              setFormOpen(false);
+              onChanged();
+            }}
+          />
+        </div>
+      )}
+      {action.kind === "form" && formOpen && action.form === "config-setup" && (
+        <div className="mt-3 border-t border-amber-500/10 pt-3">
+          <ConfigSetupForm
+            base={base}
+            onDone={() => {
+              setFormOpen(false);
+              onChanged();
+            }}
+          />
+        </div>
+      )}
+      {action.kind === "form" && formOpen && action.form === "deploy" && action.service && (
+        <div className="mt-3 border-t border-amber-500/10 pt-3">
+          <DeployForm
+            base={base}
+            service={action.service}
+            suggestedRef={action.suggested_ref || "main"}
+            onDone={() => {
+              setFormOpen(false);
+              onChanged();
+            }}
+          />
+        </div>
+      )}
+      {error && (
+        <p className="mt-2 text-xs leading-relaxed text-red-300">{error}</p>
+      )}
+      {lines && lines.length > 0 && (
+        <LogView lines={lines} className="mt-3 max-h-48 w-full" />
+      )}
+    </li>
+  );
+}
+
+/**
+ * Point a Base at its external config repo.
+ *
+ * Order: deploy key (so the Base can clone) → paste the public key on the
+ * host → enter the git URL → optional seed → config setup.
+ */
+export function ConfigSetupForm({
+  base,
+  onDone,
+}: {
+  base: string;
+  onDone: () => void;
+}) {
+  const [repo, setRepo] = useState("");
+  const [ref, setRef] = useState("main");
+  const [init, setInit] = useState(true);
+  const [publicKey, setPublicKey] = useState<string | null>(null);
+  const [busy, setBusy] = useState<"key" | "setup" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+
+  async function loadKey() {
+    setBusy("key");
+    setError(null);
+    try {
+      const host = repo.includes("gitlab")
+        ? "gitlab.com"
+        : repo.includes("bitbucket")
+          ? "bitbucket.org"
+          : "github.com";
+      const r = await api.sshKeyAdd(base, host);
+      setPublicKey(r.public_key);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function runSetup() {
+    if (!repo.trim()) return;
+    setBusy("setup");
+    setError(null);
+    try {
+      await api.configSetup(base, {
+        repo: repo.trim(),
+        ref: ref.trim() || "main",
+        init,
+      });
+      setDone(true);
+      onDone();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs leading-relaxed text-zinc-500">
+        What runs on this Base is decided in a git repo you own. The Base clones
+        it read-only; you commit changes from this computer.
+      </p>
+      <Field label="Config repo URL" hint="git@github.com:you/mybase-config.git">
+        <Input
+          value={repo}
+          onChange={(e) => setRepo(e.target.value)}
+          placeholder="git@github.com:you/mybase-config.git"
+          spellCheck={false}
+          disabled={busy !== null || done}
+        />
+      </Field>
+      <Field label="Branch" hint="Usually main.">
+        <Input
+          value={ref}
+          onChange={(e) => setRef(e.target.value)}
+          placeholder="main"
+          spellCheck={false}
+          disabled={busy !== null || done}
+        />
+      </Field>
+      <label className="flex cursor-pointer items-start gap-3 text-sm text-zinc-300">
+        <input
+          type="checkbox"
+          className="mt-1"
+          checked={init}
+          onChange={(e) => setInit(e.target.checked)}
+          disabled={busy !== null || done}
+        />
+        <span>
+          Seed a starter ownbase.yaml if the repo is empty
+          <span className="mt-0.5 block text-xs text-zinc-500">
+            Postgres with point-in-time recovery. Safe to uncheck if the repo
+            already has a config.
+          </span>
+        </span>
+      </label>
+
+      <div className="space-y-2 rounded-md border border-zinc-800 bg-zinc-950/40 p-3">
+        <p className="text-xs font-medium text-zinc-300">
+          1. Register the Base&apos;s deploy key on the repo
+        </p>
+        <p className="text-xs leading-relaxed text-zinc-500">
+          Read-only. The Base uses this key to clone — different from the owner
+          key you use to SSH in.
+        </p>
+        {!publicKey ? (
+          <Button
+            variant="secondary"
+            busy={busy === "key"}
+            disabled={busy !== null || done}
+            onClick={() => void loadKey()}
+          >
+            Generate deploy key
+          </Button>
+        ) : (
+          <div className="space-y-2">
+            <p className="selectable break-all font-mono text-[11px] text-zinc-300">
+              {publicKey}
+            </p>
+            <CopyButton value={publicKey} label="Copy public key" />
+          </div>
+        )}
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        <Button
+          busy={busy === "setup"}
+          disabled={busy !== null || done || !repo.trim()}
+          onClick={() => void runSetup()}
+        >
+          {done ? "Configured" : "Point Base at this repo"}
+        </Button>
+      </div>
+      {error && <p className="text-xs text-red-300">{error}</p>}
+      {done && (
+        <p className="text-xs text-emerald-300">
+          Config source set. The Base is pulling and reconciling.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function DiffPreview({
+  diff,
+  commitMessage,
+}: {
+  diff: string;
+  commitMessage: string;
+}) {
+  return (
+    <div className="space-y-2">
+      <p className="text-xs text-zinc-400">
+        Commit: <span className="font-mono text-zinc-300">{commitMessage}</span>
+      </p>
+      <pre className="selectable max-h-56 overflow-auto rounded-md border border-zinc-800 bg-zinc-950/60 p-3 font-mono text-[11px] leading-relaxed text-zinc-300">
+        {diff || "(no textual diff)"}
+      </pre>
+    </div>
+  );
+}
+
+function DeployForm({
+  base,
+  service,
+  suggestedRef,
+  onDone,
+}: {
+  base: string;
+  service: string;
+  suggestedRef: string;
+  onDone: () => void;
+}) {
+  const [ref, setRef] = useState(suggestedRef);
+  const [preview, setPreview] = useState<import("../lib/types").ConfigPreview | null>(null);
+  const [busy, setBusy] = useState<"preview" | "apply" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<string | null>(null);
+
+  async function doPreview() {
+    setBusy("preview");
+    setError(null);
+    setPreview(null);
+    try {
+      const p = await api.deployPreview(base, service, ref.trim() || "main");
+      setPreview(p);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function doApply() {
+    if (!preview?.would_change) return;
+    if (
+      !window.confirm(
+        `Commit and push this change to your config repo?\n\n${preview.commit_message}`,
+      )
+    ) {
+      return;
+    }
+    setBusy("apply");
+    setError(null);
+    try {
+      const out = await api.deploy(base, service, ref.trim() || "main");
+      setResult(`Deployed ${out.service} at ${out.ref}.`);
+      onDone();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <Field label={`Ref for ${service}`} hint="Branch, tag, or commit SHA.">
+        <Input
+          value={ref}
+          onChange={(e) => {
+            setRef(e.target.value);
+            setPreview(null);
+          }}
+          placeholder="main"
+          spellCheck={false}
+          disabled={busy !== null}
+        />
+      </Field>
+      <div className="flex flex-wrap gap-2">
+        <Button
+          variant="secondary"
+          busy={busy === "preview"}
+          disabled={busy !== null || !ref.trim()}
+          onClick={() => void doPreview()}
+        >
+          Preview change
+        </Button>
+        {preview && (
+          <Button
+            busy={busy === "apply"}
+            disabled={busy !== null || !preview.would_change}
+            onClick={() => void doApply()}
+          >
+            {preview.would_change ? "Commit and deploy" : "Already current"}
+          </Button>
+        )}
+      </div>
+      {preview && (
+        <DiffPreview diff={preview.diff} commitMessage={preview.commit_message} />
+      )}
+      {error && <p className="text-xs text-red-300">{error}</p>}
+      {result && <p className="text-xs text-emerald-300">{result}</p>}
+    </div>
+  );
+}
+
+function BackupSetupForm({
+  base,
+  onDone,
+}: {
+  base: string;
+  onDone: () => void;
+}) {
+  const [repo, setRepo] = useState("");
+  const [password, setPassword] = useState("");
+  const [awsKey, setAwsKey] = useState("");
+  const [awsSecret, setAwsSecret] = useState("");
+  const [b2AccountID, setB2AccountID] = useState("");
+  const [b2AccountKey, setB2AccountKey] = useState("");
+  const [preview, setPreview] = useState<import("../lib/types").ConfigPreview | null>(null);
+  const [busy, setBusy] = useState<"preview" | "apply" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<string | null>(null);
+
+  const isB2 = repo.trim().toLowerCase().startsWith("b2:");
+  const isS3 = repo.trim().toLowerCase().startsWith("s3:");
+
+  const input = () => ({
+    repo: repo.trim(),
+    password,
+    aws_access_key_id: awsKey || undefined,
+    aws_secret_access_key: awsSecret || undefined,
+    b2_account_id: b2AccountID || undefined,
+    b2_account_key: b2AccountKey || undefined,
+  });
+
+  async function doPreview() {
+    if (!repo.trim()) return;
+    setBusy("preview");
+    setError(null);
+    setPreview(null);
+    try {
+      const p = await api.backupSetupPreview(base, input());
+      setPreview(p);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function doApply() {
+    if (!preview || !password) return;
+    if (!preview.would_change) {
+      // Still store secrets + run first backup, but do not claim a git commit.
+      if (
+        !window.confirm(
+          "ownbase.yaml already has this backup configuration. Store credentials on the Base and run the first snapshot?",
+        )
+      ) {
+        return;
+      }
+    } else if (
+      !window.confirm(
+        `Store backup credentials on the Base and commit this change to your config repo?\n\n${preview.commit_message}\n\nThe restic password is never recoverable from OwnBase — save it somewhere safe.`,
+      )
+    ) {
+      return;
+    }
+    setBusy("apply");
+    setError(null);
+    try {
+      const out = await api.backupSetupRun(base, input());
+      setResult(out.trim() || "Backups configured.");
+      onDone();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <Field
+        label="Restic repository URL"
+        hint="s3:…, b2:…, or sftp:… — off-machine, encrypted."
+      >
+        <Input
+          value={repo}
+          onChange={(e) => {
+            setRepo(e.target.value);
+            setPreview(null);
+          }}
+          placeholder="s3:s3.amazonaws.com/my-bucket/ownbase"
+          spellCheck={false}
+          disabled={busy !== null}
+        />
+      </Field>
+      <Field
+        label="Restic password"
+        hint="Required to apply. Never recoverable from OwnBase — save it."
+      >
+        <Input
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          autoComplete="new-password"
+          disabled={busy !== null}
+        />
+      </Field>
+      {(isS3 || (!isB2 && !repo.trim())) && (
+        <div className="grid gap-3 md:grid-cols-2">
+          <Field label="AWS access key (for s3: repos)">
+            <Input
+              value={awsKey}
+              onChange={(e) => setAwsKey(e.target.value)}
+              spellCheck={false}
+              disabled={busy !== null}
+            />
+          </Field>
+          <Field label="AWS secret key (for s3: repos)">
+            <Input
+              type="password"
+              value={awsSecret}
+              onChange={(e) => setAwsSecret(e.target.value)}
+              autoComplete="off"
+              disabled={busy !== null}
+            />
+          </Field>
+        </div>
+      )}
+      {(isB2 || (!isS3 && !repo.trim())) && (
+        <div className="grid gap-3 md:grid-cols-2">
+          <Field label="B2 account ID (for b2: repos)">
+            <Input
+              value={b2AccountID}
+              onChange={(e) => setB2AccountID(e.target.value)}
+              spellCheck={false}
+              disabled={busy !== null}
+            />
+          </Field>
+          <Field label="B2 application key (for b2: repos)">
+            <Input
+              type="password"
+              value={b2AccountKey}
+              onChange={(e) => setB2AccountKey(e.target.value)}
+              autoComplete="off"
+              disabled={busy !== null}
+            />
+          </Field>
+        </div>
+      )}
+      <div className="flex flex-wrap gap-2">
+        <Button
+          variant="secondary"
+          busy={busy === "preview"}
+          disabled={busy !== null || !repo.trim()}
+          onClick={() => void doPreview()}
+        >
+          Preview change
+        </Button>
+        {preview && (
+          <Button
+            busy={busy === "apply"}
+            disabled={busy !== null || !password}
+            onClick={() => void doApply()}
+          >
+            {preview.would_change ? "Confirm and set up" : "Store credentials and back up"}
+          </Button>
+        )}
+      </div>
+      {preview && (
+        <DiffPreview diff={preview.diff} commitMessage={preview.commit_message} />
+      )}
+      {error && <p className="text-xs text-red-300">{error}</p>}
+      {result && (
+        <LogView lines={result.split("\n")} className="max-h-48 w-full" />
+      )}
     </div>
   );
 }
@@ -668,21 +1270,57 @@ function ServiceRow({ service }: { service: ServiceStatus }) {
 // Security
 // ---------------------------------------------------------------------------
 
-function Security({ base, status }: { base: BaseSummary; status: BaseStatus }) {
-  const { exposure, access, vulns, drift_detected, drift_count, drift_files } =
-    status.security;
+function Security({
+  base,
+  status,
+  onChanged,
+}: {
+  base: BaseSummary;
+  status: BaseStatus;
+  onChanged: () => void;
+}) {
+  const {
+    exposure,
+    access,
+    vulns,
+    drift_detected,
+    drift_count,
+    drift_files,
+    reboot_required,
+    reboot_packages,
+  } = status.security;
 
   return (
     <div className="space-y-5">
+      {reboot_required && (
+        <Panel
+          title="Reboot required"
+          subtitle="Applied packages need a reboot to take effect — usually a new kernel."
+          action={<RebootAction base={base.name} onChanged={onChanged} />}
+        >
+          <p className="text-sm leading-relaxed text-zinc-400">
+            Until the machine restarts, the CVE scan can report clean while the
+            still-running kernel is the vulnerable one. Every service will drop
+            for about 30–60 seconds.
+          </p>
+          {reboot_packages && reboot_packages.length > 0 && (
+            <p className="selectable mt-2 font-mono text-xs leading-relaxed text-zinc-500">
+              {reboot_packages.join("  ")}
+            </p>
+          )}
+        </Panel>
+      )}
+
       <Panel
         title="Network exposure"
         subtitle="What this machine believes is reachable from the internet."
       >
         {!exposure.available ? (
           <Unavailable>
-            The scan could not run — it needs <code className="font-mono">ss</code> and{" "}
-            <code className="font-mono">ufw</code>, which a Base has and a dev machine
-            may not. Treat this as unknown rather than clear.
+            No exposure inventory yet. The Base probes with{" "}
+            <code className="font-mono">ss</code> and{" "}
+            <code className="font-mono">ufw</code> after each reconcile — treat this as
+            unknown rather than clear until the first probe lands.
           </Unavailable>
         ) : (
           <>
@@ -735,8 +1373,9 @@ function Security({ base, status }: { base: BaseSummary; status: BaseStatus }) {
       <Panel title="SSH access" subtitle="Who got in, and who kept failing to.">
         {!access.available ? (
           <Unavailable>
-            The monitor could not run — it reads fail2ban and the journal, neither of
-            which is present here.
+            No SSH access data yet. The Base reads fail2ban and the journal after each
+            reconcile — treat this as unknown rather than clear until the first probe
+            lands.
           </Unavailable>
         ) : (
           <>
@@ -782,9 +1421,10 @@ function Security({ base, status }: { base: BaseSummary; status: BaseStatus }) {
         title="Known vulnerabilities"
         subtitle={
           vulns.scanned_at
-            ? `Last scanned ${ago(vulns.scanned_at)}.`
-            : "Scanned daily by the Base."
+            ? `Last scanned ${ago(vulns.scanned_at)}. Only CVEs with a published patch are actionable.`
+            : "Scanned daily by the Base. Only CVEs with a published patch are actionable."
         }
+        action={<RescanAction base={base.name} onChanged={onChanged} />}
       >
         {!vulns.available ? (
           <Unavailable>
@@ -794,48 +1434,37 @@ function Security({ base, status }: { base: BaseSummary; status: BaseStatus }) {
           </Unavailable>
         ) : (
           <>
-            <Row label="Host OS">
-              <Severities summary={vulns.host} />
-            </Row>
-            {vulns.images?.map((image) => (
-              <Row key={image.service} label={image.service} title={image.image}>
-                {image.scan_failed ? (
+            <VulnTarget
+              label="Host OS"
+              summary={vulns.host}
+              defaultOpen
+              fixHint={
+                (vulns.host.fixable_critical ?? 0) + (vulns.host.fixable_high ?? 0) > 0
+                  ? `Apply host patches with ownbasectl security fix ${base.name}`
+                  : undefined
+              }
+            />
+            {vulns.images?.map((image) =>
+              image.scan_failed ? (
+                <Row key={image.service} label={image.service} title={image.image}>
                   <span className="text-amber-300">
                     scan failed{image.scan_error ? ` — ${image.scan_error}` : ""}
                   </span>
-                ) : (
-                  <Severities summary={image.summary} />
-                )}
-              </Row>
-            ))}
-            {vulns.host.top && vulns.host.top.length > 0 && (
-              <ul className="mt-3 divide-y divide-zinc-800 border-t border-zinc-800">
-                {vulns.host.top.slice(0, 8).map((finding) => (
-                  <li key={finding.vuln_id} className="py-2 text-xs">
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="selectable font-mono text-zinc-300">
-                        {finding.vuln_id}
-                      </span>
-                      <Badge
-                        tone={finding.severity.toUpperCase() === "CRITICAL" ? "bad" : "warn"}
-                      >
-                        {finding.severity.toLowerCase()}
-                      </Badge>
-                    </div>
-                    <p className="mt-0.5 text-zinc-500">
-                      {finding.package}
-                      {finding.version ? ` ${finding.version}` : ""}
-                      {finding.fixed_in
-                        ? ` → fixed in ${finding.fixed_in}`
-                        : " — no fix published yet"}
-                    </p>
-                  </li>
-                ))}
-              </ul>
+                </Row>
+              ) : (
+                <VulnTarget
+                  key={image.service}
+                  label={image.service}
+                  title={image.image}
+                  summary={image.summary}
+                />
+              ),
             )}
             <p className="mt-3 text-xs leading-relaxed text-zinc-500">
-              Apply the fixes that exist with{" "}
-              <CommandLine>ownbasectl security fix {base.name}</CommandLine>.
+              A CVE with no published patch clears when Ubuntu (or the image
+              upstream) ships one — there is nothing to run in the meantime.
+              Host packages with a patch, core-image CVEs, and service updates
+              are actionable from Overview.
             </p>
           </>
         )}
@@ -861,8 +1490,9 @@ function Security({ base, status }: { base: BaseSummary; status: BaseStatus }) {
               </p>
             )}
             <p className="mt-3 text-xs leading-relaxed text-zinc-500">
-              Any difference is a signal worth understanding — compare against the
-              desired state with <CommandLine>ownbasectl plan</CommandLine>.
+              Any difference is a signal worth understanding. The daemon is the
+              only writer of generated files — a drift means something else
+              changed them.
             </p>
           </>
         )}
@@ -874,14 +1504,190 @@ function Security({ base, status }: { base: BaseSummary; status: BaseStatus }) {
 function Severities({ summary }: { summary: VulnSummary }) {
   const total = summary.critical + summary.high + summary.medium + summary.low;
   if (total === 0) return <span className="text-emerald-300">none found</span>;
+  const fixable =
+    (summary.fixable_critical ?? 0) + (summary.fixable_high ?? 0);
+  const unfixed =
+    summary.critical + summary.high - fixable;
   return (
-    <span className="inline-flex items-center gap-2">
+    <span className="inline-flex flex-wrap items-center gap-2">
       {summary.critical > 0 && <Badge tone="bad">{summary.critical} critical</Badge>}
       {summary.high > 0 && <Badge tone="warn">{summary.high} high</Badge>}
       <span className="text-xs text-zinc-500">
         {summary.medium + summary.low} lower
+        {summary.critical + summary.high > 0 && (
+          <>
+            {" · "}
+            {fixable > 0 ? (
+              <span className="text-amber-300">{fixable} with a patch</span>
+            ) : (
+              "none with a patch"
+            )}
+            {unfixed > 0 && <> · {unfixed} with none published</>}
+          </>
+        )}
       </span>
     </span>
+  );
+}
+
+/** One scan target (host or image) with an expandable top-findings list. */
+function VulnTarget({
+  label,
+  title,
+  summary,
+  defaultOpen = false,
+  fixHint,
+}: {
+  label: string;
+  title?: string;
+  summary: VulnSummary;
+  defaultOpen?: boolean;
+  fixHint?: string;
+}) {
+  const top = summary.top ?? [];
+  const [open, setOpen] = useState(defaultOpen && top.length > 0);
+  const hasTop = top.length > 0;
+
+  return (
+    <div className="border-b border-zinc-800 py-2 last:border-b-0">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <button
+          type="button"
+          className={cx(
+            "flex min-w-0 items-center gap-2 text-left text-sm text-zinc-200",
+            hasTop && "cursor-pointer hover:text-zinc-50",
+          )}
+          onClick={() => hasTop && setOpen((v) => !v)}
+          disabled={!hasTop}
+          title={title}
+        >
+          {hasTop && (
+            <span className="font-mono text-xs text-zinc-500">{open ? "▾" : "▸"}</span>
+          )}
+          <span className="truncate">{label}</span>
+        </button>
+        <Severities summary={summary} />
+      </div>
+      {open && hasTop && (
+        <div className="mt-2">
+          <VulnList findings={top} />
+          {top.length >= 20 && (
+            <p className="mt-1 text-xs text-zinc-500">
+              Showing the 20 most severe. Medium and low are counted above but not listed.
+            </p>
+          )}
+          {fixHint && (
+            <p className="mt-2 text-xs text-zinc-500">{fixHint}</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function VulnList({
+  findings,
+}: {
+  findings: NonNullable<VulnSummary["top"]>;
+}) {
+  return (
+    <ul className="divide-y divide-zinc-800 border-t border-zinc-800">
+      {findings.map((finding) => (
+        <li key={`${finding.vuln_id}-${finding.package}`} className="py-2 text-xs">
+          <div className="flex items-center justify-between gap-3">
+            <span className="selectable font-mono text-zinc-300">{finding.vuln_id}</span>
+            <Badge tone={finding.severity.toUpperCase() === "CRITICAL" ? "bad" : "warn"}>
+              {finding.severity.toLowerCase()}
+            </Badge>
+          </div>
+          <p className="mt-0.5 text-zinc-500">
+            {finding.package}
+            {finding.version ? ` ${finding.version}` : ""}
+            {finding.fixed_in
+              ? ` → fixed in ${finding.fixed_in}`
+              : " — no fix published yet"}
+          </p>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function RescanAction({ base, onChanged }: { base: string; onChanged: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  async function rescan() {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const out = await api.securityScan(base);
+      setMsg(out.trim() || "Scan started.");
+      onChanged();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <Button variant="secondary" busy={busy} onClick={() => void rescan()}>
+        Rescan
+      </Button>
+      {msg && <p className="max-w-xs text-right text-xs text-zinc-500">{msg}</p>}
+    </div>
+  );
+}
+
+function RebootAction({ base, onChanged }: { base: string; onChanged: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [lines, setLines] = useState<string[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  function reboot() {
+    if (
+      !window.confirm(
+        "Every service on this Base will stop and restart with the machine. The outage is typically 30–60 seconds. Reboot now?",
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setLines([]);
+    const collected: string[] = [];
+    const stream = api.securityReboot(base, (event: StreamEvent) => {
+      if (event.kind === "stdout" || event.kind === "stderr") {
+        collected.push(event.line);
+        setLines([...collected]);
+      }
+    });
+    stream.done
+      .then((code) => {
+        setBusy(false);
+        if (code !== 0) {
+          setError("The reboot command did not finish cleanly.");
+        }
+        onChanged();
+      })
+      .catch((err: unknown) => {
+        setBusy(false);
+        setError(err instanceof Error ? err.message : String(err));
+      });
+  }
+
+  return (
+    <div className="flex flex-col items-end gap-2">
+      <Button variant="danger" busy={busy} onClick={reboot}>
+        Reboot now
+      </Button>
+      {error && <p className="max-w-xs text-right text-xs text-red-300">{error}</p>}
+      {lines && lines.length > 0 && (
+        <LogView lines={lines} className="max-h-32 w-full min-w-[20rem]" />
+      )}
+    </div>
   );
 }
 
@@ -900,6 +1706,7 @@ function Backups({
 }) {
   const { last_backup, last_verified, backup_restorable } = status.security;
   const configured = Boolean(last_backup);
+  const hasConfig = Boolean(status.config?.repo_url);
 
   return (
     <div className="space-y-5">
@@ -911,12 +1718,21 @@ function Backups({
         }
       >
         {!configured ? (
-          <Unavailable>
-            No snapshot has ever been taken, so there is no way back from a lost disk.
-            Turn backups on with{" "}
-            <CommandLine>ownbasectl backup setup {base.name}</CommandLine> — they go
-            to an encrypted off-machine repository you own (S3, B2, or SFTP).
-          </Unavailable>
+          <div className="space-y-4">
+            <p className="text-sm leading-relaxed text-zinc-400">
+              No snapshot has ever been taken, so there is no way back from a lost
+              disk. Backups go to an encrypted off-machine repository you own
+              (S3, B2, or SFTP).
+            </p>
+            {hasConfig ? (
+              <BackupSetupForm base={base.name} onDone={onChanged} />
+            ) : (
+              <Unavailable>
+                Set up a config repo first (Overview) — backup settings are
+                committed to ownbase.yaml.
+              </Unavailable>
+            )}
+          </div>
         ) : (
           <>
             <Row label="Last snapshot" title={absolute(last_backup)}>
@@ -1028,19 +1844,32 @@ function BackupActions({ base, onChanged }: { base: string; onChanged: () => voi
 // Updates
 // ---------------------------------------------------------------------------
 
-function Updates({ base, status }: { base: BaseSummary; status: BaseStatus }) {
+function driftStatusLine(d: ServiceDrift): string {
+  if (d.up_to_date) return "up to date";
+  if (d.commits_behind > 0) {
+    const behind = `${d.commits_behind} commit${d.commits_behind === 1 ? "" : "s"} behind ${d.branch || "the default branch"}`;
+    return d.newest_tag ? `${behind} · newest tag ${d.newest_tag}` : behind;
+  }
+  if (d.newest_tag) return `newer tag available (${d.newest_tag})`;
+  return "behind its source repo";
+}
+
+function Updates({
+  base,
+  status,
+  onChanged,
+}: {
+  base: BaseSummary;
+  status: BaseStatus;
+  onChanged: () => void;
+}) {
   const drift = status.updates.drift ?? [];
-  // Naming one specific service makes the suggested command copy-pasteable
-  // instead of a template the reader has to fill in.
-  const stale = drift.find((d) => !d.up_to_date);
-  const example = stale
-    ? `ownbasectl deploy ${base.name} ${stale.service} --ref ${stale.newest_tag || stale.branch || "main"}`
-    : null;
+  const [openFor, setOpenFor] = useState<string | null>(null);
 
   return (
     <Panel
       title="Service updates"
-      subtitle="How far each service is from its source repo. Updating is your call, never automatic."
+      subtitle="How far each service is from its source repo. Updating commits a pin to your config repo after you confirm the diff."
     >
       {drift.length === 0 ? (
         <Unavailable>
@@ -1048,36 +1877,53 @@ function Updates({ base, status }: { base: BaseSummary; status: BaseStatus }) {
           own schedule and reports what it finds here.
         </Unavailable>
       ) : (
-        <>
-          <ul className="divide-y divide-zinc-800">
-            {drift.map((d) => (
-              <li key={d.service} className="py-3 first:pt-0 last:pb-0">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <span className="flex items-center gap-2 text-sm text-zinc-200">
-                    <Dot tone={d.up_to_date ? "good" : "warn"} />
-                    {d.service}
-                  </span>
+        <ul className="divide-y divide-zinc-800">
+          {drift.map((d) => (
+            <li key={d.service} className="py-3 first:pt-0 last:pb-0">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <span className="flex items-center gap-2 text-sm text-zinc-200">
+                  <Dot tone={d.up_to_date ? "good" : "warn"} />
+                  {d.service}
+                </span>
+                <span className="flex items-center gap-3">
                   <span className="font-mono text-xs text-zinc-500" title={d.ref}>
                     @{shortRef(d.ref)}
                   </span>
+                  {!d.up_to_date && (
+                    <Button
+                      variant="secondary"
+                      onClick={() =>
+                        setOpenFor((cur) => (cur === d.service ? null : d.service))
+                      }
+                    >
+                      {openFor === d.service ? "Cancel" : "Update"}
+                    </Button>
+                  )}
+                </span>
+              </div>
+              <p className="mt-1 pl-4 text-xs text-zinc-500">
+                {driftStatusLine(d)}
+              </p>
+              {openFor === d.service && (
+                <div className="mt-3 pl-4">
+                  <DeployForm
+                    base={base.name}
+                    service={d.service}
+                    suggestedRef={pickDeployRef(
+                      d.commits_behind,
+                      d.branch,
+                      d.newest_tag,
+                    )}
+                    onDone={() => {
+                      setOpenFor(null);
+                      onChanged();
+                    }}
+                  />
                 </div>
-                <p className="mt-1 pl-4 text-xs text-zinc-500">
-                  {d.up_to_date
-                    ? "up to date"
-                    : `${d.commits_behind} commit${d.commits_behind === 1 ? "" : "s"} behind ${d.branch || "the default branch"}`}
-                  {d.newest_tag && ` · newest tag ${d.newest_tag}`}
-                </p>
-              </li>
-            ))}
-          </ul>
-          {example && (
-            <p className="mt-4 text-xs leading-relaxed text-zinc-500">
-              To move one forward: <CommandLine>{example}</CommandLine>. That resolves
-              the ref to a concrete commit and commits it to your config repo, so what
-              is deployed stays written down.
-            </p>
-          )}
-        </>
+              )}
+            </li>
+          ))}
+        </ul>
       )}
     </Panel>
   );

@@ -49,8 +49,21 @@ func bootstrapCore(ctx context.Context, cfg agentConfig, coreCfg schema.CoreConf
 
 	quadletDir := agentQuadletDir()
 
+	// 0. The hardened Caddy image is built on the Base (see EnsureCaddyImage).
+	// We deliberately do NOT build it here: the first build downloads a Go
+	// toolchain and can take minutes, and bootstrapCore runs before the
+	// status API listens. Building here would make every client call
+	// (including POST /reconcile after deploy) fail until the build finished.
+	// EnsureCaddyImage is invoked after the API is up, and upgrade --apply
+	// rebuilds on demand.
+	//
+	// Until that image exists, keep any already-installed Image= line so a
+	// unit rewrite does not systemctl-restart a working registry Caddy onto
+	// a missing localhost tag (HTTPS would stay down for the whole build).
+
 	// 1. Generate core Quadlet units from the pinned manifest.
 	coreOut := core.BuildCoreOutput(coreCfg, core.Current, hasPublicDomain)
+	localCaddyReady := core.CaddyImagePresent()
 
 	// 2. Install core unit files to the Quadlet directory, noting which ones
 	// actually changed — e.g. Caddy's .container unit gains or loses its
@@ -66,6 +79,9 @@ func bootstrapCore(ctx context.Context, cfg agentConfig, coreCfg schema.CoreConf
 	for name, content := range coreOut.QuadletUnits {
 		dst := filepath.Join(quadletDir, name)
 		existing, _ := os.ReadFile(dst) // ignore error: absent means "changed" (first write)
+		if !localCaddyReady && len(existing) > 0 && strings.HasSuffix(name, ".container") {
+			content = core.WithPreservedImageLine(string(existing), content)
+		}
 		if string(existing) != content {
 			changedUnits[name] = true
 			anyChanged = true

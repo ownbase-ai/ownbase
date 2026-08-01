@@ -46,7 +46,21 @@ const SIDECAR: &str = "ownbasectl";
 /// the shape of thing this list exists to keep out of the webview's reach.
 /// The app reads *recordings* of sessions; it does not open them.
 const ALLOWED: &[&str] = &[
-    "adopt", "agent", "backup", "checkup", "create", "delete", "keygen", "list", "sessions",
+    "adopt",
+    "agent",
+    "backup",
+    "checkup",
+    "config",
+    "create",
+    "delete",
+    "deploy",
+    "keygen",
+    "list",
+    "security",
+    "self-update",
+    "sessions",
+    "ssh-key",
+    "upgrade",
     "vault",
 ];
 
@@ -229,8 +243,22 @@ mod tests {
     #[test]
     fn allows_every_subcommand_api_ts_calls() {
         for cmd in [
-            "adopt", "agent", "backup", "checkup", "create", "delete", "keygen", "list",
-            "sessions", "vault",
+            "adopt",
+            "agent",
+            "backup",
+            "checkup",
+            "config",
+            "create",
+            "delete",
+            "deploy",
+            "keygen",
+            "list",
+            "security",
+            "self-update",
+            "sessions",
+            "ssh-key",
+            "upgrade",
+            "vault",
         ] {
             assert!(
                 check_allowed(&args(&[cmd])).is_ok(),
@@ -245,8 +273,7 @@ mod tests {
         // the allowlist is the XSS boundary, so they must stay out until one
         // does — see the ALLOWED doc comment.
         for cmd in [
-            "deploy", "config", "secrets", "restore", "service", "security", "status", "updates",
-            "upgrade", "ssh-key", "db", "version",
+            "secrets", "restore", "service", "status", "updates", "db", "version",
         ] {
             assert!(
                 check_allowed(&args(&[cmd])).is_err(),

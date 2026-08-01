@@ -30,10 +30,17 @@ const trivySourcesContent = "deb [signed-by=/usr/share/keyrings/trivy.gpg] https
 // CLI.
 const podmanSocketUnit = "podman.socket"
 
-// ensureTrivy installs trivy if it is not already present, and enables the
-// Podman API socket it needs to actually scan images. Returns a StepStatus —
-// never returns an error to PassZero so a transient network failure or
-// missing curl/gpg does not block the daemon from starting.
+// EnsureTrivy installs trivy if it is not already present, and enables the
+// Podman API socket it needs to actually scan images. Exported so the
+// /security/scanner/install API can re-run the same path the bootstrap uses.
+//
+// Returns a StepStatus — PassZero treats a non-nil Err as non-fatal so a
+// transient network failure does not block the daemon from starting.
+func EnsureTrivy(ctx context.Context, cfg PassZeroConfig) StepStatus {
+	return ensureTrivy(ctx, cfg)
+}
+
+// ensureTrivy is the unexported implementation shared by PassZero and the API.
 func ensureTrivy(ctx context.Context, cfg PassZeroConfig) StepStatus {
 	if s := checkTrivyState(ctx); s.Done {
 		return s
