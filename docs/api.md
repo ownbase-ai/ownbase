@@ -145,6 +145,22 @@ Behind `ownbasectl security reboot`. Schedules `shutdown -r +1` so the `---OK---
 
 The reboot-required state itself is exposed on `GET /status` as `security.reboot_required` and `security.reboot_packages` (from `/var/run/reboot-required[.pkgs]`).
 
+### `POST /security/scanner/install` — install trivy
+
+Behind `ownbasectl security install-scanner`. Runs the same path PassZero uses at bootstrap (Aqua apt repo + `podman.socket`). **Streams** progress as `text/plain`, ending with `---OK---`. Records a `host.install_scanner` audit action and triggers a CVE scan on success.
+
+### `GET /version` — running daemon version
+
+```json
+{"version": "v0.4.0"}
+```
+
+Also exposed as `version` on `GET /status`.
+
+### `POST /self-update` — replace the daemon binary
+
+Behind `ownbasectl self-update`. Body: `{"version":"latest"}` (or a release tag). Downloads the signed binary from `releases.ownbase.ai`, verifies minisign, atomically renames over `/opt/ownbase/bin/ownbased`, writes `---OK---`, then exits so systemd `Restart=always` boots the new process. Records a `host.self_update` audit action.
+
 ---
 
 ## Config

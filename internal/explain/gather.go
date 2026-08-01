@@ -18,6 +18,9 @@ import (
 // All fields are optional — Gather produces a best-effort status for whatever
 // is provided. The zero value is safe and results in a minimal status.
 type GatherInput struct {
+	// Version is the running ownbased binary's release tag (e.g. "v0.4.0").
+	Version string
+
 	// Config is the parsed ownbase.yaml. When nil, Services will be empty.
 	Config *schema.OwnbaseConfig
 
@@ -79,6 +82,7 @@ func Gather(in GatherInput) *BaseStatus {
 	s := &BaseStatus{
 		GeneratedAt:   time.Now().UTC(),
 		SchemaVersion: StatusSchemaVersion,
+		Version:       in.Version,
 	}
 
 	if in.Config != nil {

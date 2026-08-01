@@ -29,6 +29,9 @@ const DefaultAuditMaxRecords = 20
 type BaseStatus struct {
 	GeneratedAt   time.Time `json:"generated_at"`
 	SchemaVersion string    `json:"schema_version"`
+	// Version is the running ownbased binary's release tag (e.g. "v0.4.0"),
+	// or "dev" for unreleased builds. Empty on daemons that predate the field.
+	Version string `json:"version,omitempty"`
 	// Config is the external config repo this Base tracks. Omitted when
 	// `ownbasectl config setup` has never run on this machine — the vault
 	// profile can also hold a copy for client-side commits, but the Base is

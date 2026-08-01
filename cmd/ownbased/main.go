@@ -1,6 +1,9 @@
 // Command ownbased is the on-Base daemon: reconcile, watch, explain,
 // recover. It implements the "thermostat loop" from the Reconstruction Model:
 //
+// Build metadata is injected at release via
+// -ldflags "-X main.version=...".
+//
 //	desired = compile(checkout, secrets)
 //	current = query(podman, systemd)
 //	reconcile(desired, current)
@@ -49,6 +52,7 @@ import (
 	"github.com/ownbase/ownbase/internal/schema"
 	"github.com/ownbase/ownbase/internal/secrets"
 	"github.com/ownbase/ownbase/internal/secwatch"
+	"github.com/ownbase/ownbase/internal/selfupdate"
 	"github.com/ownbase/ownbase/internal/update"
 	"github.com/ownbase/ownbase/internal/vulnscan"
 )
@@ -77,7 +81,21 @@ const (
 	DefaultStatusAddr = "127.0.0.1:7070"
 )
 
+// version is injected at release via -ldflags "-X main.version=vX.Y.Z".
+// "dev" means an unreleased / locally-built binary.
+var version = "dev"
+
 func main() {
+	// --version is handled before flag.Parse so it works even when other
+	// required paths would fail. Used by selfupdate to identify a just-
+	// downloaded binary.
+	for _, a := range os.Args[1:] {
+		if a == "--version" || a == "-version" {
+			fmt.Printf("ownbased %s\n", version)
+			os.Exit(0)
+		}
+	}
+
 	fs := flag.NewFlagSet("ownbased", flag.ExitOnError)
 	checkoutPath := fs.String("checkout", DefaultCheckoutPath,
 		"path to the ownbase checkout (contains ownbase.yaml)")
@@ -349,9 +367,10 @@ func run(cfg agentConfig) error {
 		mux.Handle("/health", statusHandler)
 		// Mount management API (secrets, credentials, token reset) — M15.
 		explain.MountAPI(mux, explain.APIConfig{
-			SecretsDir: explain.DefaultSecretsDir,
-			StatusSrv:  statusSrv,
-			AuditLog:   auditLog,
+			SecretsDir:    explain.DefaultSecretsDir,
+			StatusSrv:     statusSrv,
+			AuditLog:      auditLog,
+			DaemonVersion: version,
 			// TriggerScan delegates to triggerScan, which is assigned below
 			// once ctx and vulnResultCh are available. Returns false if the daemon
 			// is still initialising and the scan goroutine is not yet wired.
@@ -369,6 +388,22 @@ func run(cfg agentConfig) error {
 				if notifyReboot != nil {
 					notifyReboot(r)
 				}
+			},
+			// SelfUpdate downloads a signed ownbased binary, swaps it in place,
+			// and signals the handler to exit so systemd Restart=always boots
+			// the new inode.
+			SelfUpdate: func(w io.Writer, want string) (bool, error) {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+				defer cancel()
+				res, err := selfupdate.Apply(ctx, selfupdate.Options{
+					Version:        want,
+					CurrentVersion: version,
+					Writer:         w,
+				})
+				if err != nil {
+					return false, err
+				}
+				return res.RestartPending, nil
 			},
 			// UpgradeCore pulls the latest pinned image for Caddy (the sole
 			// core package) and restarts it. Progress is written to w for
@@ -426,12 +461,22 @@ func run(cfg agentConfig) error {
 					).Output(); err == nil {
 						running = strings.TrimSpace(string(state)) == "true"
 					}
+					// RunningDigest is what the container is actually executing.
+					// Compared to Digest (the pin) to decide whether upgrade
+					// --apply would change anything.
+					runningDigest := ""
+					if dig, err := exec.Command(
+						"podman", "inspect", "--format", "{{.ImageDigest}}", pkg.container,
+					).Output(); err == nil {
+						runningDigest = strings.TrimSpace(string(dig))
+					}
 					out = append(out, explain.CorePackageStatus{
-						Name:      pkg.name,
-						Container: pkg.container,
-						Image:     pkg.image,
-						Digest:    pkg.digest,
-						Running:   running,
+						Name:          pkg.name,
+						Container:     pkg.container,
+						Image:         pkg.image,
+						Digest:        pkg.digest,
+						RunningDigest: runningDigest,
+						Running:       running,
 					})
 				}
 				return out
@@ -697,6 +742,7 @@ func run(cfg agentConfig) error {
 		}
 
 		status := explain.Gather(explain.GatherInput{
+			Version:           version,
 			Config:            state.Config,
 			RunningContainers: state.Current.RunningContainers,
 			BackupStatus:      backupStatus,

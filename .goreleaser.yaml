@@ -52,7 +52,9 @@ builds:
     flags:
       - -trimpath
     ldflags:
-      - -s -w
+      # version keeps the leading v ({{ .Tag }}) so self-update and
+      # isReleaseBuild agree on the pin path under releases.ownbase.ai.
+      - -s -w -X main.version={{.Tag}}
 
 archives:
   # CLI: tar.gz archives for GitHub Releases / direct download.

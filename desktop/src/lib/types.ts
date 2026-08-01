@@ -88,19 +88,41 @@ export interface Checkup {
  * How to address a finding — cmd/ownbasectl.checkupAction.
  *
  * The CLI decides the kind so the app never reimplements the rule:
- * - `run` — the app finishes it (security fix / scan / reboot)
+ * - `run` — the app finishes it (security fix / scan / reboot / self-update)
  * - `open` — open a tab and read (nothing to execute)
- * - `manual` — show the command; the fix changes desired state or needs input
+ * - `form` — open a named form flow that still ends in a CLI call
+ * - `manual` — genuine dead-end; plain text only
  */
 export interface FindingAction {
-  kind: "run" | "open" | "manual";
+  kind: "run" | "open" | "form" | "manual";
   /** ownbasectl subcommand path without the binary or base, e.g. "security fix". */
   run?: string;
   /** Desktop tab to open for kind=open. */
   tab?: "security" | "backups" | "updates";
+  /** Named form flow for kind=form. */
+  form?: "backup-setup" | "deploy";
+  /** Service the form targets (deploy). */
+  service?: string;
+  /** Default --ref for deploy. */
+  suggested_ref?: string;
+  /** Dry-run and show the diff before committing. */
+  preview?: boolean;
   label: string;
-  /** Prose shown before a run that has a cost (reboot). */
+  /** Prose shown before a run that has a cost (reboot / self-update). */
   confirm?: string;
+}
+
+/** Dry-run preview from deploy / backup setup --dry-run --json. */
+export interface ConfigPreview {
+  status: string;
+  would_change: boolean;
+  commit_message: string;
+  diff: string;
+  current?: string;
+  proposed?: string;
+  service?: string;
+  ref?: string;
+  repo?: string;
 }
 
 /** One problem and how to address it — cmd/ownbasectl.checkupFinding */
@@ -121,6 +143,8 @@ export interface VerifyResult {
 export interface BaseStatus {
   generated_at: string;
   schema_version: string;
+  /** Running ownbased release tag, e.g. "v0.4.0". */
+  version?: string;
   /** External config repo the Base tracks — preferred over the vault profile. */
   config?: ConfigSourceStatus;
   services?: ServiceStatus[];

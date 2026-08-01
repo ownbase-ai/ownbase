@@ -334,14 +334,15 @@ ownbasectl updates mybase
 ownbasectl updates mybase --json      # only the "updates" section
 ```
 
-### `security <name>` / `security scan` / `security fix` / `security reboot`
+### `security <name>` / `security scan` / `security fix` / `security reboot` / `security install-scanner`
 
 ```
-ownbasectl security mybase            # exposure + SSH access + CVE report
-ownbasectl security mybase --json     # only the "security" section
-ownbasectl security scan mybase       # immediate CVE rescan (~2–5 min)
-ownbasectl security fix mybase        # apt-get upgrade on the Base, streamed
-ownbasectl security reboot mybase     # reboot so applied packages take effect
+ownbasectl security mybase                    # exposure + SSH access + CVE report
+ownbasectl security mybase --json             # only the "security" section
+ownbasectl security scan mybase               # immediate CVE rescan (~2–5 min)
+ownbasectl security fix mybase                # apt-get upgrade on the Base, streamed
+ownbasectl security reboot mybase             # reboot so applied packages take effect
+ownbasectl security install-scanner mybase    # install trivy + enable podman.socket
 ```
 
 `security fix` only moves CVEs that have a published patch. Unfixed counts
@@ -354,8 +355,22 @@ kernel is still running; `security reboot` is what closes that gap
 |---|---|
 | Host OS packages with a patch | `ownbasectl security fix <name>` — auto-rescans after; may leave a reboot required |
 | Reboot required | `ownbasectl security reboot <name>` |
-| Caddy image | `ownbasectl upgrade <name> --apply` — auto-rescans after |
+| Scanner missing | `ownbasectl security install-scanner <name>` |
+| Caddy image CVE | `ownbasectl self-update <name>` — the pin lives in the daemon binary |
+| Service image CVE / behind source | `ownbasectl deploy <name> <svc> --ref <tag>` (use `--dry-run --json` first) |
 | Image CVE with no fix available | Wait for the upstream maintainer |
+
+### `self-update <name>`
+
+```
+ownbasectl self-update mybase
+ownbasectl self-update mybase --version v0.4.1
+```
+
+Downloads a signed `ownbased` from the release server, verifies the minisign
+signature, atomically replaces `/opt/ownbase/bin/ownbased`, and lets systemd
+`Restart=always` boot the new process. This is how a Base picks up a newer
+Caddy pin — `core.Current` is compiled into the daemon.
 
 ### `upgrade <name>`
 

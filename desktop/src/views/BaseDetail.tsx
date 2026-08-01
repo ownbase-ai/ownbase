@@ -1,6 +1,5 @@
 import { useCallback, useState } from "react";
 
-import { CopyButton } from "../components/CopyButton";
 import {
   Badge,
   Button,
@@ -148,7 +147,7 @@ function Body({
     case "backups":
       return <Backups base={base} status={status} onChanged={onChanged} />;
     case "updates":
-      return <Updates base={base} status={status} />;
+      return <Updates base={base} status={status} onChanged={onChanged} />;
     case "activity":
       return <Activity status={status} />;
   }
@@ -395,11 +394,10 @@ function Overview({
 /**
  * One finding and the control that addresses it.
  *
- * The CLI decided the kind (`run` / `open` / `manual`); this component only
- * switches on it. `run` streams into a LogView below the row the way the
- * backup drill does. `open` jumps to a tab. `manual` shows the command —
- * those are the cases where the fix changes desired state or needs input the
- * app will not drive.
+ * The CLI decided the kind (`run` / `open` / `form` / `manual`); this
+ * component only switches on it. `run` streams into a LogView. `open` jumps
+ * to a tab. `form` expands an inline form that dry-runs then confirms. 
+ * `manual` is plain text — a genuine dead-end with no in-app path.
  */
 function FindingRow({
   base,
@@ -415,7 +413,23 @@ function FindingRow({
   const [lines, setLines] = useState<string[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const action = finding.action;
+  const [formOpen, setFormOpen] = useState(false);
+  const action = finding.action ?? { kind: "manual" as const, label: "See command" };
+
+  function finishStream(stream: { done: Promise<number> }) {
+    stream.done
+      .then((code) => {
+        setBusy(false);
+        if (code !== 0) {
+          setError("The command did not finish cleanly. The output below is what the Base said.");
+        }
+        onChanged();
+      })
+      .catch((err: unknown) => {
+        setBusy(false);
+        setError(err instanceof Error ? err.message : String(err));
+      });
+  }
 
   function runAction() {
     if (!action.run) return;
@@ -425,7 +439,6 @@ function FindingRow({
     setError(null);
     setLines([]);
     const collected: string[] = [];
-
     const onEvent = (event: StreamEvent) => {
       if (event.kind === "stdout" || event.kind === "stderr") {
         collected.push(event.line);
@@ -433,7 +446,6 @@ function FindingRow({
       }
     };
 
-    // `security scan` returns immediately; the others stream for minutes.
     if (action.run === "security scan") {
       void api
         .securityScan(base)
@@ -449,23 +461,20 @@ function FindingRow({
       return;
     }
 
-    const stream =
-      action.run === "security reboot"
-        ? api.securityReboot(base, onEvent)
-        : api.securityFix(base, onEvent);
-
-    stream.done
-      .then((code) => {
-        setBusy(false);
-        if (code !== 0) {
-          setError("The command did not finish cleanly. The output below is what the Base said.");
-        }
-        onChanged();
-      })
-      .catch((err: unknown) => {
-        setBusy(false);
-        setError(err instanceof Error ? err.message : String(err));
-      });
+    const streamers: Record<string, () => { done: Promise<number> }> = {
+      "security fix": () => api.securityFix(base, onEvent),
+      "security reboot": () => api.securityReboot(base, onEvent),
+      "security install-scanner": () => api.installScanner(base, onEvent),
+      "self-update": () => api.selfUpdate(base, onEvent),
+      "upgrade --apply": () => api.upgradeApply(base, onEvent),
+    };
+    const start = streamers[action.run];
+    if (!start) {
+      setBusy(false);
+      setError(`Unknown action: ${action.run}`);
+      return;
+    }
+    finishStream(start());
   }
 
   return (
@@ -483,14 +492,43 @@ function FindingRow({
               {action.label}
             </Button>
           )}
+          {action.kind === "form" && (
+            <Button
+              variant={formOpen ? "ghost" : "secondary"}
+              onClick={() => setFormOpen((v) => !v)}
+            >
+              {formOpen ? "Cancel" : action.label}
+            </Button>
+          )}
           {action.kind === "manual" && (
-            <>
-              <CommandLine>{finding.fix}</CommandLine>
-              <CopyButton value={finding.fix} label="Copy" />
-            </>
+            <span className="text-xs text-zinc-500">{finding.fix}</span>
           )}
         </span>
       </div>
+      {action.kind === "form" && formOpen && action.form === "backup-setup" && (
+        <div className="mt-3 border-t border-amber-500/10 pt-3">
+          <BackupSetupForm
+            base={base}
+            onDone={() => {
+              setFormOpen(false);
+              onChanged();
+            }}
+          />
+        </div>
+      )}
+      {action.kind === "form" && formOpen && action.form === "deploy" && action.service && (
+        <div className="mt-3 border-t border-amber-500/10 pt-3">
+          <DeployForm
+            base={base}
+            service={action.service}
+            suggestedRef={action.suggested_ref || "main"}
+            onDone={() => {
+              setFormOpen(false);
+              onChanged();
+            }}
+          />
+        </div>
+      )}
       {error && (
         <p className="mt-2 text-xs leading-relaxed text-red-300">{error}</p>
       )}
@@ -498,6 +536,258 @@ function FindingRow({
         <LogView lines={lines} className="mt-3 max-h-48 w-full" />
       )}
     </li>
+  );
+}
+
+function DiffPreview({
+  diff,
+  commitMessage,
+}: {
+  diff: string;
+  commitMessage: string;
+}) {
+  return (
+    <div className="space-y-2">
+      <p className="text-xs text-zinc-400">
+        Commit: <span className="font-mono text-zinc-300">{commitMessage}</span>
+      </p>
+      <pre className="selectable max-h-56 overflow-auto rounded-md border border-zinc-800 bg-zinc-950/60 p-3 font-mono text-[11px] leading-relaxed text-zinc-300">
+        {diff || "(no textual diff)"}
+      </pre>
+    </div>
+  );
+}
+
+function DeployForm({
+  base,
+  service,
+  suggestedRef,
+  onDone,
+}: {
+  base: string;
+  service: string;
+  suggestedRef: string;
+  onDone: () => void;
+}) {
+  const [ref, setRef] = useState(suggestedRef);
+  const [preview, setPreview] = useState<import("../lib/types").ConfigPreview | null>(null);
+  const [busy, setBusy] = useState<"preview" | "apply" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<string | null>(null);
+
+  async function doPreview() {
+    setBusy("preview");
+    setError(null);
+    setPreview(null);
+    try {
+      const p = await api.deployPreview(base, service, ref.trim() || "main");
+      setPreview(p);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function doApply() {
+    if (!preview?.would_change) return;
+    if (
+      !window.confirm(
+        `Commit and push this change to your config repo?\n\n${preview.commit_message}`,
+      )
+    ) {
+      return;
+    }
+    setBusy("apply");
+    setError(null);
+    try {
+      const out = await api.deploy(base, service, ref.trim() || "main");
+      setResult(`Deployed ${out.service} at ${out.ref}.`);
+      onDone();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <Field label={`Ref for ${service}`} hint="Branch, tag, or commit SHA.">
+        <Input
+          value={ref}
+          onChange={(e) => {
+            setRef(e.target.value);
+            setPreview(null);
+          }}
+          placeholder="main"
+          spellCheck={false}
+          disabled={busy !== null}
+        />
+      </Field>
+      <div className="flex flex-wrap gap-2">
+        <Button
+          variant="secondary"
+          busy={busy === "preview"}
+          disabled={busy !== null || !ref.trim()}
+          onClick={() => void doPreview()}
+        >
+          Preview change
+        </Button>
+        {preview && (
+          <Button
+            busy={busy === "apply"}
+            disabled={busy !== null || !preview.would_change}
+            onClick={() => void doApply()}
+          >
+            {preview.would_change ? "Commit and deploy" : "Already current"}
+          </Button>
+        )}
+      </div>
+      {preview && (
+        <DiffPreview diff={preview.diff} commitMessage={preview.commit_message} />
+      )}
+      {error && <p className="text-xs text-red-300">{error}</p>}
+      {result && <p className="text-xs text-emerald-300">{result}</p>}
+    </div>
+  );
+}
+
+function BackupSetupForm({
+  base,
+  onDone,
+}: {
+  base: string;
+  onDone: () => void;
+}) {
+  const [repo, setRepo] = useState("");
+  const [password, setPassword] = useState("");
+  const [awsKey, setAwsKey] = useState("");
+  const [awsSecret, setAwsSecret] = useState("");
+  const [preview, setPreview] = useState<import("../lib/types").ConfigPreview | null>(null);
+  const [busy, setBusy] = useState<"preview" | "apply" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<string | null>(null);
+
+  const input = () => ({
+    repo: repo.trim(),
+    password,
+    aws_access_key_id: awsKey || undefined,
+    aws_secret_access_key: awsSecret || undefined,
+  });
+
+  async function doPreview() {
+    if (!repo.trim()) return;
+    setBusy("preview");
+    setError(null);
+    setPreview(null);
+    try {
+      const p = await api.backupSetupPreview(base, input());
+      setPreview(p);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function doApply() {
+    if (!preview || !password) return;
+    if (
+      !window.confirm(
+        `Store backup credentials on the Base and commit this change to your config repo?\n\n${preview.commit_message}\n\nThe restic password is never recoverable from OwnBase — save it somewhere safe.`,
+      )
+    ) {
+      return;
+    }
+    setBusy("apply");
+    setError(null);
+    try {
+      const out = await api.backupSetupRun(base, input());
+      setResult(out.trim() || "Backups configured.");
+      onDone();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <Field
+        label="Restic repository URL"
+        hint="s3:…, b2:…, or sftp:… — off-machine, encrypted."
+      >
+        <Input
+          value={repo}
+          onChange={(e) => {
+            setRepo(e.target.value);
+            setPreview(null);
+          }}
+          placeholder="s3:s3.amazonaws.com/my-bucket/ownbase"
+          spellCheck={false}
+          disabled={busy !== null}
+        />
+      </Field>
+      <Field
+        label="Restic password"
+        hint="Required to apply. Never recoverable from OwnBase — save it."
+      >
+        <Input
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          autoComplete="new-password"
+          disabled={busy !== null}
+        />
+      </Field>
+      <div className="grid gap-3 md:grid-cols-2">
+        <Field label="AWS access key (optional)">
+          <Input
+            value={awsKey}
+            onChange={(e) => setAwsKey(e.target.value)}
+            spellCheck={false}
+            disabled={busy !== null}
+          />
+        </Field>
+        <Field label="AWS secret key (optional)">
+          <Input
+            type="password"
+            value={awsSecret}
+            onChange={(e) => setAwsSecret(e.target.value)}
+            autoComplete="off"
+            disabled={busy !== null}
+          />
+        </Field>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <Button
+          variant="secondary"
+          busy={busy === "preview"}
+          disabled={busy !== null || !repo.trim()}
+          onClick={() => void doPreview()}
+        >
+          Preview change
+        </Button>
+        {preview && (
+          <Button
+            busy={busy === "apply"}
+            disabled={busy !== null || !password}
+            onClick={() => void doApply()}
+          >
+            Confirm and set up
+          </Button>
+        )}
+      </div>
+      {preview && (
+        <DiffPreview diff={preview.diff} commitMessage={preview.commit_message} />
+      )}
+      {error && <p className="text-xs text-red-300">{error}</p>}
+      {result && (
+        <LogView lines={result.split("\n")} className="max-h-48 w-full" />
+      )}
+    </div>
   );
 }
 
@@ -974,12 +1264,8 @@ function Security({
             <p className="mt-3 text-xs leading-relaxed text-zinc-500">
               A CVE with no published patch clears when Ubuntu (or the image
               upstream) ships one — there is nothing to run in the meantime.
-              Host packages with a patch: use the button on Overview, or{" "}
-              <CommandLine>ownbasectl security fix {base.name}</CommandLine>.
-              Service images move with{" "}
-              <CommandLine>ownbasectl upgrade {base.name} --apply</CommandLine>{" "}
-              (core) or{" "}
-              <CommandLine>ownbasectl deploy</CommandLine> (your services).
+              Host packages with a patch, core-image CVEs, and service updates
+              are actionable from Overview.
             </p>
           </>
         )}
@@ -1005,8 +1291,9 @@ function Security({
               </p>
             )}
             <p className="mt-3 text-xs leading-relaxed text-zinc-500">
-              Any difference is a signal worth understanding — compare against the
-              desired state with <CommandLine>ownbasectl plan</CommandLine>.
+              Any difference is a signal worth understanding. The daemon is the
+              only writer of generated files — a drift means something else
+              changed them.
             </p>
           </>
         )}
@@ -1231,12 +1518,14 @@ function Backups({
         }
       >
         {!configured ? (
-          <Unavailable>
-            No snapshot has ever been taken, so there is no way back from a lost disk.
-            Turn backups on with{" "}
-            <CommandLine>ownbasectl backup setup {base.name}</CommandLine> — they go
-            to an encrypted off-machine repository you own (S3, B2, or SFTP).
-          </Unavailable>
+          <div className="space-y-4">
+            <p className="text-sm leading-relaxed text-zinc-400">
+              No snapshot has ever been taken, so there is no way back from a lost
+              disk. Backups go to an encrypted off-machine repository you own
+              (S3, B2, or SFTP).
+            </p>
+            <BackupSetupForm base={base.name} onDone={onChanged} />
+          </div>
         ) : (
           <>
             <Row label="Last snapshot" title={absolute(last_backup)}>
@@ -1348,19 +1637,22 @@ function BackupActions({ base, onChanged }: { base: string; onChanged: () => voi
 // Updates
 // ---------------------------------------------------------------------------
 
-function Updates({ base, status }: { base: BaseSummary; status: BaseStatus }) {
+function Updates({
+  base,
+  status,
+  onChanged,
+}: {
+  base: BaseSummary;
+  status: BaseStatus;
+  onChanged: () => void;
+}) {
   const drift = status.updates.drift ?? [];
-  // Naming one specific service makes the suggested command copy-pasteable
-  // instead of a template the reader has to fill in.
-  const stale = drift.find((d) => !d.up_to_date);
-  const example = stale
-    ? `ownbasectl deploy ${base.name} ${stale.service} --ref ${stale.newest_tag || stale.branch || "main"}`
-    : null;
+  const [openFor, setOpenFor] = useState<string | null>(null);
 
   return (
     <Panel
       title="Service updates"
-      subtitle="How far each service is from its source repo. Updating is your call, never automatic."
+      subtitle="How far each service is from its source repo. Updating commits a pin to your config repo after you confirm the diff."
     >
       {drift.length === 0 ? (
         <Unavailable>
@@ -1368,36 +1660,52 @@ function Updates({ base, status }: { base: BaseSummary; status: BaseStatus }) {
           own schedule and reports what it finds here.
         </Unavailable>
       ) : (
-        <>
-          <ul className="divide-y divide-zinc-800">
-            {drift.map((d) => (
-              <li key={d.service} className="py-3 first:pt-0 last:pb-0">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <span className="flex items-center gap-2 text-sm text-zinc-200">
-                    <Dot tone={d.up_to_date ? "good" : "warn"} />
-                    {d.service}
-                  </span>
+        <ul className="divide-y divide-zinc-800">
+          {drift.map((d) => (
+            <li key={d.service} className="py-3 first:pt-0 last:pb-0">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <span className="flex items-center gap-2 text-sm text-zinc-200">
+                  <Dot tone={d.up_to_date ? "good" : "warn"} />
+                  {d.service}
+                </span>
+                <span className="flex items-center gap-3">
                   <span className="font-mono text-xs text-zinc-500" title={d.ref}>
                     @{shortRef(d.ref)}
                   </span>
+                  {!d.up_to_date && (
+                    <Button
+                      variant="secondary"
+                      onClick={() =>
+                        setOpenFor((cur) => (cur === d.service ? null : d.service))
+                      }
+                    >
+                      {openFor === d.service ? "Cancel" : "Update"}
+                    </Button>
+                  )}
+                </span>
+              </div>
+              <p className="mt-1 pl-4 text-xs text-zinc-500">
+                {d.up_to_date
+                  ? "up to date"
+                  : `${d.commits_behind} commit${d.commits_behind === 1 ? "" : "s"} behind ${d.branch || "the default branch"}`}
+                {d.newest_tag && ` · newest tag ${d.newest_tag}`}
+              </p>
+              {openFor === d.service && (
+                <div className="mt-3 pl-4">
+                  <DeployForm
+                    base={base.name}
+                    service={d.service}
+                    suggestedRef={d.newest_tag || d.branch || "main"}
+                    onDone={() => {
+                      setOpenFor(null);
+                      onChanged();
+                    }}
+                  />
                 </div>
-                <p className="mt-1 pl-4 text-xs text-zinc-500">
-                  {d.up_to_date
-                    ? "up to date"
-                    : `${d.commits_behind} commit${d.commits_behind === 1 ? "" : "s"} behind ${d.branch || "the default branch"}`}
-                  {d.newest_tag && ` · newest tag ${d.newest_tag}`}
-                </p>
-              </li>
-            ))}
-          </ul>
-          {example && (
-            <p className="mt-4 text-xs leading-relaxed text-zinc-500">
-              To move one forward: <CommandLine>{example}</CommandLine>. That resolves
-              the ref to a concrete commit and commits it to your config repo, so what
-              is deployed stays written down.
-            </p>
-          )}
-        </>
+              )}
+            </li>
+          ))}
+        </ul>
       )}
     </Panel>
   );

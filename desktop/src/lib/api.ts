@@ -8,6 +8,7 @@ import * as cli from "./cli";
 import type {
   BaseSummary,
   Checkup,
+  ConfigPreview,
   KeygenResult,
   SessionMeta,
   VaultInitResult,
@@ -222,6 +223,100 @@ export function securityReboot(
   onEvent: (event: cli.StreamEvent) => void,
 ): cli.StreamHandle {
   return cli.stream(["security", "reboot", base], onEvent);
+}
+
+/** Install trivy + enable podman.socket on the Base. Streams progress. */
+export function installScanner(
+  base: string,
+  onEvent: (event: cli.StreamEvent) => void,
+): cli.StreamHandle {
+  return cli.stream(["security", "install-scanner", base], onEvent);
+}
+
+/** Replace the OwnBase daemon with a newer signed release. Streams progress. */
+export function selfUpdate(
+  base: string,
+  onEvent: (event: cli.StreamEvent) => void,
+  version = "latest",
+): cli.StreamHandle {
+  return cli.stream(["self-update", base, "--version", version], onEvent);
+}
+
+/** Pull the pinned core package image (Caddy) and restart it. */
+export function upgradeApply(
+  base: string,
+  onEvent: (event: cli.StreamEvent) => void,
+): cli.StreamHandle {
+  return cli.stream(["upgrade", base, "--apply"], onEvent);
+}
+
+/** Dry-run a deploy; returns the would-be ownbase.yaml diff. */
+export function deployPreview(
+  base: string,
+  service: string,
+  ref: string,
+): Promise<ConfigPreview> {
+  return cli.json<ConfigPreview>([
+    "deploy",
+    base,
+    service,
+    "--ref",
+    ref,
+    "--dry-run",
+  ]);
+}
+
+/** Commit + push a deploy and trigger reconcile. */
+export async function deploy(
+  base: string,
+  service: string,
+  ref: string,
+): Promise<{ status: string; service: string; ref: string }> {
+  return cli.json(["deploy", base, service, "--ref", ref]);
+}
+
+export interface BackupSetupInput {
+  repo: string;
+  password: string;
+  aws_access_key_id?: string;
+  aws_secret_access_key?: string;
+  b2_account_id?: string;
+  b2_account_key?: string;
+  interval?: string;
+  verify_interval?: string;
+}
+
+/** Dry-run backup setup; returns the would-be ownbase.yaml diff. No secrets written. */
+export function backupSetupPreview(
+  base: string,
+  input: BackupSetupInput,
+): Promise<ConfigPreview> {
+  const args = ["backup", "setup", base, "--repo", input.repo, "--dry-run"];
+  if (input.interval) args.push("--interval", input.interval);
+  if (input.verify_interval) args.push("--verify-interval", input.verify_interval);
+  return cli.json<ConfigPreview>(args);
+}
+
+/**
+ * Run backup setup with credentials over stdin (never in argv).
+ * Progress is returned as the full stdout once complete — the first snapshot
+ * can take minutes.
+ */
+export async function backupSetupRun(
+  base: string,
+  input: BackupSetupInput,
+): Promise<string> {
+  const args = ["backup", "setup", base, "--repo", input.repo, "--creds-stdin"];
+  if (input.interval) args.push("--interval", input.interval);
+  if (input.verify_interval) args.push("--verify-interval", input.verify_interval);
+  const creds = JSON.stringify({
+    password: input.password,
+    aws_access_key_id: input.aws_access_key_id || "",
+    aws_secret_access_key: input.aws_secret_access_key || "",
+    b2_account_id: input.b2_account_id || "",
+    b2_account_key: input.b2_account_key || "",
+  });
+  return cli.text(args, creds);
 }
 
 // ---------------------------------------------------------------------------

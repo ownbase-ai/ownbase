@@ -279,15 +279,15 @@ func TestCheckupFindings_FlagsIssues(t *testing.T) {
 	findings := checkupFindings("mybase", body)
 
 	// Expected:
-	// 1. backups not configured (no last_backup)
+	// 1. backups not configured → form
 	// 2. firewall not active
 	// 3. unexpected ports
 	// 4. reboot required
 	// 5. host fixable CVEs
-	// 6. caddy image fixable CVEs
+	// 6. caddy image fixable CVEs → self-update
 	// 7. crm scan failed
 	// 8. drift
-	// 9. services behind
+	// 9. crm behind → deploy form
 	// (banned IPs deliberately absent)
 	if len(findings) != 9 {
 		t.Fatalf("expected 9 findings, got %d: %+v", len(findings), findings)
@@ -298,16 +298,17 @@ func TestCheckupFindings_FlagsIssues(t *testing.T) {
 		kind          string
 		run           string
 		tab           string
+		form          string
 	}{
-		{"Backups not configured", actionManual, "", ""},
-		{"Firewall (UFW) is not active", actionOpen, "", "security"},
-		{"unexpected internet-reachable port", actionOpen, "", "security"},
-		{"Host reboot required", actionRun, "security reboot", ""},
-		{"host CVE(s) have a patch available", actionRun, "security fix", ""},
-		{"CVE(s) with a patch in image for \"ownbase-core-caddy\"", actionManual, "", ""},
-		{"CVE scan failed for service \"ownbase-crm\"", actionOpen, "", "security"},
-		{"runtime file(s) drifted", actionOpen, "", "security"},
-		{"service(s) behind their source repo", actionOpen, "", "updates"},
+		{"Backups not configured", actionForm, "", "", "backup-setup"},
+		{"Firewall (UFW) is not active", actionOpen, "", "security", ""},
+		{"unexpected internet-reachable port", actionOpen, "", "security", ""},
+		{"Host reboot required", actionRun, "security reboot", "", ""},
+		{"host CVE(s) have a patch available", actionRun, "security fix", "", ""},
+		{"CVE(s) with a patch in core image", actionRun, "self-update", "", ""},
+		{"CVE scan failed for service \"ownbase-crm\"", actionOpen, "", "security", ""},
+		{"runtime file(s) drifted", actionOpen, "", "security", ""},
+		{"behind its source repo", actionForm, "", "", "deploy"},
 	}
 	for _, w := range want {
 		var found *checkupFinding
@@ -329,6 +330,9 @@ func TestCheckupFindings_FlagsIssues(t *testing.T) {
 		}
 		if w.tab != "" && found.Action.Tab != w.tab {
 			t.Errorf("%q: tab = %q, want %q", w.summarySubstr, found.Action.Tab, w.tab)
+		}
+		if w.form != "" && found.Action.Form != w.form {
+			t.Errorf("%q: form = %q, want %q", w.summarySubstr, found.Action.Form, w.form)
 		}
 		if found.Action.Label == "" {
 			t.Errorf("%q: empty label", w.summarySubstr)
@@ -384,8 +388,8 @@ func TestCheckupFindings_NoSecuritySection_StillScansUpdates(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding (update drift) despite missing security section, got %d: %+v", len(findings), findings)
 	}
-	if !strings.Contains(findings[0].Summary, "behind their source repo") {
-		t.Errorf("expected an update-drift finding, got %+v", findings[0])
+	if findings[0].Action.Form != "deploy" {
+		t.Errorf("expected deploy form finding, got %+v", findings[0])
 	}
 }
 
@@ -482,8 +486,8 @@ func TestCheckupFindings_TrivyMissing(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 missing-scanner finding, got %d: %+v", len(findings), findings)
 	}
-	if findings[0].Action.Kind != actionManual {
-		t.Errorf("expected manual action, got %+v", findings[0].Action)
+	if findings[0].Action.Run != "security install-scanner" {
+		t.Errorf("expected install-scanner action, got %+v", findings[0].Action)
 	}
 }
 

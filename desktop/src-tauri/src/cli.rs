@@ -46,8 +46,8 @@ const SIDECAR: &str = "ownbasectl";
 /// the shape of thing this list exists to keep out of the webview's reach.
 /// The app reads *recordings* of sessions; it does not open them.
 const ALLOWED: &[&str] = &[
-    "adopt", "agent", "backup", "checkup", "create", "delete", "keygen", "list", "security",
-    "sessions", "vault",
+    "adopt", "agent", "backup", "checkup", "create", "delete", "deploy", "keygen", "list",
+    "security", "self-update", "sessions", "upgrade", "vault",
 ];
 
 /// What one `ownbasectl` invocation produced.
@@ -229,8 +229,20 @@ mod tests {
     #[test]
     fn allows_every_subcommand_api_ts_calls() {
         for cmd in [
-            "adopt", "agent", "backup", "checkup", "create", "delete", "keygen", "list",
-            "security", "sessions", "vault",
+            "adopt",
+            "agent",
+            "backup",
+            "checkup",
+            "create",
+            "delete",
+            "deploy",
+            "keygen",
+            "list",
+            "security",
+            "self-update",
+            "sessions",
+            "upgrade",
+            "vault",
         ] {
             assert!(
                 check_allowed(&args(&[cmd])).is_ok(),
@@ -244,13 +256,9 @@ mod tests {
         // These exist in ownbasectl but no screen in the app calls them today;
         // the allowlist is the XSS boundary, so they must stay out until one
         // does — see the ALLOWED doc comment.
-        //
-        // `security` is deliberately *not* here: the Overview panel runs
-        // `security fix` / `security scan` / `security reboot`, none of which
-        // take an arbitrary command.
         for cmd in [
-            "deploy", "config", "secrets", "restore", "service", "status", "updates", "upgrade",
-            "ssh-key", "db", "version",
+            "config", "secrets", "restore", "service", "status", "updates", "ssh-key", "db",
+            "version",
         ] {
             assert!(
                 check_allowed(&args(&[cmd])).is_err(),

@@ -54,7 +54,12 @@ allowlist. It cannot see an upstream cloud firewall.`,
 	}
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "print the security section of the status payload as JSON")
 
-	cmd.AddCommand(newSecurityFixCmd(), newSecurityScanCmd(), newSecurityRebootCmd())
+	cmd.AddCommand(
+		newSecurityFixCmd(),
+		newSecurityScanCmd(),
+		newSecurityRebootCmd(),
+		newSecurityInstallScannerCmd(),
+	)
 	return cmd
 }
 
@@ -638,4 +643,71 @@ func runSecurityReboot(base string) error {
 		return scanErr
 	}
 	return fmt.Errorf("security reboot failed — see output above")
+}
+
+func newSecurityInstallScannerCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "install-scanner <name>",
+		Short: "Install the trivy vulnerability scanner on the Base",
+		Long: `Install trivy from the official Aqua apt repository and enable the
+Podman API socket it needs to scan container images. Same path PassZero
+uses at bootstrap; safe to re-run.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runSecurityInstallScanner(args[0])
+		},
+	}
+}
+
+func runSecurityInstallScanner(base string) error {
+	conn, err := connectToServer(base)
+	if err != nil {
+		return err
+	}
+	defer conn.close()
+	url := conn.baseURL + "/security/scanner/install"
+
+	req, err := http.NewRequest(http.MethodPost, url, nil)
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	if conn.token != "" {
+		req.Header.Set("Authorization", "Bearer "+conn.token)
+	}
+
+	fmt.Println("Installing the vulnerability scanner on the Base...")
+	fmt.Println()
+
+	client := &http.Client{Timeout: 15 * time.Minute}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("security/scanner/install API at %s: %w\n  Is the agent running?", url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		return fmt.Errorf("unauthorized — the cached token may be stale; remove the profile and run 'ownbasectl adopt' again")
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("security/scanner/install returned %d: %s", resp.StatusCode, body)
+	}
+
+	var gotOK bool
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "---OK---" {
+			gotOK = true
+			continue
+		}
+		fmt.Println(line)
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	if !gotOK {
+		return fmt.Errorf("scanner install failed — see output above")
+	}
+	return nil
 }

@@ -267,8 +267,11 @@ const (
 	actionRun = "run"
 	// actionOpen: there is nothing to execute — open the named tab and read.
 	actionOpen = "open"
-	// actionManual: the fix changes desired state or needs interactive input
-	// the app will not drive. Fix holds the full command to show.
+	// actionForm: the app opens a named form flow (backup setup, deploy)
+	// that still ends in a CLI call. Preview=true means dry-run the edit
+	// and show the diff before committing.
+	actionForm = "form"
+	// actionManual: genuine dead-end — no in-app path. Plain text only.
 	actionManual = "manual"
 )
 
@@ -276,14 +279,22 @@ const (
 // finding. Kind is the discriminator; the other fields are only meaningful
 // for specific kinds.
 type checkupAction struct {
-	// Kind is one of actionRun / actionOpen / actionManual.
+	// Kind is one of actionRun / actionOpen / actionForm / actionManual.
 	Kind string `json:"kind"`
 	// Run is the ownbasectl subcommand path for kind=run, without the binary
-	// name or the base (e.g. "security fix", "security reboot", "security scan").
+	// name or the base (e.g. "security fix", "self-update").
 	Run string `json:"run,omitempty"`
 	// Tab is the desktop app tab to open for kind=open
 	// ("security" | "backups" | "updates").
 	Tab string `json:"tab,omitempty"`
+	// Form names the app flow for kind=form ("backup-setup" | "deploy").
+	Form string `json:"form,omitempty"`
+	// Service is the service the form targets (deploy).
+	Service string `json:"service,omitempty"`
+	// SuggestedRef is a default --ref for deploy (newest_tag or branch).
+	SuggestedRef string `json:"suggested_ref,omitempty"`
+	// Preview means the app must dry-run and show the diff before committing.
+	Preview bool `json:"preview,omitempty"`
 	// Label is the button text. Always set.
 	Label string `json:"label"`
 	// Confirm is optional prose shown before a run that has a cost (reboot).
@@ -335,10 +346,12 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 			if lastBackup == "" {
 				findings = append(findings, checkupFinding{
 					Summary: "Backups not configured",
-					Fix:     "ownbasectl backup setup " + base,
+					Fix:     "ownbasectl backup setup " + base + " --repo <url> --password <pw>",
 					Action: checkupAction{
-						Kind:  actionManual,
-						Label: "Set up backups",
+						Kind:    actionForm,
+						Form:    "backup-setup",
+						Preview: true,
+						Label:   "Set up backups",
 					},
 				})
 			} else {
@@ -404,14 +417,13 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 
 			switch {
 			case !trivyInstalled:
-				// No scanner means unknown, not clean — but the app cannot
-				// install trivy from the window.
 				findings = append(findings, checkupFinding{
 					Summary: "CVE scanner not installed — host and services are unchecked",
-					Fix:     "ownbasectl ssh " + base + "  (install trivy, or re-run create to harden)",
+					Fix:     "ownbasectl security install-scanner " + base,
 					Action: checkupAction{
-						Kind:  actionManual,
-						Label: "Inspect on the Base",
+						Kind:  actionRun,
+						Run:   "security install-scanner",
+						Label: "Install scanner",
 					},
 				})
 			case !available:
@@ -464,8 +476,7 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 			}
 
 			// Per-image findings: a service with fixable CVEs, or a scan that
-			// failed (unscanned ≠ clean). Image upgrades change desired state
-			// (pull a newer image / move a ref), so they stay manual.
+			// failed (unscanned ≠ clean).
 			imagesRaw, _ := vulns["images"].([]any)
 			for _, raw := range imagesRaw {
 				img, ok := raw.(map[string]any)
@@ -491,23 +502,44 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 				}
 				fixCrit, _ := summary["fixable_critical"].(float64)
 				fixHigh, _ := summary["fixable_high"].(float64)
-				if n := int(fixCrit + fixHigh); n > 0 {
-					// Core packages (Caddy) move via `upgrade --apply`;
-					// user services move via `deploy`. The command is a
-					// starting point — the operator still chooses the ref.
-					fix := fmt.Sprintf("ownbasectl upgrade %s --apply", base)
-					if !strings.HasPrefix(svc, "ownbase-core-") {
-						fix = fmt.Sprintf("ownbasectl deploy %s %s --ref <newer>", base, strings.TrimPrefix(svc, "ownbase-"))
-					}
+				n := int(fixCrit + fixHigh)
+				if n == 0 {
+					continue
+				}
+				if strings.HasPrefix(svc, "ownbase-core-") {
+					// Core packages (Caddy): upgrade --apply only helps when
+					// the running digest differs from the pin. When they
+					// match, the fix ships in a newer OwnBase release via
+					// self-update. Without running_digest we offer self-update
+					// (the honest path when the pin is already current).
 					findings = append(findings, checkupFinding{
-						Summary: fmt.Sprintf("%d CVE(s) with a patch in image for %q", n, svc),
-						Fix:     fix,
+						Summary: fmt.Sprintf("%d CVE(s) with a patch in core image %q", n, svc),
+						Fix:     "ownbasectl self-update " + base,
 						Action: checkupAction{
-							Kind:  actionManual,
-							Label: "Update image",
+							Kind:    actionRun,
+							Run:     "self-update",
+							Label:   "Update OwnBase",
+							Confirm: "Replaces the OwnBase daemon with the latest signed release and restarts it (~10s). The core package pin (Caddy) moves with the new binary.",
 						},
 					})
+					continue
 				}
+				// User services: deploy a newer ref. The app form shows the
+				// diff before committing.
+				svcKey := strings.TrimPrefix(svc, "ownbase-")
+				suggested := suggestedDeployRef(s, svcKey)
+				findings = append(findings, checkupFinding{
+					Summary: fmt.Sprintf("%d CVE(s) with a patch in image for %q", n, svc),
+					Fix:     fmt.Sprintf("ownbasectl deploy %s %s --ref %s", base, svcKey, suggested),
+					Action: checkupAction{
+						Kind:         actionForm,
+						Form:         "deploy",
+						Service:      svcKey,
+						SuggestedRef: suggested,
+						Preview:      true,
+						Label:        "Update " + svcKey,
+					},
+				})
 			}
 		}
 
@@ -526,31 +558,72 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 
 	if updates, ok := s["updates"].(map[string]any); ok {
 		if drift, ok := updates["drift"].([]any); ok {
-			behind := 0
+			// One finding per behind service, each with a deploy form — so
+			// the operator can finish it without going to the Updates tab
+			// and copying a command.
+			behindCount := 0
 			for _, raw := range drift {
 				d, ok := raw.(map[string]any)
 				if !ok {
 					continue
 				}
-				if upToDate, _ := d["up_to_date"].(bool); !upToDate {
-					behind++
+				if upToDate, _ := d["up_to_date"].(bool); upToDate {
+					continue
 				}
-			}
-			if behind > 0 {
+				behindCount++
+				svc, _ := d["service"].(string)
+				suggested := ""
+				if tag, _ := d["newest_tag"].(string); tag != "" {
+					suggested = tag
+				} else if branch, _ := d["branch"].(string); branch != "" {
+					suggested = branch
+				} else {
+					suggested = "main"
+				}
+				behind, _ := d["commits_behind"].(float64)
 				findings = append(findings, checkupFinding{
-					Summary: fmt.Sprintf("%d service(s) behind their source repo", behind),
-					Fix:     "ownbasectl updates " + base,
+					Summary: fmt.Sprintf("%s is %d commit(s) behind its source repo", svc, int(behind)),
+					Fix:     fmt.Sprintf("ownbasectl deploy %s %s --ref %s", base, svc, suggested),
 					Action: checkupAction{
-						Kind:  actionOpen,
-						Tab:   "updates",
-						Label: "Go to Updates",
+						Kind:         actionForm,
+						Form:         "deploy",
+						Service:      svc,
+						SuggestedRef: suggested,
+						Preview:      true,
+						Label:        "Update " + svc,
 					},
 				})
 			}
+			_ = behindCount
 		}
 	}
 
 	return findings
+}
+
+// suggestedDeployRef picks a default --ref for a service from updates.drift.
+func suggestedDeployRef(status map[string]any, service string) string {
+	updates, _ := status["updates"].(map[string]any)
+	if updates == nil {
+		return "main"
+	}
+	drift, _ := updates["drift"].([]any)
+	for _, raw := range drift {
+		d, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if svc, _ := d["service"].(string); svc != service {
+			continue
+		}
+		if tag, _ := d["newest_tag"].(string); tag != "" {
+			return tag
+		}
+		if branch, _ := d["branch"].(string); branch != "" {
+			return branch
+		}
+	}
+	return "main"
 }
 
 // scanIsStale reports whether a scanned_at timestamp is older than

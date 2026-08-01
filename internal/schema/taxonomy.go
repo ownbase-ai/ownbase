@@ -64,7 +64,13 @@ const (
 	// ActionHostReboot is emitted when the operator reboots the Base via
 	// POST /security/reboot. Tier notify: every service drops for ~30–60s.
 	ActionHostReboot ActionType = "host.reboot" // notify
-	ActionPortClose  ActionType = "port.close"  // notify
+	// ActionHostInstallScanner is emitted when trivy is installed via
+	// POST /security/scanner/install.
+	ActionHostInstallScanner ActionType = "host.install_scanner" // notify
+	// ActionHostSelfUpdate is emitted when the daemon binary is replaced via
+	// POST /self-update. Tier notify: brief outage while systemd restarts.
+	ActionHostSelfUpdate ActionType = "host.self_update" // notify
+	ActionPortClose      ActionType = "port.close"       // notify
 	// ActionPortExposed is emitted on the transition into or out of unexpected
 	// internet-reachable exposure. Recorded by the secwatch probe in the agent.
 	ActionPortExposed ActionType = "port.exposed" // notify
@@ -105,6 +111,8 @@ var defaultTiers = map[ActionType]RiskTier{
 	ActionHostFail2ban:          TierAutonomous,
 	ActionHostPatch:             TierNotify,
 	ActionHostReboot:            TierNotify,
+	ActionHostInstallScanner:    TierNotify,
+	ActionHostSelfUpdate:        TierNotify,
 	ActionPortClose:             TierNotify,
 	ActionPortExposed:           TierNotify,
 	ActionCertRenew:             TierAutonomous,

@@ -77,9 +77,9 @@ The exposure list is the machine's own view. It cannot see a firewall your provi
 
 ### What the app will not do
 
-It will not edit `ownbase.yaml`. Your config lives in a Git repo you own, every change to it is a commit, and the app is not going to make commits you did not write. Findings whose fix would change desired state (`deploy`, `upgrade --apply`, `backup setup`) show the command and a copy button.
+It will not make a commit you did not ask for. Config changes (`deploy`, `backup setup`) always show the YAML diff and commit message first, and require an explicit confirm before pushing. Host actions (apply patches, rescan, reboot, install the CVE scanner, self-update OwnBase) do not touch git.
 
-The actions the app *does* take never rewrite what should run: backup now, the restore drill, apply host OS patches, rescan CVEs, reboot so those patches take effect, and remove a Base from this computer.
+It will not open an unrecorded shell. Sessions are always audited.
 
 ## Sessions
 

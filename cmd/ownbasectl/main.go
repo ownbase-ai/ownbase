@@ -160,6 +160,7 @@ Start here:
 		newDBCmd(),
 		newSecretsCmd(),
 		newUpgradeCmd(),
+		newSelfUpdateCmd(),
 		newConfigCmd(),
 		newServiceCmd(),
 		newDeployCmd(),

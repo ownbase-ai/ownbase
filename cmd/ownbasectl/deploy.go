@@ -9,9 +9,11 @@ package main
 // written here is deterministic.
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -22,28 +24,35 @@ import (
 func newDeployCmd() *cobra.Command {
 	var ref string
 	var jsonOut bool
+	var dryRun bool
 	cmd := &cobra.Command{
 		Use:   "deploy <base> <service>",
 		Short: "Resolve a ref to a commit, pin it in ownbase.yaml, and reconcile",
 		Long: `deploy resolves --ref (a branch, tag, or commit) to a concrete commit
 SHA against the service's repo: URL, commits that SHA to the external config
 repo, and triggers a reconcile on the Base. This is the only command that
-moves a service to new code — branch-named refs never auto-redeploy.`,
+moves a service to new code — branch-named refs never auto-redeploy.
+
+With --dry-run, the edit is computed and printed (as JSON with --json) but
+nothing is committed or pushed. The desktop app uses this to show the diff
+before the operator confirms.`,
 		Example: `  ownbasectl deploy mybase api --ref main
-  ownbasectl deploy mybase api --ref v2.3.0`,
+  ownbasectl deploy mybase api --ref v2.3.0
+  ownbasectl deploy mybase api --ref main --dry-run --json`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDeploy(args[0], args[1], ref, jsonOut)
+			return runDeploy(args[0], args[1], ref, jsonOut, dryRun)
 		},
 	}
 	cmd.Flags().StringVar(&ref, "ref", "", "branch, tag, or commit to deploy (default: the service's current ref, else HEAD)")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "print the result as JSON")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "compute the ownbase.yaml edit without committing or pushing")
 	return cmd
 }
 
-func runDeploy(base, service, ref string, jsonOut bool) error {
+func runDeploy(base, service, ref string, jsonOut, dryRun bool) error {
 	var resolvedSHA string
-	err := mutateConfig(base, func(current string) (string, string, error) {
+	edit := func(current string) (string, string, error) {
 		cfg, err := schema.ParseConfig(strings.NewReader(current))
 		if err != nil {
 			return "", "", fmt.Errorf("parse current ownbase.yaml: %w", err)
@@ -69,7 +78,35 @@ func runDeploy(base, service, ref string, jsonOut bool) error {
 			return "", "", err
 		}
 		return updated, fmt.Sprintf("deploy(%s): %s", service, sha), nil
-	})
+	}
+
+	if dryRun {
+		preview, err := previewConfig(base, edit)
+		if err != nil {
+			return err
+		}
+		if jsonOut {
+			return printJSON(map[string]any{
+				"status":         "preview",
+				"service":        service,
+				"ref":            resolvedSHA,
+				"would_change":   preview.WouldChange,
+				"commit_message": preview.CommitMessage,
+				"diff":           preview.Diff,
+				"current":        preview.Current,
+				"proposed":       preview.Proposed,
+			})
+		}
+		if !preview.WouldChange {
+			fmt.Printf("%s is already at %s — nothing would change.\n", service, shortSHA(resolvedSHA))
+			return nil
+		}
+		fmt.Printf("Would deploy %s at %s on %q:\n\n%s\ncommit: %s\n",
+			service, shortSHA(resolvedSHA), base, preview.Diff, preview.CommitMessage)
+		return nil
+	}
+
+	err := mutateConfig(base, edit)
 	if err == errNoConfigChange {
 		if jsonOut {
 			return printJSON(map[string]any{"status": "unchanged", "service": service, "ref": resolvedSHA})
@@ -95,7 +132,14 @@ func resolveRemoteRef(repoURL, ref string) (string, error) {
 	if repoURL == "" {
 		return "", fmt.Errorf("service has no repo: URL to resolve %q against", ref)
 	}
-	out, err := exec.Command("git", "ls-remote", repoURL, ref).Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "ls-remote", repoURL, ref)
+	cmd.Env = gitEnv()
+	out, err := cmd.Output()
+	if ctx.Err() == context.DeadlineExceeded {
+		return "", fmt.Errorf("git ls-remote %s %s timed out — the remote may need credentials this process does not have", repoURL, ref)
+	}
 	if err != nil {
 		return "", fmt.Errorf("git ls-remote %s %s: %w", repoURL, ref, err)
 	}
