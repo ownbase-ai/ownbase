@@ -821,16 +821,23 @@ function BackupSetupForm({
   const [password, setPassword] = useState("");
   const [awsKey, setAwsKey] = useState("");
   const [awsSecret, setAwsSecret] = useState("");
+  const [b2AccountID, setB2AccountID] = useState("");
+  const [b2AccountKey, setB2AccountKey] = useState("");
   const [preview, setPreview] = useState<import("../lib/types").ConfigPreview | null>(null);
   const [busy, setBusy] = useState<"preview" | "apply" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<string | null>(null);
+
+  const isB2 = repo.trim().toLowerCase().startsWith("b2:");
+  const isS3 = repo.trim().toLowerCase().startsWith("s3:");
 
   const input = () => ({
     repo: repo.trim(),
     password,
     aws_access_key_id: awsKey || undefined,
     aws_secret_access_key: awsSecret || undefined,
+    b2_account_id: b2AccountID || undefined,
+    b2_account_key: b2AccountKey || undefined,
   });
 
   async function doPreview() {
@@ -908,25 +915,48 @@ function BackupSetupForm({
           disabled={busy !== null}
         />
       </Field>
-      <div className="grid gap-3 md:grid-cols-2">
-        <Field label="AWS access key (optional)">
-          <Input
-            value={awsKey}
-            onChange={(e) => setAwsKey(e.target.value)}
-            spellCheck={false}
-            disabled={busy !== null}
-          />
-        </Field>
-        <Field label="AWS secret key (optional)">
-          <Input
-            type="password"
-            value={awsSecret}
-            onChange={(e) => setAwsSecret(e.target.value)}
-            autoComplete="off"
-            disabled={busy !== null}
-          />
-        </Field>
-      </div>
+      {(isS3 || (!isB2 && !repo.trim())) && (
+        <div className="grid gap-3 md:grid-cols-2">
+          <Field label="AWS access key (for s3: repos)">
+            <Input
+              value={awsKey}
+              onChange={(e) => setAwsKey(e.target.value)}
+              spellCheck={false}
+              disabled={busy !== null}
+            />
+          </Field>
+          <Field label="AWS secret key (for s3: repos)">
+            <Input
+              type="password"
+              value={awsSecret}
+              onChange={(e) => setAwsSecret(e.target.value)}
+              autoComplete="off"
+              disabled={busy !== null}
+            />
+          </Field>
+        </div>
+      )}
+      {(isB2 || (!isS3 && !repo.trim())) && (
+        <div className="grid gap-3 md:grid-cols-2">
+          <Field label="B2 account ID (for b2: repos)">
+            <Input
+              value={b2AccountID}
+              onChange={(e) => setB2AccountID(e.target.value)}
+              spellCheck={false}
+              disabled={busy !== null}
+            />
+          </Field>
+          <Field label="B2 application key (for b2: repos)">
+            <Input
+              type="password"
+              value={b2AccountKey}
+              onChange={(e) => setB2AccountKey(e.target.value)}
+              autoComplete="off"
+              disabled={busy !== null}
+            />
+          </Field>
+        </div>
+      )}
       <div className="flex flex-wrap gap-2">
         <Button
           variant="secondary"

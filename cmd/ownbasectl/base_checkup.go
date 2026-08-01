@@ -635,8 +635,18 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 					suggested = "main"
 				}
 				behind, _ := d["commits_behind"].(float64)
+				// Non-SHA pins can be "behind" solely because a newer tag
+				// exists while commits_behind is still 0 — say that plainly.
+				summary := fmt.Sprintf("%s is %d commit(s) behind its source repo", svc, int(behind))
+				if int(behind) == 0 {
+					if tag, _ := d["newest_tag"].(string); tag != "" {
+						summary = fmt.Sprintf("%s has a newer tag available (%s)", svc, tag)
+					} else {
+						summary = fmt.Sprintf("%s is behind its source repo", svc)
+					}
+				}
 				findings = append(findings, checkupFinding{
-					Summary: fmt.Sprintf("%s is %d commit(s) behind its source repo", svc, int(behind)),
+					Summary: summary,
 					Fix:     fmt.Sprintf("ownbasectl deploy %s %s --ref %s", base, svc, suggested),
 					Action: checkupAction{
 						Kind:         actionForm,
