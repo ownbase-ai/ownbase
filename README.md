@@ -44,16 +44,18 @@ This section is written to be executed top to bottom, by a person or by an AI ag
 
 There is exactly one step a human must do, because server providers require a human with a credit card: **creating the machine**. Everything on either side of that is a command.
 
-### 1. Install the CLI
+### 1. Install the app or the CLI
 
-`ownbasectl` runs on your own computer (macOS or Linux), not on the server.
+Both run on your own computer, not on the server. Pick whichever you prefer — they share one vault and cannot disagree about what is deployed.
 
 ```bash
-brew install --cask ownbase-ai/tap/ownbasectl
-ownbasectl version
+brew install --cask ownbase-ai/tap/ownbase      # app — macOS only
+brew install --cask ownbase-ai/tap/ownbasectl  # CLI — macOS or Linux
 ```
 
-No Homebrew? [INSTALL.md](INSTALL.md#install-ownbasectl) has a checksum-verified install script. Prefer a window to a terminal? The [OwnBase app](docs/desktop.md) walks through this whole section with a wizard.
+The app walks through this whole section with a wizard and already bundles `ownbasectl`. The CLI is what an agent will use, and what the rest of this walkthrough shows.
+
+Linux desktop app (`.deb` / AppImage), or CLI without Homebrew: [docs/desktop.md](docs/desktop.md#installing-it) and [INSTALL.md](INSTALL.md#install-ownbasectl).
 
 ### 2. Create the vault
 
