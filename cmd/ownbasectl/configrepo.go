@@ -21,46 +21,11 @@ import (
 	"strings"
 
 	"github.com/ownbase/ownbase/internal/schema"
-	"github.com/ownbase/ownbase/internal/serverconfig"
+	"github.com/ownbase/ownbase/internal/vault"
 )
 
 // ownbaseYAMLName is the config file committed to the config repo.
 const ownbaseYAMLName = "ownbase.yaml"
-
-// loadProfile reads the named Base's client profile.
-func loadProfile(base string) (serverconfig.ServerProfile, error) {
-	cfgPath, err := serverconfig.DefaultConfigPath()
-	if err != nil {
-		return serverconfig.ServerProfile{}, fmt.Errorf("locate config: %w", err)
-	}
-	scfg, err := serverconfig.Load(cfgPath)
-	if err != nil {
-		return serverconfig.ServerProfile{}, fmt.Errorf("load config: %w", err)
-	}
-	return scfg.ProfileFor(base)
-}
-
-// saveProfile persists mutations to the named Base's client profile.
-func saveProfile(base string, mutate func(*serverconfig.ServerProfile)) error {
-	cfgPath, err := serverconfig.DefaultConfigPath()
-	if err != nil {
-		return fmt.Errorf("locate config: %w", err)
-	}
-	scfg, err := serverconfig.Load(cfgPath)
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-	// Only mutate a Base that already exists — otherwise a typo'd name would
-	// write a half-populated profile (config repo set, no host/token). The
-	// Base must have been registered first (create/adopt).
-	p, ok := scfg.Servers[base]
-	if !ok {
-		return fmt.Errorf("Base %q not found; run: ownbasectl list", base)
-	}
-	mutate(&p)
-	scfg.Servers[base] = p
-	return serverconfig.Save(cfgPath, scfg)
-}
 
 // configRepo is a temporary client-side clone of a Base's external config
 // repo. Call close() to remove the working directory.
@@ -73,7 +38,7 @@ type configRepo struct {
 // cloneConfigRepo clones profile's config repo to a fresh temp dir and checks
 // out the configured ref. Handles an empty remote (no commits yet) so
 // `config setup --init` can seed it.
-func cloneConfigRepo(profile serverconfig.ServerProfile) (*configRepo, error) {
+func cloneConfigRepo(profile vault.Profile) (*configRepo, error) {
 	url := strings.TrimSpace(profile.ConfigRepoURL)
 	if url == "" {
 		return nil, fmt.Errorf("no config repo set for this Base — run `ownbasectl config setup <base> --repo <url>` first")

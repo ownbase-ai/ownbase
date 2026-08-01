@@ -20,7 +20,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/ownbase/ownbase/internal/schema"
-	"github.com/ownbase/ownbase/internal/serverconfig"
+	"github.com/ownbase/ownbase/internal/vault"
 )
 
 func newConfigCmd() *cobra.Command {
@@ -177,11 +177,11 @@ func runConfigSetup(base, repo, ref string, doInit bool) error {
 		return fmt.Errorf("--repo is required, e.g. --repo git@github.com:org/ownbase-config.git")
 	}
 	if ref == "" {
-		ref = serverconfig.DefaultConfigRef
+		ref = vault.DefaultConfigRef
 	}
 
-	// Persist to the local profile so subsequent mutations know where to commit.
-	if err := saveProfile(base, func(p *serverconfig.ServerProfile) {
+	// Persist to the profile so subsequent mutations know where to commit.
+	if err := saveProfile(base, func(p *vault.Profile) {
 		p.ConfigRepoURL = repo
 		p.ConfigRef = ref
 	}); err != nil {

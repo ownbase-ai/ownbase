@@ -285,4 +285,4 @@ Generates a new token, persists it to `/opt/ownbase/api-token`, and hot-swaps it
 {"token": "…new token…"}
 ```
 
-Note that any stored client profiles (`~/.ownbase/config`) still hold the old token. Update a profile with `ownbasectl adopt <name> --host <host> --token <new-token>` (profiles with no stored token fetch it over SSH automatically on connect).
+Note that any stored client profiles still hold the old token in their [vault](vault.md). Update one with `ownbasectl adopt <name> --host <host> --token <new-token>` (profiles with no stored token fetch it over SSH automatically on connect).

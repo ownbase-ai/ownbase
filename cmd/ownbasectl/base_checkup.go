@@ -77,7 +77,7 @@ func checkup(conn *connection, base string, jsonOut, doVerify bool) error {
 	}
 
 	if jsonOut {
-		printCheckupJSON(body, verifyResult)
+		printCheckupJSON(base, body, verifyResult)
 		// Same verdict as the formatted path below: a failed drill exits
 		// non-zero. Its message goes to stderr rather than into the payload,
 		// which is what keeps stdout a document rather than a report.
@@ -95,7 +95,7 @@ func checkup(conn *connection, base string, jsonOut, doVerify bool) error {
 	} else {
 		fmt.Printf("  %d finding(s) need attention:\n\n", len(findings))
 		for _, f := range findings {
-			fmt.Printf("  ⚠ %-42s  fix: %s\n", f.summary, f.fix)
+			fmt.Printf("  ⚠ %-42s  fix: %s\n", f.Summary, f.Fix)
 		}
 	}
 	fmt.Println()
@@ -118,25 +118,36 @@ func checkup(conn *connection, base string, jsonOut, doVerify bool) error {
 	return verifyErr
 }
 
-// printCheckupJSON writes one document, not two. Without --verify that is the
-// /status body unchanged, so anything already parsing it keeps working; with
-// --verify the drill result would otherwise be a second document on the same
-// stream, which no ordinary JSON reader accepts.
-func printCheckupJSON(status []byte, verifyResult string) {
-	if strings.TrimSpace(verifyResult) == "" {
-		fmt.Println(strings.TrimSpace(string(status)))
-		return
-	}
-	combined, err := json.Marshal(struct {
-		Verify json.RawMessage `json:"verify"`
-		Status json.RawMessage `json:"status"`
+// printCheckupJSON writes one document: the findings this command decided on,
+// the drill result when one ran, and the raw status the verdict came from.
+//
+// The findings belong in the payload because deciding what counts as a problem
+// is this command's whole job. Leaving them out would force every other reader
+// — the desktop app most of all — to reimplement checkupFindings and slowly
+// disagree with it about whether a Base is healthy. `status --json` is still
+// the bare /status body for anything that only wants the machine's own words.
+func printCheckupJSON(base string, status []byte, verifyResult string) {
+	doc := struct {
+		Findings []checkupFinding `json:"findings"`
+		Verify   json.RawMessage  `json:"verify,omitempty"`
+		Status   json.RawMessage  `json:"status"`
 	}{
-		Verify: json.RawMessage(verifyResult),
-		Status: json.RawMessage(status),
-	})
+		Findings: checkupFindings(base, status),
+		Status:   json.RawMessage(status),
+	}
+	if v := strings.TrimSpace(verifyResult); v != "" {
+		doc.Verify = json.RawMessage(v)
+	}
+	// findings is a list, not "maybe a list": an all-clear Base reports zero
+	// findings rather than null, so a caller can count them without a nil check.
+	if doc.Findings == nil {
+		doc.Findings = []checkupFinding{}
+	}
+
+	combined, err := json.Marshal(doc)
 	if err != nil {
-		// Neither half is this CLI's to rewrite, so an unmarshalable one is
-		// passed through rather than swallowed.
+		// The status half is not this CLI's to rewrite, so an unmarshalable
+		// document degrades to passing it through rather than printing nothing.
 		fmt.Println(strings.TrimSpace(string(status)))
 		return
 	}
@@ -243,9 +254,13 @@ func runVerifyDrill(conn *connection, jsonOut bool) (string, error) {
 	return resultJSON, fmt.Errorf("verified-restore drill did not complete — see output above")
 }
 
+// checkupFinding is one thing worth a person's attention, paired with the
+// command that addresses it. The fix is part of the finding rather than
+// something the reader has to work out, which is the difference between a
+// report and a to-do list.
 type checkupFinding struct {
-	summary string
-	fix     string
+	Summary string `json:"summary"`
+	Fix     string `json:"fix"`
 }
 
 // checkupFindings scans the raw status JSON for anything worth flagging at
@@ -272,13 +287,13 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 			lastBackup, _ := sec["last_backup"].(string)
 			if lastBackup == "" {
 				findings = append(findings, checkupFinding{
-					summary: "Backups not configured",
-					fix:     "ownbasectl backup setup " + base,
+					Summary: "Backups not configured",
+					Fix:     "ownbasectl backup setup " + base,
 				})
 			} else {
 				findings = append(findings, checkupFinding{
-					summary: "Backups not yet verified restorable",
-					fix:     "ownbasectl checkup " + base + " --verify",
+					Summary: "Backups not yet verified restorable",
+					Fix:     "ownbasectl checkup " + base + " --verify",
 				})
 			}
 		}
@@ -287,14 +302,14 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 			if available, _ := exp["available"].(bool); available {
 				if fwActive, _ := exp["firewall_active"].(bool); !fwActive {
 					findings = append(findings, checkupFinding{
-						summary: "Firewall (UFW) is not active",
-						fix:     "ownbasectl security " + base,
+						Summary: "Firewall (UFW) is not active",
+						Fix:     "ownbasectl security " + base,
 					})
 				}
 				if unexpected, _ := exp["unexpected_count"].(float64); unexpected > 0 {
 					findings = append(findings, checkupFinding{
-						summary: fmt.Sprintf("%d unexpected internet-reachable port(s)", int(unexpected)),
-						fix:     "ownbasectl security " + base,
+						Summary: fmt.Sprintf("%d unexpected internet-reachable port(s)", int(unexpected)),
+						Fix:     "ownbasectl security " + base,
 					})
 				}
 			}
@@ -304,8 +319,8 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 			if available, _ := acc["available"].(bool); available {
 				if bannedRaw, _ := acc["banned_ips"].([]any); len(bannedRaw) > 0 {
 					findings = append(findings, checkupFinding{
-						summary: fmt.Sprintf("%d banned IP(s) from failed SSH logins", len(bannedRaw)),
-						fix:     "ownbasectl security " + base,
+						Summary: fmt.Sprintf("%d banned IP(s) from failed SSH logins", len(bannedRaw)),
+						Fix:     "ownbasectl security " + base,
 					})
 				}
 			}
@@ -324,8 +339,8 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 							fix = "ownbasectl security " + base + "  (no fix available yet)"
 						}
 						findings = append(findings, checkupFinding{
-							summary: fmt.Sprintf("%d critical, %d high CVE(s) on host OS", int(critical), int(high)),
-							fix:     fix,
+							Summary: fmt.Sprintf("%d critical, %d high CVE(s) on host OS", int(critical), int(high)),
+							Fix:     fix,
 						})
 					}
 				}
@@ -342,8 +357,8 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 				if failed, _ := img["scan_failed"].(bool); failed {
 					svc, _ := img["service"].(string)
 					findings = append(findings, checkupFinding{
-						summary: fmt.Sprintf("CVE scan failed for service %q", svc),
-						fix:     "ownbasectl security " + base + "  (see error in Vulnerability Scan section)",
+						Summary: fmt.Sprintf("CVE scan failed for service %q", svc),
+						Fix:     "ownbasectl security " + base + "  (see error in Vulnerability Scan section)",
 					})
 				}
 			}
@@ -351,8 +366,8 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 
 		if driftCount, _ := sec["drift_count"].(float64); driftCount > 0 {
 			findings = append(findings, checkupFinding{
-				summary: fmt.Sprintf("%d runtime file(s) drifted from desired state", int(driftCount)),
-				fix:     "ownbasectl plan",
+				Summary: fmt.Sprintf("%d runtime file(s) drifted from desired state", int(driftCount)),
+				Fix:     "ownbasectl plan",
 			})
 		}
 	}
@@ -371,8 +386,8 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 			}
 			if behind > 0 {
 				findings = append(findings, checkupFinding{
-					summary: fmt.Sprintf("%d service(s) behind their source repo", behind),
-					fix:     "ownbasectl updates " + base,
+					Summary: fmt.Sprintf("%d service(s) behind their source repo", behind),
+					Fix:     "ownbasectl updates " + base,
 				})
 			}
 		}

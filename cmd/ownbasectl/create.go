@@ -3,8 +3,8 @@ package main
 // create.go implements `ownbasectl create` — the Go-driven replacement for
 // testing/smoke-install.sh + `make connect-vm`. One command provisions a
 // Base end to end (local Multipass VM by default, or a remote server via
-// --remote) and registers it in ~/.ownbase/config so every other
-// ownbasectl command works immediately afterward.
+// --remote) and registers it in the vault so every other ownbasectl command
+// works immediately afterward.
 
 import (
 	"context"
@@ -20,8 +20,8 @@ import (
 	"github.com/spf13/cobra"
 
 	ownbase "github.com/ownbase/ownbase"
-	"github.com/ownbase/ownbase/internal/serverconfig"
 	"github.com/ownbase/ownbase/internal/tunnel"
+	"github.com/ownbase/ownbase/internal/vault"
 	"github.com/ownbase/ownbase/internal/vmhost"
 )
 
@@ -89,7 +89,7 @@ func (f *baseTargetFlags) register(cmd *cobra.Command) {
 	fl := cmd.Flags()
 	fl.StringVar(&f.remoteHost, "remote", "", "SSH host of a fresh Ubuntu server (user@host or host; omit for a local Multipass VM)")
 	fl.StringVar(&f.sshUser, "ssh-user", "root", "SSH login user for --remote (ignored for a local VM)")
-	fl.StringVar(&f.sshKey, "ssh-key", "", "path to SSH private key (default: the key from 'ownbasectl keygen <name>', else ~/.ssh/id_ed25519)")
+	fl.StringVar(&f.sshKey, "ssh-key", "", "import this existing private key file into the vault as the Base's owner key (default: the key from 'ownbasectl keygen <name>')")
 	fl.IntVar(&f.sshPort, "ssh-port", 22, "SSH port for --remote")
 	fl.IntVar(&f.cpus, "cpus", 2, "VM CPU count (local VM only)")
 	fl.IntVar(&f.memoryGB, "memory", 2, "VM memory in GB (local VM only)")
@@ -107,27 +107,27 @@ func (f *baseTargetFlags) register(cmd *cobra.Command) {
 func (f *baseTargetFlags) provision(name string, extraEnv map[string]string) error {
 	// Resolve once, here, so the key we authenticate with and the key we
 	// install into the server's authorized_keys are always the same one.
-	sshKey, err := f.ensureOwnerKey(name)
+	ownerKey, err := f.ensureOwnerKey(name)
 	if err != nil {
 		return err
 	}
 
 	if f.remoteHost != "" {
 		host, user := splitUserHost(f.remoteHost, f.sshUser)
-		return baseCreateRemote(name, host, user, sshKey, extraEnv, f)
+		return baseCreateRemote(name, host, user, ownerKey, extraEnv, f)
 	}
 	opts := vmhost.LaunchOptions{CPUs: f.cpus, MemoryGB: f.memoryGB, DiskGB: f.diskGB}
-	return baseCreateVM(name, opts, sshKey, extraEnv, f)
+	return baseCreateVM(name, opts, ownerKey, extraEnv, f)
 }
 
-// ensureOwnerKey resolves the key ownbasectl will authenticate with and
-// guarantees it exists on disk before anything depends on it. Returns the
-// ~-prefixed path to record in the profile.
+// ensureOwnerKey guarantees the vault holds an owner key for this Base before
+// anything depends on it, and returns its authorized_keys line — the exact
+// public half of the key every later connection will sign with.
 //
-// Without this, a machine with no SSH key at all provisions a local VM
-// successfully and then cannot be reached: the installer gets no public key to
-// authorize, so every later tunnel — including --wait's health poll — fails on
-// a missing key file long after the VM is running.
+// Without this, a fresh machine provisions a local VM successfully and then
+// cannot be reached: the installer gets no public key to authorize, so every
+// later tunnel — including --wait's health poll — fails long after the VM is
+// running.
 //
 // The two paths diverge on who authorizes the key. A local VM is configured by
 // us, so a missing key can simply be generated and `create <name>` works on a
@@ -136,35 +136,54 @@ func (f *baseTargetFlags) provision(name string, extraEnv map[string]string) err
 // generating one now would produce a key the server has never heard of, so the
 // only useful move is to say so before touching anything.
 func (f *baseTargetFlags) ensureOwnerKey(name string) (string, error) {
-	sshKey := resolveOwnerKey(name, f.sshKey)
-	if fileExists(expandKeyPath(sshKey)) {
-		return sshKey, nil
+	profile, err := loadProfile(name)
+	if err != nil && !isMissingBase(err) {
+		return "", err
 	}
 
-	// An explicitly named key is a statement of intent: substituting a
-	// different one would be worse than refusing.
+	// An explicit --ssh-key is a statement of intent: import that key rather
+	// than substituting one of ours. Same conflict guard as
+	// `keygen --import`: a Base that already has a different key means some
+	// machine out there was authorized with it, and overwriting the vault's
+	// copy would leave the operator unable to reconnect to it.
 	if f.sshKey != "" {
-		return "", withExitCode(exitPreflight, fmt.Errorf(
-			"no SSH private key at %s (from --ssh-key)", sshKey))
+		priv, pub, ierr := readPrivateKeyFile(f.sshKey)
+		if ierr != nil {
+			return "", withExitCode(exitPreflight, ierr)
+		}
+		if line := profile.PublicKeyLine(); line != "" && !vault.SameAuthorizedKey(line, pub) {
+			return "", withExitCode(exitConflict, fmt.Errorf(
+				"Base %q already has a different owner key in the vault; importing would lock you out of the machine that authorized the old one.\n"+
+					"       Remove the Base first with 'ownbasectl delete %s --keep-vm' if you really mean to replace its key", name, name))
+		}
+		profile.PrivateKey, profile.PublicKey = priv, pub
+		if perr := putProfile(name, profile); perr != nil {
+			return "", perr
+		}
+		return pub, nil
 	}
+
+	if pub := profile.PublicKeyLine(); pub != "" {
+		return pub, nil
+	}
+
 	if f.remoteHost != "" {
 		return "", withExitCode(exitPreflight, fmt.Errorf(
-			"no SSH key to reach %s with: expected one at %s.\n"+
+			"no owner key in the vault for Base %q, so there is nothing %s would accept.\n"+
 				"       Run 'ownbasectl keygen %s', paste the printed public key into your provider's SSH key field, and rebuild the server so it boots with that key authorized",
-			f.remoteHost, sshKey, name))
+			name, f.remoteHost, name))
 	}
 
-	keyPath, err := ownerKeyPath(name)
+	priv, pub, err := vault.NewKeyPair("ownbase_" + name)
 	if err != nil {
 		return "", err
 	}
-	if !fileExists(keyPath) {
-		if err := generateOwnerKey(keyPath, filepath.Base(keyPath)); err != nil {
-			return "", err
-		}
-		progress("==> No SSH key found; generated one for this Base at %s", keyPath)
+	profile.PrivateKey, profile.PublicKey = priv, pub
+	if err := putProfile(name, profile); err != nil {
+		return "", err
 	}
-	return filepath.Join("~", ".ssh", "ownbase_"+name), nil
+	progress("==> No owner key for this Base yet; generated one in the vault.")
+	return pub, nil
 }
 
 func newCreateCmd() *cobra.Command {
@@ -172,8 +191,8 @@ func newCreateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "create <name> [--remote <ssh-host>]",
 		Short: "Provision a new Base (local VM or remote server) and register it",
-		Long: `Provision a Base end to end and register it in ~/.ownbase/config so every
-other ownbasectl command works immediately afterward.
+		Long: `Provision a Base end to end and register it in your vault so every other
+ownbasectl command works immediately afterward.
 
 With no --remote flag, a fresh local Multipass VM is launched. With
 --remote, the installer runs over SSH on a fresh Ubuntu 22.04/24.04
@@ -239,7 +258,7 @@ func splitUserHost(remote, fallbackUser string) (host, user string) {
 //
 // extraEnv is merged into the installer's environment on top of the standard
 // vars — restore uses it to pass OWNBASE_REBUILD=1 and restic credentials.
-func baseCreateVM(name string, opts vmhost.LaunchOptions, sshKey string, extraEnv map[string]string, f *baseTargetFlags) error {
+func baseCreateVM(name string, opts vmhost.LaunchOptions, ownerPubKey string, extraEnv map[string]string, f *baseTargetFlags) error {
 	// OWNBASE_DRIVEN_BY_CTL tells install.sh that the profile registration
 	// happens automatically, so its footer skips the manual `adopt` step.
 	env := map[string]string{"OWNBASE_DRIVEN_BY_CTL": "1"}
@@ -309,8 +328,8 @@ func baseCreateVM(name string, opts vmhost.LaunchOptions, sshKey string, extraEn
 	}
 
 	progress("==> Running the installer inside the VM ...")
-	if key := ownerPublicKey(sshKey); key != "" {
-		env["OWNBASE_OWNER_SSH_KEY"] = key
+	if ownerPubKey != "" {
+		env["OWNBASE_OWNER_SSH_KEY"] = ownerPubKey
 	}
 	if f.caddyEmail != "" {
 		env["CADDY_EMAIL"] = f.caddyEmail
@@ -335,11 +354,11 @@ func baseCreateVM(name string, opts vmhost.LaunchOptions, sshKey string, extraEn
 		return err
 	}
 
-	if err := registerProfile(name, ip, serverconfig.DefaultSSHUser, sshKey, 22, serverconfig.DefaultAPIPort, token, true); err != nil {
+	if err := registerProfile(name, ip, vault.DefaultSSHUser, 22, token, true); err != nil {
 		return err
 	}
 
-	return finishCreate(name, ip, serverconfig.DefaultSSHUser, sshKey, 22, f)
+	return finishCreate(name, ip, vault.DefaultSSHUser, 22, f)
 }
 
 // baseCreateRemote installs OwnBase on a fresh remote Ubuntu server over SSH,
@@ -349,22 +368,25 @@ func baseCreateVM(name string, opts vmhost.LaunchOptions, sshKey string, extraEn
 // a dev build installs the latest release. extraEnv is merged into the
 // installer's environment — restore uses it to pass OWNBASE_REBUILD=1 and
 // restic credentials.
-func baseCreateRemote(name, host, sshUser, sshKey string, extraEnv map[string]string, f *baseTargetFlags) error {
-	keyPath := expandKeyPath(sshKey)
+func baseCreateRemote(name, host, sshUser, ownerPubKey string, extraEnv map[string]string, f *baseTargetFlags) error {
 	sshPort := f.sshPort
+	target, err := ownerTarget(name, host, sshUser, sshPort)
+	if err != nil {
+		return err
+	}
 
 	// Refuse before touching the machine, not after: repointing a name at a
 	// new server would discard the old one's API token.
 	if err := checkProfileConflict(name, host, f.replace || f.repointOK); err != nil {
 		return err
 	}
-	if _, err := preflightRemote(host, sshUser, keyPath, sshPort, f.waitForSSH); err != nil {
+	if _, err := preflightRemote(target, f.waitForSSH); err != nil {
 		return err
 	}
 
-	progress("==> Installing OwnBase on %s@%s ...", sshUser, host)
+	progress("==> Installing OwnBase on %s ...", target.Destination())
 	const remoteScriptPath = "/tmp/ownbase-install.sh"
-	if err := tunnel.UploadFile(host, sshUser, keyPath, sshPort, ownbase.InstallScript, remoteScriptPath, 0o755); err != nil {
+	if err := tunnel.UploadFile(target, ownbase.InstallScript, remoteScriptPath, 0o755); err != nil {
 		return withExitCode(exitInstall, fmt.Errorf("upload install.sh: %w", err))
 	}
 
@@ -372,8 +394,8 @@ func baseCreateRemote(name, host, sshUser, sshKey string, extraEnv map[string]st
 	if isReleaseBuild() {
 		env["OWNBASE_VERSION"] = version
 	}
-	if key := ownerPublicKey(sshKey); key != "" {
-		env["OWNBASE_OWNER_SSH_KEY"] = key
+	if ownerPubKey != "" {
+		env["OWNBASE_OWNER_SSH_KEY"] = ownerPubKey
 	}
 	if f.caddyEmail != "" {
 		env["CADDY_EMAIL"] = f.caddyEmail
@@ -392,14 +414,14 @@ func baseCreateRemote(name, host, sshUser, sshKey string, extraEnv map[string]st
 	// sudo -E: install.sh requires root; -E preserves the env-var prefix
 	// (CADDY_EMAIL, OWNBASE_OWNER_SSH_KEY, ...) through the sudo boundary
 	// so it works whether sshUser is already root or a sudo-capable user.
-	out, err := tunnel.RunCommand(host, sshUser, keyPath, envPrefixedCommand(env, "sudo -E bash "+remoteScriptPath), sshPort)
+	out, err := tunnel.RunCommand(target, envPrefixedCommand(env, "sudo -E bash "+remoteScriptPath))
 	fmt.Fprintln(os.Stderr, out)
 	if err != nil {
 		return withExitCode(exitInstall, fmt.Errorf("installer failed: %w", err))
 	}
 
 	progress("==> Reading the API token from the server ...")
-	token, err := tunnel.RunCommand(host, sshUser, keyPath, "sudo cat /opt/ownbase/api-token", sshPort)
+	token, err := tunnel.RunCommand(target, "sudo cat /opt/ownbase/api-token")
 	if err != nil {
 		return withExitCode(exitInstall, fmt.Errorf("read API token: %w", err))
 	}
@@ -407,11 +429,25 @@ func baseCreateRemote(name, host, sshUser, sshKey string, extraEnv map[string]st
 		return withExitCode(exitInstall, fmt.Errorf("read API token: got an empty token from /opt/ownbase/api-token — installer may not have completed"))
 	}
 
-	if err := registerProfile(name, host, sshUser, sshKey, sshPort, serverconfig.DefaultAPIPort, strings.TrimSpace(token), false); err != nil {
+	if err := registerProfile(name, host, sshUser, sshPort, strings.TrimSpace(token), false); err != nil {
 		return err
 	}
 
-	return finishCreate(name, host, sshUser, sshKey, sshPort, f)
+	return finishCreate(name, host, sshUser, sshPort, f)
+}
+
+// ownerTarget builds an SSH target for a Base that is not registered yet: the
+// host and user come from the command line, the signing key from the vault
+// entry `keygen` (or ensureOwnerKey) just wrote.
+func ownerTarget(name, host, sshUser string, sshPort int) (tunnel.Target, error) {
+	profile, err := loadProfile(name)
+	if err != nil && !isMissingBase(err) {
+		return tunnel.Target{}, err
+	}
+	profile.Host = host
+	profile.SSHUser = sshUser
+	profile.SSHPort = sshPort
+	return sshTarget(profile)
 }
 
 // finishCreate handles everything after the profile is registered: the
@@ -422,7 +458,7 @@ func baseCreateRemote(name, host, sshUser, sshKey string, extraEnv map[string]st
 // fail2ban, unattended-upgrades — before it binds the API port. So a create
 // that has "succeeded" is still an unhardened machine for another minute or
 // two, and the API answering is exactly the signal that pass zero finished.
-func finishCreate(name, host, sshUser, sshKey string, sshPort int, f *baseTargetFlags) error {
+func finishCreate(name, host, sshUser string, sshPort int, f *baseTargetFlags) error {
 	ready := false
 	if f.wait {
 		progress("==> Waiting for the daemon to finish hardening the host ...")
@@ -438,9 +474,8 @@ func finishCreate(name, host, sshUser, sshKey string, sshPort int, f *baseTarget
 			"base":     name,
 			"host":     host,
 			"ssh_user": sshUser,
-			"ssh_key":  sshKey,
 			"ssh_port": sshPort,
-			"api_port": serverconfig.DefaultAPIPort,
+			"api_port": vault.DefaultAPIPort,
 			"ready":    ready,
 		})
 	}
@@ -529,34 +564,26 @@ func waitForVMAPIToken(ctx context.Context, m *vmhost.Multipass, name string, ti
 	return "", fmt.Errorf("timed out waiting for /opt/ownbase/api-token on VM %q: %w", name, lastErr)
 }
 
-// registerProfile saves (or overwrites) a Base profile in ~/.ownbase/config.
-// localVM marks whether this Base is a local Multipass VM (created by
-// `create` with no --remote) as opposed to a remote server (--remote) — see
-// ServerProfile.LocalVM.
-func registerProfile(name, host, sshUser, sshKey string, sshPort, apiPort int, token string, localVM bool) error {
-	cfgPath, err := serverconfig.DefaultConfigPath()
-	if err != nil {
-		return fmt.Errorf("locate config: %w", err)
+// registerProfile saves (or overwrites) a Base's connection details in the
+// vault, keeping whatever owner key is already stored for it. localVM marks
+// whether this Base is a local Multipass VM (created by `create` with no
+// --remote) as opposed to a remote server (--remote) — see Profile.LocalVM.
+func registerProfile(name, host, sshUser string, sshPort int, token string, localVM bool) error {
+	profile, err := loadProfile(name)
+	if err != nil && !isMissingBase(err) {
+		return err
 	}
-	cfg, err := serverconfig.Load(cfgPath)
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
+	profile.Host = host
+	profile.SSHUser = sshUser
+	profile.SSHPort = sshPort
+	profile.APIPort = vault.DefaultAPIPort
+	profile.Token = token
+	profile.LocalVM = &localVM
 
-	cfg.Servers[name] = serverconfig.ServerProfile{
-		Host:    host,
-		SSHUser: sshUser,
-		SSHKey:  sshKey,
-		SSHPort: sshPort,
-		APIPort: apiPort,
-		Token:   token,
-		LocalVM: &localVM,
+	if err := putProfile(name, profile); err != nil {
+		return err
 	}
-	if err := serverconfig.Save(cfgPath, cfg); err != nil {
-		return fmt.Errorf("save config: %w", err)
-	}
-
-	progress("Registered %q in ~/.ownbase/config.", name)
+	progress("Registered %q in your vault.", name)
 	return nil
 }
 

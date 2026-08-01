@@ -93,9 +93,14 @@ func assertSingleJSONDocument(t *testing.T, out string, wantVerify bool) {
 	}
 }
 
-// Without --verify the payload stays the /status body verbatim, so anything
-// already parsing `checkup --json` keeps working.
-func TestCheckupJSON_IsUnchangedWithoutVerify(t *testing.T) {
+// The document has the same three keys with or without --verify, and `findings`
+// is always a list.
+//
+// This is the desktop app's whole read of a Base, and the app renders findings
+// rather than deciding on them — so a `null` here, or a payload that only
+// sometimes carries the verdict, would show an empty dashboard for a Base that
+// is fine.
+func TestCheckupJSON_ShapeIsStableWithoutVerify(t *testing.T) {
 	ts := drillServer(true)
 	defer ts.Close()
 
@@ -104,8 +109,13 @@ func TestCheckupJSON_IsUnchangedWithoutVerify(t *testing.T) {
 			t.Fatalf("checkup: %v", err)
 		}
 	})
-	if strings.TrimSpace(out) != "{}" {
-		t.Errorf("output = %q, want the /status body unchanged", strings.TrimSpace(out))
+
+	assertSingleJSONDocument(t, out, false)
+	if !strings.Contains(out, `"findings":[]`) {
+		t.Errorf("findings is not an empty list — a caller would need a nil check:\n%s", out)
+	}
+	if strings.Contains(out, `"verify"`) {
+		t.Errorf("verify present when no drill ran:\n%s", out)
 	}
 }
 

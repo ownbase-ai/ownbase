@@ -13,11 +13,13 @@ ownbasectl secrets list mybase
 
 `--help`, `-h`, and `--version` work everywhere. Shell completions: `ownbasectl completion bash|zsh|fish|powershell`.
 
-**Only `tunnel` is ever interactive.** Everything else runs unattended, which is what makes the CLI safe for an AI agent to drive. `create`, `restore`, `delete`, and `db restore --into production` have confirmation prompts that apply solely to destructive local-VM or production operations, and each is skipped by `--yes` or by a non-TTY stdin.
+**Only `vault init|unlock|passwd`, `ssh`, and `tunnel` are ever interactive.** Everything else runs unattended, which is what makes the CLI safe for an AI agent to drive. The vault commands prompt for a master password, which is the one secret that must not pass through an agent. `create`, `restore`, `delete`, and `db restore --into production` have confirmation prompts that apply solely to destructive local-VM or production operations, and each is skipped by `--yes` or by a non-TTY stdin.
 
 ## How commands reach a Base
 
-Commands that talk to a Base open an SSH tunnel to the host in the named profile (`~/.ownbase/config`) and call the daemon's HTTP API through it ([api.md](api.md)). The API port is never exposed to the network. Host keys are verified against `~/.ownbase/known_hosts`, trust-on-first-use, like the `ssh` CLI.
+Every credential — the host, the SSH owner key, the daemon API token, the config repo pointer — lives in your **vault**, an encrypted KDBX file you choose the location of. A resident credential agent holds it unlocked in memory and signs SSH challenges on request, so a command like `ownbasectl status mybase` never has a private key in its own address space. See [vault.md](vault.md).
+
+Commands that talk to a Base open an SSH tunnel to the host in its vault profile and call the daemon's HTTP API through it ([api.md](api.md)). The API port is never exposed to the network. Host keys are verified against `~/.ownbase/known_hosts`, trust-on-first-use, like the `ssh` CLI.
 
 Mutating config commands additionally clone and push the external config repo directly from your machine with your own git credentials. The Base only ever reads that repo.
 
@@ -34,10 +36,11 @@ Mutating config commands additionally clone and push the external config repo di
 | 4 | The installer ran and failed |
 | 5 | Installed, but not healthy within `--wait-timeout` |
 | 6 | Refused — the command was valid, but running it would have discarded another Base's API token. Nothing was changed |
+| 7 | The vault is locked, or there is no vault yet. Nothing was changed |
 
-6 is deliberately not 2: the command was well-formed, so there is nothing in argv to correct. It needs a decision — repoint anyway with `--replace`, or use a different name — which is usually where an unattended caller should stop and ask.
+6 and 7 are deliberately not 2. In both cases the command was well-formed, so there is nothing in argv to correct. 6 needs a decision — repoint anyway with `--replace`, or use a different name. 7 needs a human to type a master password (`ownbasectl vault unlock`, or open the app). Either way an unattended caller should stop and say so rather than retry.
 
-Every other command uses 0 for success and 1 for failure.
+Every other command uses 0 for success and 1 for failure, except `ssh`, which passes the remote command's exit code straight through.
 
 ## stdout and stderr
 
@@ -45,24 +48,98 @@ Stdout carries only the result: the human banner, or the `--json` document. Prog
 
 ---
 
+## Vault and credential agent
+
+Full explanation in [vault.md](vault.md). The commands:
+
+### `vault init [path]`
+
+Create the vault and record where it lives. Prompts for a master password twice. `path` may be a file or a directory (in which case `ownbase.kdbx` is appended); a folder synced by iCloud, Dropbox, or Syncthing is a good choice, because the file is useless without the password and having it on two machines is what saves you from a dead laptop.
+
+```bash
+ownbasectl vault init ~/Library/Mobile\ Documents/com~apple~CloudDocs/OwnBase
+ownbasectl vault init --json
+```
+
+The path is recorded in `~/.ownbase/vault`, a plain text file holding a path and no secret. `$OWNBASE_VAULT` overrides it for one invocation.
+
+### `vault unlock` / `vault lock` / `vault status` / `vault passwd`
+
+`unlock` prompts for the master password and hands it to the credential agent, starting the agent first if it is not running. Everything else then works unattended until the vault auto-locks (default 4 hours idle, `--idle-timeout` to change, `0` to disable).
+
+```bash
+ownbasectl vault unlock
+ownbasectl vault unlock --idle-timeout 30m
+ownbasectl vault status --json    # running, unlocked, bases, keys, locks_at, ssh_agent_socket
+ownbasectl vault lock             # forget the master password now
+ownbasectl vault passwd           # re-encrypt under a new master password
+```
+
+`vault status` is the thing to check first when a command fails with exit code 7.
+
+### `agent run` / `agent stop`
+
+The credential agent, normally started for you by `vault unlock`. `agent run` runs it in the foreground, which is how you read its log directly; otherwise it logs to `~/.ownbase/agent.log`. `agent stop` shuts it down, which also forgets the master password.
+
+The agent also serves the standard ssh-agent protocol, so your own `ssh` and `git` can use the owner keys without ever reading them:
+
+```bash
+export SSH_AUTH_SOCK="$(ownbasectl vault status --json | jq -r .ssh_agent_socket)"
+```
+
+## SSH and session audit
+
+### `ssh <name> [-- <command>...]`
+
+Open an interactive shell on the Base, or run one command. **Use this instead of plain `ssh`.** It authenticates with the owner key from your vault — signed by the credential agent, so no private key is handed to the process — and it records the session.
+
+```bash
+ownbasectl ssh mybase
+ownbasectl ssh mybase -- systemctl status ownbased
+ownbasectl ssh mybase --command 'journalctl -u ownbased -n 50'
+ownbasectl ssh mybase --no-tty -- cat /etc/os-release > os-release.txt
+```
+
+The remote command's exit code becomes this command's exit code, so it composes in scripts the way `ssh` does. The banner and any progress go to stderr, so redirecting stdout gives you exactly the remote output.
+
+Every session is recorded to `~/.ownbase/sessions/<base>/<id>.cast` in [asciicast v2](https://docs.asciinema.org/manual/asciicast/v2/) format, with a `<id>.json` sidecar holding the metadata. **Recording cannot be turned off.** A Base is a machine an agent has root on, and an audit trail with an opt-out is not an audit trail. Set `$OWNBASE_INVOKER` to label who opened a session (the desktop app sets it to `app`); it is a label for the trail, not a permission.
+
+### `sessions list|show|path`
+
+```bash
+ownbasectl sessions list                  # every Base, newest first
+ownbasectl sessions list mybase --json
+ownbasectl sessions show <id>             # the transcript as plain text
+ownbasectl sessions show <id> --meta      # who, when, exit code
+ownbasectl sessions show <id> --cast      # the asciicast recording itself
+asciinema play "$(ownbasectl sessions path <id>)"   # timed replay
+```
+
+Recordings are yours and in an open format: `asciinema play` renders them with no OwnBase installed. They are mode 600, because a session can contain anything typed at a prompt. `--cast` is how the desktop app's player gets one — it asks the CLI rather than reading the directory itself, so where recordings live stays a detail only `ownbasectl` knows.
+
+---
+
 ## Lifecycle
 
 ### `keygen <name>`
 
-Create the SSH keypair **you** use to reach a Base, at `~/.ssh/ownbase_<name>`, and print the public half to paste into a provider's SSH key field. Run it before `create --remote`, because providers authorize a key when the machine is created.
+Create the SSH keypair **you** use to reach a Base, store it in the vault, and print the public half to paste into a provider's SSH key field. Run it before `create --remote`, because providers authorize a key when the machine is created.
 
 ```bash
 ownbasectl keygen mybase
-ownbasectl keygen mybase --json    # {"public_key", "private_key_path", "created"}
+ownbasectl keygen mybase --json           # {"public_key", "created"}
+ownbasectl keygen mybase --import ~/.ssh/id_ed25519   # adopt an existing key
 ```
 
 Idempotent: an existing key is printed, never regenerated. `create` finds the key automatically, so `--ssh-key` is not needed.
+
+The private half goes into the vault and nowhere else — there is no file under `~/.ssh` to lose, back up, or leak. If you need it outside OwnBase, open the vault in KeePassXC, or point `SSH_AUTH_SOCK` at the agent (see above).
 
 This is not the same as [`ssh-key`](#ssh-key-addlist-base), which provisions the key the *Base* uses to clone your git repos.
 
 ### `create <name> [--remote <ssh-host>]`
 
-Provision a Base end to end and register it in `~/.ownbase/config`.
+Provision a Base end to end and register it in your vault.
 
 ```bash
 ownbasectl create mybase                                         # local Multipass VM
@@ -76,7 +153,7 @@ ownbasectl create mybase --remote root@203.0.113.10 --wait       # fresh Ubuntu 
 | `--json` | `false` | Machine-readable result instead of the banner |
 | `--caddy-email` | — | ACME contact for automatic TLS on public domains |
 | `--ssh-user` | `root` | SSH login user for `--remote`. Needs passwordless sudo if not root |
-| `--ssh-key` | the `keygen` key for this Base, else `~/.ssh/id_ed25519` | SSH private key |
+| `--ssh-key` | the `keygen` key for this Base | import this private key file into the vault instead |
 | `--ssh-port` | `22` | SSH port. Also tells the daemon which port to open in UFW and jail in fail2ban |
 | `--wait-for-ssh` | `5m` | How long to wait for a booting server to accept SSH |
 | `--wait-timeout` | `10m` | How long `--wait` blocks before giving up |
@@ -92,19 +169,19 @@ Without `--wait`, `create` returns while the daemon is still hardening the host 
 
 `create` refuses to repoint an existing Base name at a different machine without `--replace`, because overwriting the profile discards the old Base's API token and orphans it. This applies to both paths: repointing a name at another host, and launching a local VM under a name that already belongs to a remote server.
 
-"Same machine" means the address as written, normalized for case, whitespace, a trailing dot, and IPv6 spelling. DNS is not resolved, so reaching one server by hostname and then by IP reads as two machines — see [troubleshooting.md](troubleshooting.md#already-points-at-host-in-ownbaseconfig-exit-code-6) for why that is deliberate, and why `--replace` is the right answer there.
+"Same machine" means the address as written, normalized for case, whitespace, a trailing dot, and IPv6 spelling. DNS is not resolved, so reaching one server by hostname and then by IP reads as two machines — see [troubleshooting.md](troubleshooting.md#already-points-at-host-exit-code-6) for why that is deliberate, and why `--replace` is the right answer there.
 
 A freshly created Base has no domain configured, so it exposes nothing but SSH. Once a service has a `domain:`, reach it with [`tunnel`](#tunnel-name), or through Caddy once DNS points at the Base.
 
-### `adopt <name> --host <host> --token <token>`
+### `adopt <name> --host <host>`
 
 Register a Base installed some other way, e.g. `install.sh` run by hand. Verifies SSH connectivity before saving. Bases made with `create` are registered automatically.
 
 ```bash
-ownbasectl adopt prod --host mybase.example.com --token <token>
+ownbasectl adopt prod --host mybase.example.com
 ```
 
-Flags: `--host` and `--token` (required; the token is printed at install time and stored at `/opt/ownbase/api-token`), `--ssh-user` (default `root`; local VMs use `ubuntu`), `--ssh-key` (default `~/.ssh/id_ed25519`), `--ssh-port` (default `22`), `--api-port` (default `7070`).
+Flags: `--host` (required), `--token` (optional — fetched over SSH from `/opt/ownbase/api-token` if not given; pass it explicitly only when SSH can't read that file itself), `--ssh-user` (default `root`; local VMs use `ubuntu`), `--ssh-key` (import this private key file into the vault instead of using one already there), `--ssh-port` (default `22`), `--api-port` (default `7070`).
 
 ### `list` / `delete <name>`
 
@@ -159,7 +236,7 @@ Verified-restore drill
 
 Without `--verify`, the report shows the last drill the Base ran on its own schedule, which may be up to a day old. A failed drill names the failing check and exits non-zero; the report still prints.
 
-`--json` is one document either way: the `/status` payload on its own, or `{"verify": {…}, "status": {…}}` with `--verify`. A failed drill still exits non-zero with its message on stderr, so stdout stays parseable.
+`--json` is one document: `{"findings": [{"summary", "fix"}…], "status": {…}}`, plus a `"verify"` key when `--verify` ran. The findings are in the payload because deciding what counts as a problem is this command's job — the desktop app renders that verdict rather than recomputing it, which is what keeps the two from disagreeing about whether a Base is healthy. For the machine's own words with no verdict attached, use `status --json`. A failed drill still exits non-zero with its message on stderr, so stdout stays parseable.
 
 ### `backup setup|run|status <name>`
 

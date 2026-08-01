@@ -8,183 +8,199 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/ownbase/ownbase/internal/serverconfig"
+	"github.com/ownbase/ownbase/internal/vault"
 )
 
-func TestGenerateOwnerKey(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+func TestRunKeygen_StoresKeyInVault(t *testing.T) {
+	startTestAgent(t)
 
-	keyPath := filepath.Join(tmpHome, ".ssh", "ownbase_mybase")
-	if err := generateOwnerKey(keyPath, "ownbase_mybase"); err != nil {
-		t.Fatalf("generateOwnerKey: %v", err)
+	if err := runKeygen("mybase", "", true); err != nil {
+		t.Fatalf("keygen: %v", err)
 	}
 
-	priv, err := os.ReadFile(keyPath)
+	p, err := loadProfile("mybase")
 	if err != nil {
-		t.Fatalf("read private key: %v", err)
+		t.Fatalf("loadProfile: %v", err)
 	}
-	signer, err := ssh.ParsePrivateKey(priv)
-	if err != nil {
-		t.Fatalf("generated private key does not parse: %v", err)
+	if p.PublicKeyLine() == "" {
+		t.Fatal("keygen stored no public key")
 	}
-
-	info, err := os.Stat(keyPath)
-	if err != nil {
-		t.Fatal(err)
+	// The redacted profile the CLI receives must never carry the private half:
+	// that property is what lets an agent drive ownbasectl safely.
+	if p.PrivateKey != "" {
+		t.Error("the private key left the credential agent")
 	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Errorf("private key mode = %o, want 600", perm)
-	}
-
-	// The .pub file must describe the same key as the private half, or the
-	// key installed into authorized_keys would not be the key we connect with.
-	pub, err := os.ReadFile(keyPath + ".pub")
-	if err != nil {
-		t.Fatalf("read public key: %v", err)
-	}
-	wantPrefix := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(signer.PublicKey())))
-	if !strings.HasPrefix(strings.TrimSpace(string(pub)), wantPrefix) {
-		t.Errorf(".pub does not match the private key\n got: %s\nwant prefix: %s", pub, wantPrefix)
+	// Nor may it appear anywhere on disk.
+	home, _ := os.UserHomeDir()
+	if _, err := os.Stat(filepath.Join(home, ".ssh", "ownbase_mybase")); err == nil {
+		t.Error("keygen wrote a private key file to ~/.ssh")
 	}
 }
 
-// TestGenerateOwnerKey_NeverClobbers guards the worst outcome of a bug here:
-// silently replacing an owner key locks you out of the Base it reaches.
-func TestGenerateOwnerKey_NeverClobbers(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
-
-	keyPath := filepath.Join(tmpHome, ".ssh", "ownbase_mybase")
-	if err := generateOwnerKey(keyPath, "first"); err != nil {
-		t.Fatalf("generateOwnerKey: %v", err)
-	}
-	original, err := os.ReadFile(keyPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if err := generateOwnerKey(keyPath, "second"); err == nil {
-		t.Error("expected generateOwnerKey to refuse to overwrite an existing key")
-	}
-	after, err := os.ReadFile(keyPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(original) != string(after) {
-		t.Error("existing private key was modified")
-	}
-}
-
+// Re-running keygen must reuse the key. Regenerating it would lock the operator
+// out of the machine the first key authorized.
 func TestRunKeygen_Idempotent(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+	startTestAgent(t)
 
-	if err := runKeygen("mybase", true); err != nil {
+	if err := runKeygen("mybase", "", true); err != nil {
 		t.Fatalf("first keygen: %v", err)
 	}
-	keyPath := filepath.Join(tmpHome, ".ssh", "ownbase_mybase")
-	first, err := os.ReadFile(keyPath)
+	first, err := loadProfile("mybase")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err := runKeygen("mybase", true); err != nil {
+	if err := runKeygen("mybase", "", true); err != nil {
 		t.Fatalf("second keygen: %v", err)
 	}
-	second, err := os.ReadFile(keyPath)
+	second, err := loadProfile("mybase")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(first) != string(second) {
+	if first.PublicKeyLine() != second.PublicKeyLine() {
 		t.Error("re-running keygen regenerated the key; it must be idempotent")
 	}
 }
 
-func TestResolveOwnerKey(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+// A key for one Base must not be reachable as another Base's key.
+func TestRunKeygen_KeyIsPerBase(t *testing.T) {
+	startTestAgent(t)
 
-	if got := resolveOwnerKey("mybase", "/custom/key"); got != "/custom/key" {
-		t.Errorf("explicit --ssh-key should win, got %q", got)
-	}
-	if got := resolveOwnerKey("mybase", ""); got != serverconfig.DefaultSSHKey {
-		t.Errorf("with no per-Base key, want %q, got %q", serverconfig.DefaultSSHKey, got)
-	}
-
-	if err := runKeygen("mybase", true); err != nil {
+	if err := runKeygen("first", "", true); err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join("~", ".ssh", "ownbase_mybase")
-	if got := resolveOwnerKey("mybase", ""); got != want {
-		t.Errorf("after keygen, want %q, got %q", want, got)
+	if err := runKeygen("second", "", true); err != nil {
+		t.Fatal(err)
 	}
-	// A key for one Base must not be picked up by another.
-	if got := resolveOwnerKey("otherbase", ""); got != serverconfig.DefaultSSHKey {
-		t.Errorf("per-Base key leaked to another Base: got %q", got)
+	a, err := loadProfile("first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := loadProfile("second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.PublicKeyLine() == b.PublicKeyLine() {
+		t.Error("two Bases share one owner key; retiring one would revoke both")
 	}
 }
 
-// TestOwnerPublicKeyMatchesConnectingKey is the regression test for the
-// mismatch this refactor removed: the public key written into the server's
-// authorized_keys must be derived from the private key ownbasectl
-// authenticates with, not from whatever ~/.ssh/id_ed25519.pub happens to be.
-func TestOwnerPublicKeyMatchesConnectingKey(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+func TestRunKeygen_Import(t *testing.T) {
+	startTestAgent(t)
 
-	// A decoy default key that must NOT be chosen.
-	decoyPath := filepath.Join(tmpHome, ".ssh", "id_ed25519")
-	if err := generateOwnerKey(decoyPath, "decoy"); err != nil {
+	privPEM, _, pub := newTestOwnerKey(t)
+	keyFile := filepath.Join(t.TempDir(), "id_ed25519")
+	if err := os.WriteFile(keyFile, []byte(privPEM), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	decoyPub, err := os.ReadFile(decoyPath + ".pub")
+
+	if err := runKeygen("mybase", keyFile, true); err != nil {
+		t.Fatalf("keygen --import: %v", err)
+	}
+	p, err := loadProfile("mybase")
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	if err := runKeygen("mybase", true); err != nil {
-		t.Fatal(err)
+	want := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pub)))
+	if !strings.HasPrefix(p.PublicKeyLine(), want) {
+		t.Errorf("imported key = %q, want prefix %q", p.PublicKeyLine(), want)
 	}
-	resolved := resolveOwnerKey("mybase", "")
-	got := ownerPublicKey(resolved)
-
-	if got == strings.TrimSpace(string(decoyPub)) {
-		t.Fatal("ownerPublicKey returned the default key instead of the per-Base key")
-	}
-
-	priv, err := os.ReadFile(filepath.Join(tmpHome, ".ssh", "ownbase_mybase"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	signer, err := ssh.ParsePrivateKey(priv)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(signer.PublicKey())))
-	if !strings.HasPrefix(got, want) {
-		t.Errorf("authorized key does not match the connecting key\n got: %s\nwant prefix: %s", got, want)
+	// Importing must not move or delete the operator's own file.
+	if _, err := os.Stat(keyFile); err != nil {
+		t.Errorf("the imported key file was disturbed: %v", err)
 	}
 }
 
-// TestOwnerPublicKey_FallsBackToPubFile covers passphrase-protected keys,
-// which cannot be parsed unattended.
-func TestOwnerPublicKey_FallsBackToPubFile(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
+// Importing over a Base that already has a different key is refused: the old
+// key is what the running machine authorizes, and replacing it silently would
+// be a lockout.
+func TestRunKeygen_ImportRefusesToReplaceDifferentKey(t *testing.T) {
+	startTestAgent(t)
 
-	keyPath := filepath.Join(tmpHome, ".ssh", "encrypted")
-	if err := os.MkdirAll(filepath.Dir(keyPath), 0o700); err != nil {
+	if err := runKeygen("mybase", "", true); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(keyPath, []byte("-----BEGIN OPENSSH PRIVATE KEY-----\nnot parseable\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(keyPath+".pub", []byte("ssh-ed25519 AAAAC3Nza-fake me@host\n"), 0o644); err != nil {
+	original, err := loadProfile("mybase")
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	if got, want := ownerPublicKey(keyPath), "ssh-ed25519 AAAAC3Nza-fake me@host"; got != want {
-		t.Errorf("ownerPublicKey = %q, want %q", got, want)
+	otherPEM, _, _ := newTestOwnerKey(t)
+	keyFile := filepath.Join(t.TempDir(), "other")
+	if err := os.WriteFile(keyFile, []byte(otherPEM), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err = runKeygen("mybase", keyFile, true)
+	if err == nil {
+		t.Fatal("expected keygen --import to refuse to replace an existing owner key")
+	}
+	if code := exitCodeFor(err); code != exitConflict {
+		t.Errorf("exit code = %d, want %d", code, exitConflict)
+	}
+	after, lerr := loadProfile("mybase")
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	if after.PublicKeyLine() != original.PublicKeyLine() {
+		t.Error("the existing owner key was replaced despite the refusal")
+	}
+}
+
+// Importing the exact key material a Base already has must succeed even when
+// the two copies are spelled differently: a key `keygen` generated carries an
+// "ownbase_<name>" comment (visible to anyone who opens the vault directly in
+// KeePassXC, by design), while readPrivateKeyFile — reading that same key back
+// out of a file — emits no comment at all. That difference alone must not
+// read as "a different key".
+func TestRunKeygen_ImportMatchesKeyStoredWithDifferentComment(t *testing.T) {
+	startTestAgent(t)
+
+	// Stand in for a key `keygen` created directly: PublicKey carries a
+	// comment, exactly as entryFromProfile / profileFromEntry round-trip it.
+	privPEM, commentedLine, _ := newTestOwnerKey(t)
+	putTestProfile(t, "mybase", vault.Profile{PrivateKey: privPEM, PublicKey: commentedLine})
+
+	// The same key, as if copied out of the vault file by hand — no comment.
+	keyFile := filepath.Join(t.TempDir(), "id_ed25519")
+	if err := os.WriteFile(keyFile, []byte(privPEM), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runKeygen("mybase", keyFile, true); err != nil {
+		t.Fatalf("re-importing identical key material was refused: %v", err)
+	}
+	after, err := loadProfile("mybase")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !vault.SameAuthorizedKey(after.PublicKeyLine(), commentedLine) {
+		t.Errorf("key changed across re-import: %q -> %q", commentedLine, after.PublicKeyLine())
+	}
+}
+
+func TestReadPrivateKeyFile_RejectsUnparseable(t *testing.T) {
+	keyFile := filepath.Join(t.TempDir(), "broken")
+	if err := os.WriteFile(keyFile, []byte("-----BEGIN OPENSSH PRIVATE KEY-----\nnot parseable\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := readPrivateKeyFile(keyFile); err == nil {
+		t.Fatal("expected an error for an unparseable key")
+	}
+}
+
+// The public key handed to the installer must be derived from the private key
+// the agent will sign with, not from anything alongside it — a mismatch is only
+// discovered later, as a lockout.
+func TestOwnerPublicKeyMatchesSigningKey(t *testing.T) {
+	privPEM, storedLine, pub := newTestOwnerKey(t)
+	p := vault.Profile{PrivateKey: privPEM, PublicKey: "ssh-ed25519 AAAAstale wrong-key"}
+
+	want := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pub)))
+	if got := p.PublicKeyLine(); !strings.HasPrefix(got, want) {
+		t.Errorf("PublicKeyLine = %q, want prefix %q", got, want)
+	}
+	if !strings.HasPrefix(storedLine, want) {
+		t.Errorf("NewKeyPair public line = %q, want prefix %q", storedLine, want)
 	}
 }

@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "What the OwnBase window is allowed to ask the Rust side for. Deliberately short: the app's own `cli_run`/`cli_stream` commands are the only way it reaches ownbasectl, and they validate the subcommand themselves (see src/cli.rs). The shell plugin's own execute/spawn permissions are NOT granted, so the webview cannot name a program to run.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "dialog:allow-open",
+    "opener:allow-open-url"
+  ]
+}

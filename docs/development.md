@@ -24,6 +24,17 @@ Tier-2 (integration) tests require an Ubuntu VM (Multipass) and exercise real Po
 3. Build on the VM: `multipass exec ownbase-test -- bash -c "cd ~/ownbase && /usr/local/go/bin/go build -tags integration ./..."`
 4. Run: `make test-vm`
 
+The [desktop app](../desktop/README.md) is also Tier-1 — no window is opened, so it runs anywhere:
+
+```bash
+make app-check       # tsc, eslint, vitest, cargo fmt, cargo clippy
+make app             # the app against a dev server, for looking at it
+```
+
+What that guards is the seam: every screen renders `ownbasectl --json`, so a field that moved on the Go side has to fail there rather than in a shipped bundle. If you change the shape of any `--json` output, run it.
+
+`desktop/go.mod` exists only to keep `go test ./...` out of `node_modules`, which ships a stray Go package. There is no first-party Go code under `desktop/`.
+
 ## Invariants to preserve
 
 - **Idempotency.** Every reconcile/install/hardening step must be safe to run twice — check before acting, not "run once and hope."
@@ -32,10 +43,14 @@ Tier-2 (integration) tests require an Ubuntu VM (Multipass) and exercise real Po
 - **Audit everything.** Every daemon action goes through the `internal/schema` taxonomy (`NewAction`) and gets logged. An action type not in the taxonomy cannot execute — extend the taxonomy deliberately, don't work around it.
 - **Plaintext secrets never touch disk.** Decrypt in memory, inject at container start, nothing else.
 - **Dry-run everywhere it matters.** `plan`/`apply --dry-run` must be side-effect-free previews of the real path, not a separate implementation.
+- **Private keys stay in the agent.** A key from the [vault](vault.md) is used by asking the agent for a signature. Nothing writes one to disk or passes one around as bytes, and no password is ever accepted in argv — `ps` can read argv for as long as the process lives.
+- **Every save of the vault re-seeds.** KDBX4 is ChaCha20; writing twice under the same key and nonce reuses a keystream. `internal/vault` re-randomizes on every save and merges against the file on disk rather than overwriting it, because the vault is expected to be in a synced folder and open in KeePassXC at the same time.
+- **Sessions are always recorded.** `ownbasectl ssh` has no flag that turns recording off, and adding one would make the audit trail worth nothing. Both directions are captured; output alone cannot show a command that produced none.
+- **One control plane.** `ownbasectl` owns the semantics — the vault, the agent, the git commits, the reconcile. The desktop app spawns it and renders the result; it must never grow a second implementation of any of that, or "what is deployed on this Base" starts having two answers that can disagree. If the app needs something, the answer is a new `--json` flag on the CLI.
 
 ## Merge gate
 
-All changes must keep `go test ./...` and `golangci-lint run ./...` green. Breaking a hard constraint (see [MISSION.md](../MISSION.md)) requires the user's explicit sign-off first, not a workaround.
+All changes must keep `go test ./...` and `golangci-lint run ./...` green, and `make app-check` if you touched `desktop/` or any `--json` output. Breaking a hard constraint (see [MISSION.md](../MISSION.md)) requires the user's explicit sign-off first, not a workaround.
 
 ## Verifying a fresh install end-to-end
 
@@ -79,8 +94,11 @@ multipass exec ownbase-fresh -- sudo systemctl list-units 'ownbase-*'  # units l
 multipass exec ownbase-fresh -- sudo ls /etc/containers/systemd/       # Quadlet unit files
 multipass exec ownbase-fresh -- sudo ls /opt/ownbase/checkout /opt/ownbase/repos  # config checkout + service bare clones
 
-# Verify trivy was installed by PassZero
+# Verify trivy was installed by PassZero, and that it can actually scan —
+# both are required for `security` to report real results instead of
+# "scan failed" for every image.
 multipass exec ownbase-fresh -- trivy --version
+multipass exec ownbase-fresh -- systemctl is-active podman.socket
 ```
 
 ### Then use `ownbasectl` as usual

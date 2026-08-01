@@ -53,8 +53,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ownbase/ownbase/internal/bridge"
-	"github.com/ownbase/ownbase/internal/serverconfig"
 	"github.com/ownbase/ownbase/internal/tunnel"
+	"github.com/ownbase/ownbase/internal/vault"
 )
 
 // DefaultTunnelPort is the local HTTPS port `ownbasectl tunnel` binds to.
@@ -115,20 +115,9 @@ func runTunnel(name string, port int) error {
 	}
 	defer ln.Close()
 
-	cfgPath, err := serverconfig.DefaultConfigPath()
-	if err != nil {
-		return fmt.Errorf("locate config: %w", err)
-	}
-	cfg, err := serverconfig.Load(cfgPath)
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-	profile, err := cfg.ProfileFor(name)
+	sshTo, _, err := baseTarget(name)
 	if err != nil {
 		return err
-	}
-	if profile.Host == "" {
-		return fmt.Errorf("Base %q has no host recorded", name)
 	}
 
 	if !bridge.MkcertAvailable() {
@@ -140,10 +129,7 @@ func runTunnel(name string, port int) error {
 	}
 
 	fmt.Fprintf(os.Stderr, "ownbasectl: reading ownbase.yaml from %q ...\n", name)
-	raw, err := tunnel.RunCommand(
-		profile.Host, profile.EffectiveSSHUser(), profile.EffectiveSSHKey(),
-		"cat /opt/ownbase/checkout/ownbase.yaml", profile.EffectiveSSHPort(),
-	)
+	raw, err := tunnel.RunCommand(sshTo, "cat /opt/ownbase/checkout/ownbase.yaml")
 	if err != nil {
 		return fmt.Errorf("read ownbase.yaml from %q over SSH: %w", name, err)
 	}
@@ -165,10 +151,7 @@ func runTunnel(name string, port int) error {
 	// added/removed/renamed and the daemon hasn't reconciled yet, a freshly
 	// computed number can point at a host port a different service's
 	// container still occupies. This closes that race without a daemon call.
-	actualRaw, err := tunnel.RunCommand(
-		profile.Host, profile.EffectiveSSHUser(), profile.EffectiveSSHKey(),
-		bridge.GrepPublishPortCommand, profile.EffectiveSSHPort(),
-	)
+	actualRaw, err := tunnel.RunCommand(sshTo, bridge.GrepPublishPortCommand)
 	if err != nil {
 		return fmt.Errorf("read actually-published ports from %q over SSH: %w", name, err)
 	}
@@ -200,10 +183,7 @@ func runTunnel(name string, port int) error {
 			fmt.Fprintf(os.Stderr, "ownbasectl: skipping %q — not yet published on %q (has it been reconciled/started?)\n", target.Service, name)
 			continue
 		}
-		tun, err := tunnel.Open(
-			profile.Host, profile.EffectiveSSHUser(), profile.EffectiveSSHKey(),
-			hostPort, profile.EffectiveSSHPort(),
-		)
+		tun, err := tunnel.Open(sshTo, hostPort)
 		if err != nil {
 			return fmt.Errorf("open SSH tunnel for service %q (host port %d): %w", target.Service, hostPort, err)
 		}
@@ -229,7 +209,10 @@ func runTunnel(name string, port int) error {
 	// domains (or the same one) never produces duplicate SANs.
 	hostnames := bridge.AllLocalHostnames(bridged)
 
-	certDir := filepath.Join(filepath.Dir(cfgPath), "tunnel", name)
+	certDir, err := vault.StatePath(filepath.Join("tunnel", name))
+	if err != nil {
+		return err
+	}
 	fmt.Fprintf(os.Stderr, "ownbasectl: generating local HTTPS certificate for %d hostname(s) ...\n", len(hostnames))
 	certPath, keyPath, err := bridge.GenerateCert(hostnames, certDir)
 	if err != nil {

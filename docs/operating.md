@@ -12,9 +12,11 @@
 
 4. **Use `ownbasectl` for everything else** — config, services, status, secrets, backups, security, core-package upgrades. See [cli.md](cli.md) for the full command reference, or [api.md](api.md) to call the daemon's HTTP API directly.
 
-5. **Moving a service to new code = `ownbasectl deploy`.** There is no other update mechanism. `deploy` resolves the requested ref to a concrete commit SHA and commits it to the config repo; branch-named refs never auto-redeploy, and the daemon never mutates the repo on its own initiative.
+5. **Never use plain `ssh`. Use `ownbasectl ssh <base>`.** Two reasons, and both matter more for an agent than for a human. There is no key file to find: the owner key lives in the [vault](vault.md) and the credential agent signs with it, so nothing you run ever holds a private key. And every session is recorded to `~/.ownbase/sessions/` in asciicast v2 format, which is how the owner sees what you actually did on a machine you have root on. A shell opened outside `ownbasectl ssh` leaves no trail and should be treated as a mistake. Read the trail back with `ownbasectl sessions list` and `sessions show <id>`.
 
-6. **Before anything destructive** (restore, delete), check `ownbasectl backup status <base>`. The durability guarantee only holds if the last verified restore actually passed — a backup that was never restore-tested is not restorable by definition.
+6. **Moving a service to new code = `ownbasectl deploy`.** There is no other update mechanism. `deploy` resolves the requested ref to a concrete commit SHA and commits it to the config repo; branch-named refs never auto-redeploy, and the daemon never mutates the repo on its own initiative.
+
+7. **Before anything destructive** (restore, delete), check `ownbasectl backup status <base>`. The durability guarantee only holds if the last verified restore actually passed — a backup that was never restore-tested is not restorable by definition.
 
 ## Common tasks
 
@@ -26,9 +28,14 @@
 | See what's behind | `ownbasectl updates <base>` |
 | Set a secret | `ownbasectl secrets set <base> <service> KEY=value` |
 | Full health check | `ownbasectl checkup <base>` |
-| Diagnose a failure | `journalctl -u ownbased -f` on the Base; see [troubleshooting.md](troubleshooting.md) |
+| Get a shell on the Base | `ownbasectl ssh <base>` (recorded; never plain `ssh`) |
+| Run one command on the Base | `ownbasectl ssh <base> -- <command>` |
+| Diagnose a failure | `ownbasectl ssh <base> -- journalctl -u ownbased -n 200`; see [troubleshooting.md](troubleshooting.md) |
 | Audit what the daemon did | `/opt/ownbase/logs/audit.log` on the Base (newline-delimited JSON) |
+| Audit what *you* did | `ownbasectl sessions list`, then `sessions show <id>` |
 
 ## When something is broken
 
-Start with [troubleshooting.md](troubleshooting.md) — it is organized by symptom. The daemon journal (`journalctl -u ownbased -f`) is the single most useful diagnostic for anything happening on the Base itself.
+Start with [troubleshooting.md](troubleshooting.md) — it is organized by symptom. The daemon journal is the single most useful diagnostic for anything happening on the Base itself; reach it with `ownbasectl ssh <base> -- journalctl -u ownbased -n 200`, or `ownbasectl ssh <base>` and then `journalctl -u ownbased -f` if you want to follow it.
+
+If `ownbasectl` itself refuses to run — "the vault is locked", "no vault configured" — the problem is on your machine, not the Base. See [vault.md](vault.md).

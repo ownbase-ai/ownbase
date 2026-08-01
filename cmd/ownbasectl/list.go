@@ -1,8 +1,8 @@
 package main
 
 // list.go implements `ownbasectl list` and `ownbasectl delete` — enumerating
-// configured Bases (profiles + local Multipass VMs) and tearing down a
-// local VM together with its profile.
+// configured Bases (vault profiles + local Multipass VMs) and tearing down a
+// local VM together with its profile and owner key.
 
 import (
 	"context"
@@ -13,29 +13,93 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/ownbase/ownbase/internal/serverconfig"
 	"github.com/ownbase/ownbase/internal/vmhost"
 )
 
 func newListCmd() *cobra.Command {
-	return &cobra.Command{
+	var jsonOut bool
+	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "Show configured Bases (profiles + local VMs)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runBaseList()
+			return runBaseList(jsonOut)
 		},
 	}
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "print the Bases as JSON")
+	return cmd
 }
 
-func runBaseList() error {
-	cfgPath, err := serverconfig.DefaultConfigPath()
+// listedBase is one row of `list`. It carries no secrets — no token, no key —
+// so it is safe to render anywhere, including the desktop app.
+type listedBase struct {
+	Name string `json:"name"`
+	// Host is empty for a Base that has an owner key but no machine yet.
+	Host string `json:"host,omitempty"`
+	// Kind is "remote", "vm", "key-only", or "unregistered-vm".
+	Kind string `json:"kind"`
+	// VMState is the Multipass state for a local VM, when one was found.
+	VMState string `json:"vm_state,omitempty"`
+	// Registered reports whether this Base has a vault profile. A local VM
+	// with no profile is listed so it can be adopted or cleaned up.
+	Registered bool   `json:"registered"`
+	SSHUser    string `json:"ssh_user,omitempty"`
+	SSHPort    int    `json:"ssh_port,omitempty"`
+	// HasToken and HasKey say whether the credential exists without
+	// revealing it, which is what the app needs to show setup progress.
+	HasToken      bool   `json:"has_token"`
+	HasKey        bool   `json:"has_key"`
+	ConfigRepoURL string `json:"config_repo_url,omitempty"`
+	ConfigRef     string `json:"config_ref,omitempty"`
+}
+
+func runBaseList(jsonOut bool) error {
+	bases, vmErr, err := collectBases()
 	if err != nil {
-		return fmt.Errorf("locate config: %w", err)
+		return err
 	}
-	cfg, err := serverconfig.Load(cfgPath)
+
+	if jsonOut {
+		// A warning must not end up in stdout next to the JSON document.
+		if vmErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not list Multipass VMs: %v\n", vmErr)
+		}
+		if bases == nil {
+			// Same contract as `sessions list --json` and `checkup --json`:
+			// no Bases is `[]`, never `null`, so callers never need a nil
+			// check before ranging over the result.
+			bases = []listedBase{}
+		}
+		return printJSON(bases)
+	}
+
+	if len(bases) == 0 {
+		fmt.Println("No Bases configured yet.")
+		fmt.Println("  Run: ownbasectl create <name>")
+		return nil
+	}
+
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "NAME\tHOST\tKIND")
+	for _, b := range bases {
+		fmt.Fprintf(tw, "%s\t%s\t%s\n", b.Name, listHostLabel(b), listKindLabel(b))
+	}
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	if vmErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not list Multipass VMs: %v\n", vmErr)
+	}
+	return nil
+}
+
+// collectBases merges vault profiles with local Multipass VMs. The VM lookup
+// failing is reported separately from a real error, because a machine without
+// Multipass installed should still be able to list its remote Bases.
+func collectBases() (bases []listedBase, vmErr error, err error) {
+	names, err := listBases()
 	if err != nil {
-		return fmt.Errorf("load config: %w", err)
+		return nil, nil, err
 	}
 
 	vms, vmErr := vmhost.New().List(context.Background())
@@ -44,40 +108,55 @@ func runBaseList() error {
 		vmState[v.Name] = v.State
 	}
 
-	if len(cfg.Servers) == 0 && len(vms) == 0 {
-		fmt.Println("No Bases configured yet.")
-		fmt.Println("  Run: ownbasectl create <name>")
-		return nil
-	}
-
-	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tHOST\tKIND")
-
-	names := make([]string, 0, len(cfg.Servers))
-	for n := range cfg.Servers {
-		names = append(names, n)
-	}
 	sort.Strings(names)
-
 	for _, n := range names {
-		p := cfg.Servers[n]
+		p, perr := loadProfile(n)
+		if perr != nil {
+			return nil, vmErr, perr
+		}
+		b := listedBase{
+			Name:          n,
+			Host:          p.Host,
+			Registered:    true,
+			SSHUser:       p.EffectiveSSHUser(),
+			SSHPort:       p.EffectiveSSHPort(),
+			HasToken:      p.Token != "",
+			HasKey:        p.PublicKeyLine() != "",
+			ConfigRepoURL: p.ConfigRepoURL,
+			ConfigRef:     p.ConfigRef,
+		}
+		// A profile always claims its name: drop any same-named Multipass VM
+		// from vmState so we never emit a second "unregistered-vm" row. That
+		// used to happen for key-only profiles (keygen done, create not), and
+		// the desktop sidebar keys rows by name.
+		if state, ok := vmState[n]; ok {
+			b.VMState = state
+			delete(vmState, n)
+		}
 		// Trust the profile's own record of what it is when it is known —
 		// the same field delete checks — rather than inferring it from
 		// whether a same-named Multipass VM happens to exist. A profile
 		// known to be remote is never mislabeled just because an
-		// unrelated leftover VM shares its name. A legacy profile that
-		// predates LocalVM (neither known-local nor known-remote) falls
-		// back to the old "does a VM exist with this name" heuristic.
-		kind := "remote server"
-		if !p.KnownRemote() {
-			if state, ok := vmState[n]; ok {
-				kind = "local VM (" + state + ")"
-				delete(vmState, n) // seen — don't list again below
-			} else if p.KnownLocalVM() {
-				kind = "local VM (not found in Multipass)"
+		// unrelated leftover VM shares its name.
+		switch {
+		case p.Host == "":
+			// keygen has run but create has not: the vault holds an owner
+			// key waiting for a machine. If Multipass already has the VM
+			// (create died mid-flight), surface it as a local VM rather
+			// than a bare key-only row with a twin unregistered entry.
+			if b.VMState != "" {
+				b.Kind = "vm"
+			} else {
+				b.Kind = "key-only"
 			}
+		case p.KnownRemote():
+			b.Kind = "remote"
+		case b.VMState != "" || p.KnownLocalVM():
+			b.Kind = "vm"
+		default:
+			b.Kind = "remote"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\n", n, p.Host, kind)
+		bases = append(bases, b)
 	}
 
 	// Local VMs that exist but were never registered as a Base profile
@@ -88,16 +167,36 @@ func runBaseList() error {
 	}
 	sort.Strings(unregistered)
 	for _, n := range unregistered {
-		fmt.Fprintf(tw, "%s\t%s\t%s\n", n, "(unregistered)", "local VM ("+vmState[n]+")")
+		bases = append(bases, listedBase{Name: n, Kind: "unregistered-vm", VMState: vmState[n]})
 	}
+	return bases, vmErr, nil
+}
 
-	if err := tw.Flush(); err != nil {
-		return err
+func listHostLabel(b listedBase) string {
+	switch {
+	case b.Host != "":
+		return b.Host
+	case b.Kind == "unregistered-vm":
+		return "(unregistered)"
+	default:
+		return "(not created yet)"
 	}
-	if vmErr != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not list Multipass VMs: %v\n", vmErr)
+}
+
+func listKindLabel(b listedBase) string {
+	switch b.Kind {
+	case "key-only":
+		return "owner key only"
+	case "vm":
+		if b.VMState != "" {
+			return "local VM (" + b.VMState + ")"
+		}
+		return "local VM (not found in Multipass)"
+	case "unregistered-vm":
+		return "local VM (" + b.VMState + ")"
+	default:
+		return "remote server"
 	}
-	return nil
 }
 
 func newDeleteCmd() *cobra.Command {
@@ -119,29 +218,21 @@ func newDeleteCmd() *cobra.Command {
 }
 
 func runBaseDelete(name string, keepVM, assumeYes bool) error {
-	cfgPath, err := serverconfig.DefaultConfigPath()
-	if err != nil {
-		return fmt.Errorf("locate config: %w", err)
-	}
-	cfg, err := serverconfig.Load(cfgPath)
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-
 	// Skip the Multipass lookup only when the profile is *known* to be
 	// remote (LocalVM explicitly false, set by create --remote) — that is
 	// what protects a coincidentally same-named local VM from being
-	// destroyed by mistake. Every other case still checks Multipass: no
-	// profile at all (an unregistered VM, as `list` can show), a profile
-	// explicitly marked local, and a legacy profile that predates LocalVM
-	// (unset — must not be assumed remote, or older Bases could never
-	// have their VM cleaned up via delete).
-	profile, hasProfile := cfg.Servers[name]
+	// destroyed by mistake. Every other case still checks Multipass,
+	// including no profile at all (an unregistered VM, as `list` can show).
+	profile, err := loadProfile(name)
+	hasProfile := err == nil
+	if err != nil && !isMissingBase(err) {
+		return err
+	}
 	skipVMLookup := hasProfile && profile.KnownRemote()
 
-	prompt := fmt.Sprintf("Delete Base %q? This destroys the local VM (if any — all its data is lost) and removes the profile from ~/.ownbase/config.", name)
+	prompt := fmt.Sprintf("Delete Base %q? This destroys the local VM (if any — all its data is lost) and removes its profile and owner key from your vault.", name)
 	if keepVM {
-		prompt = fmt.Sprintf("Remove the profile for %q from ~/.ownbase/config (the VM/server itself is left running)?", name)
+		prompt = fmt.Sprintf("Remove the profile and owner key for %q from your vault (the VM/server itself is left running)?", name)
 	}
 	if !confirm(prompt, assumeYes) {
 		return errAborted
@@ -162,11 +253,10 @@ func runBaseDelete(name string, keepVM, assumeYes bool) error {
 	}
 
 	if hasProfile {
-		delete(cfg.Servers, name)
-		if err := serverconfig.Save(cfgPath, cfg); err != nil {
-			return fmt.Errorf("save config: %w", err)
+		if err := deleteProfile(name); err != nil {
+			return err
 		}
-		fmt.Printf("Removed profile %q.\n", name)
+		fmt.Printf("Removed profile and owner key %q from the vault.\n", name)
 	}
 
 	fmt.Printf("Base %q deleted.\n", name)

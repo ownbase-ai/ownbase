@@ -1,4 +1,5 @@
-.PHONY: all build build-linux test test-vm test-integration sync-vm smoke-test connect-vm lint fmt fmt-fix vet tidy clean
+.PHONY: all build build-linux test test-vm test-integration sync-vm smoke-test connect-vm lint fmt fmt-fix vet tidy clean \
+        app app-build app-check app-sidecar
 
 VM      ?= ownbase-test
 VM_NAME ?= ownbase-fresh
@@ -80,6 +81,33 @@ sync-vm:
 	multipass exec $(VM) -- bash -c \
 	  'mkdir -p ~/ownbase && tar xf ~/ownbase-sync.tar -C ~/ownbase \
 	   && rm ~/ownbase-sync.tar'
+
+# ---------------------------------------------------------------------------
+# Desktop app (desktop/)
+# ---------------------------------------------------------------------------
+# The app bundles ownbasectl as a sidecar and does everything through it, so
+# every target here rebuilds that binary first — otherwise the window talks to
+# whatever CLI was compiled last, which looks like a bug in the app.
+
+DESKTOP := desktop
+
+app-sidecar:
+	cd $(DESKTOP) && npm run sidecar
+
+# Dev: Vite plus the native window.
+app: app-sidecar
+	cd $(DESKTOP) && npm run app
+
+# Release bundle for this platform (.dmg/.app on macOS).
+app-build: app-sidecar
+	cd $(DESKTOP) && npm run app:build
+
+# Tier-1 for the app: types, lint, unit tests, and the Rust bridge. No window is
+# opened, so this runs anywhere — it is the same set the CI desktop job runs, and
+# the two should be changed together.
+app-check:
+	cd $(DESKTOP) && npm run typecheck && npm run lint && npm run test
+	cd $(DESKTOP)/src-tauri && cargo fmt --check && cargo clippy --all-targets -- -D warnings
 
 # ---------------------------------------------------------------------------
 # Code quality
