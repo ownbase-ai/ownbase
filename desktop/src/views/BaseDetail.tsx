@@ -1120,9 +1120,10 @@ function Security({
       >
         {!exposure.available ? (
           <Unavailable>
-            The scan could not run — it needs <code className="font-mono">ss</code> and{" "}
-            <code className="font-mono">ufw</code>, which a Base has and a dev machine
-            may not. Treat this as unknown rather than clear.
+            No exposure inventory yet. The Base probes with{" "}
+            <code className="font-mono">ss</code> and{" "}
+            <code className="font-mono">ufw</code> after each reconcile — treat this as
+            unknown rather than clear until the first probe lands.
           </Unavailable>
         ) : (
           <>
@@ -1175,8 +1176,9 @@ function Security({
       <Panel title="SSH access" subtitle="Who got in, and who kept failing to.">
         {!access.available ? (
           <Unavailable>
-            The monitor could not run — it reads fail2ban and the journal, neither of
-            which is present here.
+            No SSH access data yet. The Base reads fail2ban and the journal after each
+            reconcile — treat this as unknown rather than clear until the first probe
+            lands.
           </Unavailable>
         ) : (
           <>

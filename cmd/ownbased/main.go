@@ -693,16 +693,18 @@ func run(cfg agentConfig) error {
 	afterReconcile := func(state reconcileState) {
 		ctx := context.Background()
 
-		// Run security probes at most once per secProbeInterval.
-		// Skip when config is nil (parse failure): the expected-port allowlist
-		// would be incomplete, producing false port.exposed audit events until
-		// the config is repaired and the next probe runs with valid state.
 		// Reboot marker is two file stats — cheap enough to re-read on every
 		// status push, so a security-fix → rescan path cannot clobber a
 		// NotifyReboot update with a stale lastReboot from the previous tick.
 		lastReboot = secwatch.GatherRebootRequired()
 
-		if time.Since(lastSecProbe) >= secProbeInterval && state.Config != nil {
+		// Run security probes at most once per secProbeInterval.
+		// Config may be nil (config setup not run yet, or parse failure):
+		// ExpectedAllowlist still covers SSH/80/443, and access monitoring
+		// does not need ownbase.yaml at all. Skipping when config is nil left
+		// fresh Bases stuck on available=false forever, which the UI rendered
+		// as "dev machine missing ss/ufw" even when the tools were present.
+		if time.Since(lastSecProbe) >= secProbeInterval {
 			lastExposure = secwatch.GatherExposure(ctx, state.Config, cfg.sshPort)
 			lastAccess = secwatch.GatherAccess(ctx)
 			lastSecProbe = time.Now()
