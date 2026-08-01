@@ -697,26 +697,24 @@ func suggestedDeployRef(status map[string]any, service string) (ref string, canD
 	return "main", true
 }
 
-// coreNeedsSelfUpdate is true when the running Caddy image is still a
-// registry pull (docker.io/library/caddy@…) rather than the local hardened
-// build. Those daemons' `upgrade --apply` only re-pulls the same digest.
+// coreNeedsSelfUpdate is true only when the daemon is too old to rebuild
+// Caddy locally. New daemons always report status.version and embed the
+// hardened Dockerfile — their upgrade --apply rebuilds even if the running
+// container is still a registry image (background first build pending/failed).
+//
+// Old daemons omit version and only know how to pull a pinned digest, so
+// upgrade --apply is a no-op for CVEs; they must self-update first.
 func coreNeedsSelfUpdate(status map[string]any, imageRef string) bool {
+	// Already on the local hardened tag — rebuild path is live.
 	if strings.Contains(imageRef, "localhost/ownbase-core-caddy") {
 		return false
 	}
-	// No version field (or empty) usually means a pre-self-update daemon.
-	if ver, _ := status["version"].(string); ver != "" && ver != "dev" {
-		// Recent enough to report version, but still on a registry image —
-		// self-update brings the Dockerfile; then upgrade rebuilds.
-		if strings.Contains(imageRef, "docker.io/library/caddy") || strings.HasPrefix(imageRef, "caddy:") {
-			return true
-		}
+	// version is set by every daemon that can BuildCaddyImage (including "dev").
+	if ver, ok := status["version"].(string); ok && ver != "" {
+		return false
 	}
-	// Registry-style refs always need migration off the pull path.
-	if strings.Contains(imageRef, "docker.io/library/caddy") || strings.HasPrefix(imageRef, "caddy:") {
-		return true
-	}
-	return false
+	// No version + still a registry (or unknown) image → migration required.
+	return true
 }
 
 // scanIsStale reports whether a scanned_at timestamp is older than

@@ -614,6 +614,65 @@ func TestCheckupFindings_CoreLocalImageUsesUpgrade(t *testing.T) {
 	}
 }
 
+// A daemon that reports version can rebuild even while still running a
+// registry Caddy image (first local build pending). Must not stuck-loop on
+// self-update.
+func TestCheckupFindings_CoreRegistryImageWithVersionUsesUpgrade(t *testing.T) {
+	body := []byte(`{
+		"config": {"repo_url": "git@example.com/x.git"},
+		"version": "v0.4.0",
+		"security": {
+			"backup_restorable": true,
+			"vulns": {
+				"available": true,
+				"trivy_installed": true,
+				"scanned_at": "2026-07-31T12:00:00Z",
+				"host": {"critical": 0, "high": 0},
+				"images": [{
+					"service": "ownbase-core-caddy",
+					"image": "docker.io/library/caddy:2.11.4-alpine",
+					"summary": {"critical": 0, "high": 2, "fixable_critical": 0, "fixable_high": 2}
+				}]
+			}
+		}
+	}`)
+	findings := checkupFindings("mybase", body)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d: %+v", len(findings), findings)
+	}
+	if findings[0].Action.Run != "upgrade --apply" {
+		t.Errorf("versioned daemon on registry caddy should offer upgrade --apply, got %+v", findings[0].Action)
+	}
+}
+
+func TestCheckupFindings_CoreOldDaemonNeedsSelfUpdate(t *testing.T) {
+	// No status.version — pre-migration daemon.
+	body := []byte(`{
+		"config": {"repo_url": "git@example.com/x.git"},
+		"security": {
+			"backup_restorable": true,
+			"vulns": {
+				"available": true,
+				"trivy_installed": true,
+				"scanned_at": "2026-07-31T12:00:00Z",
+				"host": {"critical": 0, "high": 0},
+				"images": [{
+					"service": "ownbase-core-caddy",
+					"image": "docker.io/library/caddy:2-alpine",
+					"summary": {"critical": 0, "high": 2, "fixable_critical": 0, "fixable_high": 2}
+				}]
+			}
+		}
+	}`)
+	findings := checkupFindings("mybase", body)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d: %+v", len(findings), findings)
+	}
+	if findings[0].Action.Run != "self-update" {
+		t.Errorf("old daemon should offer self-update, got %+v", findings[0].Action)
+	}
+}
+
 func TestCheckupFindings_ImageCVESkippedWhenUpToDate(t *testing.T) {
 	body := []byte(`{
 		"config": {"repo_url": "git@example.com/x.git"},
