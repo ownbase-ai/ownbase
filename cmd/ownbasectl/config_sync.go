@@ -1,13 +1,14 @@
 package main
 
 // config_sync.go keeps the vault profile's ConfigRepoURL in step with what
-// the Base is actually tracking. The profile can lag — adopt never copied it,
-// or config setup ran on another laptop — and then the app shows "not set up
-// yet" while services are clearly running from a real ownbase.yaml.
+// the Base is actually tracking. The profile can lag — adopt used to skip
+// it, or config setup ran on another laptop — and then the app shows "not
+// set up yet" while services are clearly running from a real ownbase.yaml.
 //
-// Every status/checkup path runs ensureConfigKnown so a single successful
-// connect repairs the profile and, for older daemons that do not yet emit
-// status.config, injects the source into the JSON the UI already reads.
+// adopt reads config-source.yaml over SSH before saving the profile.
+// status/checkup run ensureConfigKnown so a later connect still repairs an
+// older profile and, for daemons that do not yet emit status.config, injects
+// the source into the JSON the UI already reads.
 
 import (
 	"encoding/json"
@@ -54,26 +55,54 @@ func configFromStatusJSON(body []byte) (url, ref string) {
 	return strings.TrimSpace(doc.Config.RepoURL), strings.TrimSpace(doc.Config.Ref)
 }
 
-// configFromBaseSSH reads /opt/ownbase/config-source.yaml over SSH. Used when
-// the daemon is older than status.config and the vault profile has no URL.
+// configSourceReadCmd fetches the on-Base config-source state file. Prefer
+// sudo so a non-root SSH user still works; fall back to a plain read for
+// installs where the file is world-readable. A var so tests can point at a
+// temp file through the in-process SSH server.
+var configSourceReadCmd = "sudo cat /opt/ownbase/config-source.yaml 2>/dev/null || cat /opt/ownbase/config-source.yaml 2>/dev/null"
+
+// configFromBaseSSH reads /opt/ownbase/config-source.yaml over SSH via the
+// Base's vault profile. Used when the daemon is older than status.config.
 func configFromBaseSSH(base string) (url, ref string) {
 	target, _, err := baseTarget(base)
 	if err != nil {
 		return "", ""
 	}
-	out, err := tunnel.RunCommand(target,
-		"sudo cat /opt/ownbase/config-source.yaml 2>/dev/null || cat /opt/ownbase/config-source.yaml 2>/dev/null")
+	return configFromTarget(target)
+}
+
+// configFromTarget reads the config source over an already-resolved SSH
+// target — adopt uses this before the profile is saved.
+func configFromTarget(target tunnel.Target) (url, ref string) {
+	out, err := tunnel.RunCommand(target, configSourceReadCmd)
 	if err != nil || strings.TrimSpace(out) == "" {
 		return "", ""
 	}
+	return parseConfigSourceYAML([]byte(out))
+}
+
+func parseConfigSourceYAML(data []byte) (url, ref string) {
 	var src struct {
 		RepoURL string `yaml:"repo_url"`
 		Ref     string `yaml:"ref"`
 	}
-	if err := yaml.Unmarshal([]byte(out), &src); err != nil {
+	if err := yaml.Unmarshal(data, &src); err != nil {
 		return "", ""
 	}
 	return strings.TrimSpace(src.RepoURL), strings.TrimSpace(src.Ref)
+}
+
+// applyConfigSource sets profile config fields from a Base-reported source.
+func applyConfigSource(p *vault.Profile, url, ref string) {
+	if url == "" {
+		return
+	}
+	p.ConfigRepoURL = url
+	if ref != "" {
+		p.ConfigRef = ref
+	} else if p.ConfigRef == "" {
+		p.ConfigRef = vault.DefaultConfigRef
+	}
 }
 
 func syncProfileConfig(base, url, ref string) {

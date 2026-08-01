@@ -4,7 +4,42 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/ownbase/ownbase/internal/vault"
 )
+
+func TestParseConfigSourceYAML(t *testing.T) {
+	url, ref := parseConfigSourceYAML([]byte("repo_url: git@github.com:org/c.git\nref: main\n"))
+	if url != "git@github.com:org/c.git" || ref != "main" {
+		t.Fatalf("got %q %q", url, ref)
+	}
+	url, ref = parseConfigSourceYAML([]byte("repo_url: git@x/y.git\n"))
+	if url != "git@x/y.git" || ref != "" {
+		t.Fatalf("got %q %q", url, ref)
+	}
+	url, ref = parseConfigSourceYAML([]byte("not: yaml: :"))
+	if url != "" || ref != "" {
+		t.Fatalf("expected empty on bad yaml, got %q %q", url, ref)
+	}
+}
+
+func TestApplyConfigSource(t *testing.T) {
+	var p vault.Profile
+	applyConfigSource(&p, "git@a/b.git", "dev")
+	if p.ConfigRepoURL != "git@a/b.git" || p.ConfigRef != "dev" {
+		t.Fatalf("got %+v", p)
+	}
+	applyConfigSource(&p, "git@c/d.git", "")
+	if p.ConfigRepoURL != "git@c/d.git" || p.ConfigRef != "dev" {
+		// empty ref must not wipe an existing one
+		t.Fatalf("empty ref wiped existing: %+v", p)
+	}
+	var q vault.Profile
+	applyConfigSource(&q, "git@e/f.git", "")
+	if q.ConfigRef != vault.DefaultConfigRef {
+		t.Fatalf("expected default ref, got %q", q.ConfigRef)
+	}
+}
 
 func TestConfigFromStatusJSON(t *testing.T) {
 	url, ref := configFromStatusJSON([]byte(`{"config":{"repo_url":"git@x/y.git","ref":"main"}}`))
