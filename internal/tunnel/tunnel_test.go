@@ -357,6 +357,11 @@ func TestOpen_LocalAddrIsLoopback(t *testing.T) {
 	}
 }
 
+// agentSockSeq makes startTestAgent socket names unique across parallel tests.
+// A pid+time stamp alone collided under go test -parallel and left Dial with
+// total=0 (unix dial failed → no auth methods) on CI.
+var agentSockSeq atomic.Int64
+
 // startTestAgent serves an ssh-agent keyring on a unix socket under t.TempDir
 // and tracks how many client connections are currently open / have ever been
 // accepted. Used to prove Dial closes the agent FD once the handshake
@@ -370,7 +375,7 @@ func startTestAgent(t *testing.T, priv any) (sockPath string, live, total *atomi
 
 	// macOS caps sun_path at ~104 bytes; t.TempDir() is already too long, so
 	// park the socket under /tmp with a short unique name.
-	sockPath = filepath.Join(os.TempDir(), fmt.Sprintf("ob-tunn-%d.sock", os.Getpid()+int(time.Now().UnixNano()%1e6)))
+	sockPath = filepath.Join(os.TempDir(), fmt.Sprintf("ob-tunn-%d-%d.sock", os.Getpid(), agentSockSeq.Add(1)))
 	_ = os.Remove(sockPath)
 	ln, err := net.Listen("unix", sockPath)
 	if err != nil {
@@ -383,7 +388,9 @@ func startTestAgent(t *testing.T, priv any) (sockPath string, live, total *atomi
 
 	live = &atomic.Int32{}
 	total = &atomic.Int32{}
+	ready := make(chan struct{})
 	go func() {
+		close(ready)
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
@@ -398,6 +405,7 @@ func startTestAgent(t *testing.T, priv any) (sockPath string, live, total *atomi
 			}(conn)
 		}
 	}()
+	<-ready
 	return sockPath, live, total
 }
 
@@ -488,6 +496,12 @@ func TestDial_ClosesAgentSocketOnDialFailure(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("Dial: expected connection error, got nil")
+	}
+	// buildAuthMethods dials the agent before TCP; if that unix dial failed we
+	// never opened a connection to clean up — fail with a clearer signal than
+	// "want 1".
+	if n := total.Load(); n == 0 {
+		t.Fatalf("agent accepted 0 connections; Dial failed before opening the agent (%v)", err)
 	}
 	waitForLive(t, live, 0)
 	if n := total.Load(); n != 1 {
