@@ -446,15 +446,27 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 					},
 				})
 			case !available:
-				// A scan that never succeeded, or failed last time. "Unknown,
-				// not clean" — offer a rescan rather than a scary zero.
+				// Distinguish "first scan still pending" (daemon waits ~5 min
+				// after start so reconcile can finish) from a real failure.
+				// Both are unknown-not-clean, but the copy must not imply the
+				// scanner already tried and lost.
+				hostScanError, _ := vulns["host_scan_error"].(string)
+				summary := "CVE scan still pending — unknown, not clean"
+				label := "Scan now"
+				if hostScanError != "" {
+					summary = "Host CVE scan failed — unknown, not clean"
+					label = "Rescan"
+				} else if scannedAt != "" {
+					summary = "Host CVE scan has not succeeded — unknown, not clean"
+					label = "Rescan"
+				}
 				findings = append(findings, checkupFinding{
-					Summary: "Host CVE scan has not succeeded — unknown, not clean",
+					Summary: summary,
 					Fix:     "ownbasectl security scan " + base,
 					Action: checkupAction{
 						Kind:  actionRun,
 						Run:   "security scan",
-						Label: "Rescan",
+						Label: label,
 					},
 				})
 			default:
