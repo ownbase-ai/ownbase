@@ -344,6 +344,36 @@ func TestRecordAndResolvePath(t *testing.T) {
 	}
 }
 
+// NormalizePath must resolve the same way as RecordPath without touching the
+// pointer — vault init relies on that so a failed password cannot move
+// ~/.ownbase/vault off a working location.
+func TestNormalizePathDoesNotWritePointer(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv(vault.PathEnv, "")
+
+	existing := filepath.Join(t.TempDir(), "good.kdbx")
+	if _, err := vault.RecordPath(existing); err != nil {
+		t.Fatal(err)
+	}
+
+	other := filepath.Join(t.TempDir(), "other.kdbx")
+	got, err := vault.NormalizePath(other)
+	if err != nil {
+		t.Fatalf("NormalizePath: %v", err)
+	}
+	if got != other {
+		t.Errorf("NormalizePath = %q, want %q", got, other)
+	}
+	still, err := vault.ResolvePath()
+	if err != nil {
+		t.Fatalf("ResolvePath: %v", err)
+	}
+	if still != existing {
+		t.Errorf("ResolvePath = %q after NormalizePath(other), want %q (pointer must be unchanged)", still, existing)
+	}
+}
+
 func TestResolvePathWithoutVault(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv(vault.PathEnv, "")

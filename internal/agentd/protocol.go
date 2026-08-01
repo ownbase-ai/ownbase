@@ -38,6 +38,10 @@ const (
 	// LogFileName collects the agent's own stderr, since a process started
 	// on demand has nowhere else to complain.
 	LogFileName = "agent.log"
+	// ServeLockName is the flock file that serializes probe→unlink→bind in
+	// Serve, so concurrent EnsureRunning callers cannot steal each other's
+	// live sockets.
+	ServeLockName = "agent.lock"
 )
 
 // DefaultIdleTimeout is how long an unlocked vault stays unlocked with nothing

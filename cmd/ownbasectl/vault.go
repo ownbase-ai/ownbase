@@ -112,7 +112,9 @@ func runVaultInit(path string, passwordStdin, jsonOut bool) error {
 	// Resolve the location before asking for a password: an existing vault is
 	// a "record this and unlock it" case, not a "create" case, and the two ask
 	// for different things (one password, or a new one confirmed twice).
-	recorded, err := vault.RecordPath(path)
+	// Do not write the pointer yet — a cancelled prompt or a wrong password
+	// must leave ~/.ownbase/vault pointing at whatever already worked.
+	recorded, err := vault.NormalizePath(path)
 	if err != nil {
 		return err
 	}
@@ -139,6 +141,12 @@ func runVaultInit(path string, passwordStdin, jsonOut bool) error {
 	}
 	st, err := c.Unlock(recorded, password, agentd.DefaultIdleTimeout)
 	if err != nil {
+		return err
+	}
+
+	// Only now is the new location known-good. Pointing earlier would strand
+	// every later command on a path the user never successfully opened.
+	if _, err := vault.RecordPath(path); err != nil {
 		return err
 	}
 

@@ -61,15 +61,19 @@ func ResolvePath() (string, error) {
 	return ExpandTilde(path), nil
 }
 
-// RecordPath writes the pointer file so later invocations find the vault,
-// returning the resolved vault file path.
+// NormalizePath resolves a user-supplied vault location the same way
+// RecordPath does, without writing the pointer file.
 //
 // A path that names a directory — or that could only be one, having no file
 // extension — gets DefaultFileName appended. Without the second half of that,
 // `vault init ~/Dropbox/OwnBase` on a folder that does not exist yet would
 // silently create a *file* called `OwnBase`, and the user would find no folder
 // where they asked for one.
-func RecordPath(path string) (string, error) {
+//
+// vault init uses this first and only calls RecordPath after create/unlock
+// succeeds, so a cancelled password prompt or a wrong password cannot move
+// ~/.ownbase/vault off a previously working location.
+func NormalizePath(path string) (string, error) {
 	path = ExpandTilde(strings.TrimSpace(path))
 	if path == "" {
 		return "", errors.New("a vault path is required")
@@ -85,18 +89,35 @@ func RecordPath(path string) (string, error) {
 	case os.IsNotExist(statErr) && filepath.Ext(abs) == "":
 		abs = filepath.Join(abs, DefaultFileName)
 	}
+	return abs, nil
+}
 
-	pointer, err := StatePath(PointerFile)
+// RecordPath writes the pointer file so later invocations find the vault,
+// returning the resolved vault file path.
+func RecordPath(path string) (string, error) {
+	abs, err := NormalizePath(path)
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(filepath.Dir(pointer), 0o700); err != nil {
-		return "", fmt.Errorf("create %s: %w", filepath.Dir(pointer), err)
-	}
-	if err := os.WriteFile(pointer, []byte(abs+"\n"), 0o600); err != nil {
-		return "", fmt.Errorf("write %s: %w", pointer, err)
+	if err := writePointer(abs); err != nil {
+		return "", err
 	}
 	return abs, nil
+}
+
+// writePointer records abs as the vault location in ~/.ownbase/vault.
+func writePointer(abs string) error {
+	pointer, err := StatePath(PointerFile)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(pointer), 0o700); err != nil {
+		return fmt.Errorf("create %s: %w", filepath.Dir(pointer), err)
+	}
+	if err := os.WriteFile(pointer, []byte(abs+"\n"), 0o600); err != nil {
+		return fmt.Errorf("write %s: %w", pointer, err)
+	}
+	return nil
 }
 
 // ExpandTilde replaces a leading ~ with the user's home directory.

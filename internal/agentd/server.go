@@ -45,6 +45,10 @@ func NewServer(version string) *Server {
 // Serve binds both sockets and serves until ctx is cancelled or a shutdown
 // request arrives. It refuses to start when another agent already answers on
 // the control socket, and clears a socket file left behind by a crash.
+//
+// probe → unlink → bind is serialized with a flock so two concurrent
+// EnsureRunning callers (desktop app + CLI, or two CLIs) cannot both pass the
+// dead-socket check and have the loser unlink the winner's live sockets.
 func (s *Server) Serve(ctx context.Context) error {
 	controlPath, err := ControlSocketPath()
 	if err != nil {
@@ -58,16 +62,26 @@ func (s *Server) Serve(ctx context.Context) error {
 		return fmt.Errorf("create %s: %w", filepath.Dir(controlPath), err)
 	}
 
+	release, err := acquireServeLock()
+	if err != nil {
+		return err
+	}
+	// Hold the lock only through bind: once the sockets answer, probe alone
+	// serializes later Serves. Releasing here lets a crashed-and-replaced
+	// agent recover without waiting on a process that already exited.
 	if alive, _ := probe(controlPath); alive {
+		release()
 		return fmt.Errorf("an OwnBase agent is already running (socket %s)", controlPath)
 	}
 	// Not alive but present: a crashed agent's socket. Removing it is safe
-	// precisely because nothing answered on it.
+	// precisely because nothing answered on it — and because we hold the lock,
+	// no peer is about to bind the same path.
 	_ = os.Remove(controlPath)
 	_ = os.Remove(sshPath)
 
 	s.controlLn, err = listenUnix(controlPath)
 	if err != nil {
+		release()
 		return err
 	}
 	defer func() {
@@ -77,12 +91,14 @@ func (s *Server) Serve(ctx context.Context) error {
 
 	s.sshLn, err = listenUnix(sshPath)
 	if err != nil {
+		release()
 		return err
 	}
 	defer func() {
 		s.sshLn.Close()
 		os.Remove(sshPath)
 	}()
+	release()
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
