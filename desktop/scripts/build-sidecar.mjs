@@ -50,19 +50,14 @@ const outPath = join(outDir, `ownbasectl-${triple}${suffix}`);
 
 mkdirSync(outDir, { recursive: true });
 
-// Stamp the same version the CLI's own release builds use, so `ownbasectl
-// version` inside the app is not the string "dev" in a shipped bundle.
-const version = process.env.OWNBASE_VERSION ?? describeGitVersion();
-
-function describeGitVersion() {
-  try {
-    return run("git", ["describe", "--tags", "--always", "--dirty"], {
-      cwd: repoRoot,
-    });
-  } catch {
-    return "dev";
-  }
-}
+// Version stamped into the binary. Release CI sets OWNBASE_VERSION to the
+// tag (vX.Y.Z) so create pins the matching signed daemon. Local/dev builds
+// must NOT use git-describe: isReleaseBuild only treats clean tags as
+// releases, and a describe string like v0.3.3-27-gabc would still be a bad
+// pin if that ever loosened — keep local sidecars as "dev" so local-VM
+// create builds the daemon from this checkout instead of 403ing on a
+// non-existent releases.ownbase.ai path.
+const version = process.env.OWNBASE_VERSION ?? "dev";
 
 console.log(`building ownbasectl ${version} for ${triple} (${GOOS}/${GOARCH})`);
 

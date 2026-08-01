@@ -899,7 +899,7 @@ function InstallStep({
           setReached(phases.length);
           onDone();
         } else {
-          setError(installFailure(code));
+          setError(installFailure(code, local));
         }
       })
       .catch((err: unknown) => {
@@ -987,12 +987,16 @@ function InstallStep({
  * The CLI's own message is already in the log above, so this adds what the exit
  * code alone tells us about where to look next.
  */
-function installFailure(code: number): string {
+function installFailure(code: number, local: boolean): string {
   switch (code) {
     case 3:
-      return "The server was checked before anything was changed on it, and it did not pass. Nothing was installed. The output above says which check failed — usually the Ubuntu version, the architecture, or the machine being too small.";
+      return local
+        ? "The local VM was checked before install finished, and something did not pass. The output above says which check failed."
+        : "The server was checked before anything was changed on it, and it did not pass. Nothing was installed. The output above says which check failed — usually the Ubuntu version, the architecture, or the machine being too small.";
     case 4:
-      return "The installer ran on the server and failed partway through. The output above has the installer's own error.";
+      return local
+        ? "The installer ran inside the local VM and failed partway through. The output above has the installer's own error — often Multipass missing, or (on a dev build) Go not being able to build the daemon from this checkout."
+        : "The installer ran on the server and failed partway through. The output above has the installer's own error.";
     case 5:
       return "OwnBase was installed, but the daemon did not report healthy in time. The machine is probably still hardening — open the Base and check its status in a minute.";
     case 6:

@@ -26,15 +26,34 @@ import (
 )
 
 // isReleaseBuild reports whether this ownbasectl binary was built by the
-// release pipeline (version injected via ldflags) for an actual tagged
-// release. Release builds install the matching signed daemon release; dev
-// builds — including `go build`/`go run` (version == "dev") and local
-// `goreleaser release --snapshot` dry runs (version like "1.2.3-dev", per
-// the snapshot.version_template in .goreleaser.yaml) — build the daemon from
-// the checkout (local VM) or install the latest release (remote), since no
-// matching daemon release exists on releases.ownbase.ai for either.
+// release pipeline for an actual tagged release (ldflags version = the tag,
+// e.g. "v0.3.3"). Only those have a matching signed daemon on
+// releases.ownbase.ai.
+//
+// Everything else is a dev build and must not pin OWNBASE_VERSION to a path
+// that 403s: plain `go build` ("dev"), goreleaser snapshots ("…-dev"), and
+// the desktop sidecar's git-describe stamp ("v0.3.3-27-gabc…"). Local VMs
+// then build the daemon from the checkout; remotes install latest.
 func isReleaseBuild() bool {
-	return version != "dev" && !strings.HasSuffix(version, "-dev")
+	// Clean tag only: v + major.minor.patch. Reject git-describe, -dev, rc, etc.
+	if len(version) < 5 || version[0] != 'v' {
+		return false
+	}
+	parts := strings.Split(version[1:], ".")
+	if len(parts) != 3 {
+		return false
+	}
+	for _, p := range parts {
+		if p == "" {
+			return false
+		}
+		for _, c := range p {
+			if c < '0' || c > '9' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // writeEmbeddedInstallScript writes the embedded install.sh to a temp file so
