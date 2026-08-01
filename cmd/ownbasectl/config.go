@@ -189,6 +189,7 @@ func runConfigSetup(base, repo, ref string, doInit, jsonOut bool) error {
 		return fmt.Errorf("save config repo to profile: %w", err)
 	}
 
+	seeded := false
 	if doInit {
 		profile, err := loadProfile(base)
 		if err != nil {
@@ -207,8 +208,11 @@ func runConfigSetup(base, repo, ref string, doInit, jsonOut bool) error {
 			if err := cr.writeCommitPush(defaultOwnbaseYAML, "init: seed ownbase.yaml"); err != nil && err != errNoConfigChange {
 				return fmt.Errorf("seed config repo: %w", err)
 			}
-			fmt.Println("Seeded default ownbase.yaml into the config repo.")
-		} else {
+			seeded = true
+			if !jsonOut {
+				fmt.Println("Seeded default ownbase.yaml into the config repo.")
+			}
+		} else if !jsonOut {
 			fmt.Println("Config repo already has an ownbase.yaml — leaving it untouched.")
 		}
 	}
@@ -224,12 +228,13 @@ func runConfigSetup(base, repo, ref string, doInit, jsonOut bool) error {
 		return fmt.Errorf("set config source on Base: %w", err)
 	}
 	if jsonOut {
+		// stdout must be one JSON document — no progress lines above.
 		return printJSON(map[string]any{
 			"status":   "configured",
 			"base":     base,
 			"repo_url": repo,
 			"ref":      ref,
-			"seeded":   doInit,
+			"seeded":   seeded,
 		})
 	}
 	fmt.Printf("Config source set to %s (%s) for %q — the Base will pull and reconcile.\n", repo, ref, base)
