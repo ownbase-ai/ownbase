@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -32,6 +33,29 @@ func EnsureCaddyImage(ctx context.Context, w interface{ Write([]byte) (int, erro
 		return nil
 	}
 	return BuildCaddyImage(ctx, w)
+}
+
+// ImageLine returns the full "Image=..." line from a Quadlet unit, or "".
+func ImageLine(unit string) string {
+	for _, line := range strings.Split(unit, "\n") {
+		if strings.HasPrefix(line, "Image=") {
+			return line
+		}
+	}
+	return ""
+}
+
+// WithPreservedImageLine returns desired with its Image= line replaced by the
+// Image= line from existing. Used when LocalCaddyImage is not built yet so
+// bootstrap does not rewrite a working registry unit onto a missing tag
+// (which would systemctl restart Caddy into a failed state for minutes).
+func WithPreservedImageLine(existing, desired string) string {
+	old := ImageLine(existing)
+	neu := ImageLine(desired)
+	if old == "" || neu == "" || old == neu {
+		return desired
+	}
+	return strings.Replace(desired, neu, old, 1)
 }
 
 // BuildCaddyImage builds the hardened Caddy image from the embedded Dockerfile
