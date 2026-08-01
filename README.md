@@ -49,13 +49,13 @@ There is exactly one step a human must do, because server providers require a hu
 Both run on your own computer, not on the server. Pick whichever you prefer — they share one vault and cannot disagree about what is deployed.
 
 ```bash
-brew install --cask ownbase-ai/tap/ownbase      # app (macOS)
-brew install --cask ownbase-ai/tap/ownbasectl  # CLI (macOS or Linux)
+brew install --cask ownbase-ai/tap/ownbase      # app — macOS only
+brew install --cask ownbase-ai/tap/ownbasectl  # CLI — macOS or Linux (Homebrew on Linux is fine)
 ```
 
 The app walks through this whole section with a wizard and already bundles `ownbasectl`. The CLI is what an agent will use, and what the rest of this walkthrough shows.
 
-Linux app, no Homebrew, Gatekeeper notes: [docs/desktop.md](docs/desktop.md#installing-it) (app) and [INSTALL.md](INSTALL.md#install-ownbasectl) (CLI).
+Linux desktop app (`.deb` / AppImage), or CLI without Homebrew: [docs/desktop.md](docs/desktop.md#installing-it) and [INSTALL.md](INSTALL.md#install-ownbasectl).
 
 ### 2. Create the vault
 
