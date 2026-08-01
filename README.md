@@ -50,7 +50,7 @@ Both run on your own computer, not on the server. Pick whichever you prefer — 
 
 ```bash
 brew install --cask ownbase-ai/tap/ownbase      # app — macOS only
-brew install --cask ownbase-ai/tap/ownbasectl  # CLI — macOS or Linux (Homebrew on Linux is fine)
+brew install --cask ownbase-ai/tap/ownbasectl  # CLI — macOS or Linux
 ```
 
 The app walks through this whole section with a wizard and already bundles `ownbasectl`. The CLI is what an agent will use, and what the rest of this walkthrough shows.
