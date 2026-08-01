@@ -271,8 +271,9 @@ const (
 	// that still ends in a CLI call. Preview=true means dry-run the edit
 	// and show the diff before committing.
 	actionForm = "form"
-	// actionManual: genuine dead-end — no in-app path. Plain text only.
-	actionManual = "manual"
+	// "manual" is also a valid kind (genuine dead-end, plain text only) but
+	// no finding emits it today — every case is run/open/form. The app still
+	// knows how to render it if one appears.
 )
 
 // checkupAction tells a reader (terminal or desktop app) how to address a

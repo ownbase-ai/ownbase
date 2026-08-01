@@ -46,8 +46,20 @@ const SIDECAR: &str = "ownbasectl";
 /// the shape of thing this list exists to keep out of the webview's reach.
 /// The app reads *recordings* of sessions; it does not open them.
 const ALLOWED: &[&str] = &[
-    "adopt", "agent", "backup", "checkup", "create", "delete", "deploy", "keygen", "list",
-    "security", "self-update", "sessions", "upgrade", "vault",
+    "adopt",
+    "agent",
+    "backup",
+    "checkup",
+    "create",
+    "delete",
+    "deploy",
+    "keygen",
+    "list",
+    "security",
+    "self-update",
+    "sessions",
+    "upgrade",
+    "vault",
 ];
 
 /// What one `ownbasectl` invocation produced.
