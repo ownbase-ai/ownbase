@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 
 import { CopyButton } from "../components/CopyButton";
+import { ConfigSetupForm } from "./BaseDetail";
 import {
   Badge,
   Button,
@@ -1143,6 +1144,8 @@ function adoptFailure(code: number): string {
 // ---------------------------------------------------------------------------
 
 function DoneStep({ base, mode, onOpen }: { base: string; mode: Mode; onOpen: () => void }) {
+  const [configDone, setConfigDone] = useState(false);
+
   return (
     <Card>
       <h2 className="text-base font-medium text-zinc-100">
@@ -1150,26 +1153,31 @@ function DoneStep({ base, mode, onOpen }: { base: string; mode: Mode; onOpen: ()
       </h2>
       <p className="mt-1.5 text-sm leading-relaxed text-zinc-500">
         {mode === "create-local"
-          ? "A Multipass VM on this computer. Nothing is exposed on the public internet. When you are ready, two things are worth doing."
+          ? "A Multipass VM on this computer. Nothing is exposed on the public internet."
           : isCreate(mode)
-            ? "Nothing but SSH is exposed, so there is no rush to the next step. When you are ready, two things are worth doing."
-            : "It's in your vault now. Two things are worth checking, if this Base doesn't already have them."}
+            ? "Nothing but SSH is exposed."
+            : "It's in your vault now."}{" "}
+        One more step makes it a real Base: point it at a config repo you own.
+        That is where what runs is decided.
       </p>
 
-      <ul className="mt-4 space-y-3 text-sm leading-relaxed text-zinc-300">
-        <Requirement>
-          <strong className="font-medium text-zinc-100">Set up backups.</strong> Until
-          you do, this Base has no proven way back from a lost disk.{" "}
-          <CommandLine>ownbasectl backup setup {base}</CommandLine>
-        </Requirement>
-        <Requirement>
-          <strong className="font-medium text-zinc-100">
-            Point it at a config repo.
-          </strong>{" "}
-          <CommandLine>ownbasectl config setup {base}</CommandLine> — the repo is
-          yours, and it is where what runs on this machine is decided.
-        </Requirement>
-      </ul>
+      <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-950/40 p-4">
+        <h3 className="text-sm font-medium text-zinc-100">Config repo</h3>
+        {configDone ? (
+          <p className="mt-2 text-sm text-emerald-300">
+            Config source set. Open the Base to set up backups when you are ready.
+          </p>
+        ) : (
+          <div className="mt-3">
+            <ConfigSetupForm base={base} onDone={() => setConfigDone(true)} />
+          </div>
+        )}
+      </div>
+
+      <p className="mt-4 text-xs leading-relaxed text-zinc-500">
+        Backups are next — until you turn them on, this Base has no proven way
+        back from a lost disk. You can do that from the Base&apos;s Backups tab.
+      </p>
 
       <Footer>
         <span />

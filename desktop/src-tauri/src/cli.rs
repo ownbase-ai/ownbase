@@ -50,6 +50,7 @@ const ALLOWED: &[&str] = &[
     "agent",
     "backup",
     "checkup",
+    "config",
     "create",
     "delete",
     "deploy",
@@ -58,6 +59,7 @@ const ALLOWED: &[&str] = &[
     "security",
     "self-update",
     "sessions",
+    "ssh-key",
     "upgrade",
     "vault",
 ];
@@ -245,6 +247,7 @@ mod tests {
             "agent",
             "backup",
             "checkup",
+            "config",
             "create",
             "delete",
             "deploy",
@@ -253,6 +256,7 @@ mod tests {
             "security",
             "self-update",
             "sessions",
+            "ssh-key",
             "upgrade",
             "vault",
         ] {
@@ -269,8 +273,7 @@ mod tests {
         // the allowlist is the XSS boundary, so they must stay out until one
         // does — see the ALLOWED doc comment.
         for cmd in [
-            "config", "secrets", "restore", "service", "status", "updates", "ssh-key", "db",
-            "version",
+            "secrets", "restore", "service", "status", "updates", "db", "version",
         ] {
             assert!(
                 check_allowed(&args(&[cmd])).is_err(),

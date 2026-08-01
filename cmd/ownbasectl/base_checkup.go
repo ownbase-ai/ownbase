@@ -288,7 +288,8 @@ type checkupAction struct {
 	// Tab is the desktop app tab to open for kind=open
 	// ("security" | "backups" | "updates").
 	Tab string `json:"tab,omitempty"`
-	// Form names the app flow for kind=form ("backup-setup" | "deploy").
+	// Form names the app flow for kind=form
+	// ("backup-setup" | "deploy" | "config-setup").
 	Form string `json:"form,omitempty"`
 	// Service is the service the form targets (deploy).
 	Service string `json:"service,omitempty"`
@@ -330,6 +331,23 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 		return nil
 	}
 	var findings []checkupFinding
+
+	// Config source is the first thing a fresh Base needs. Without it the
+	// daemon has nothing to reconcile and services cannot be declared.
+	// Wizard create intentionally stops before this step — surface it as a
+	// form, not a scary missing-tools message on the Security tab.
+	if _, hasConfig := s["config"].(map[string]any); !hasConfig {
+		findings = append(findings, checkupFinding{
+			Summary: "Config repo not set up — nothing is declared to run yet",
+			Fix:     "ownbasectl config setup " + base + " --repo <git-url> --init",
+			Action: checkupAction{
+				Kind:    actionForm,
+				Form:    "config-setup",
+				Preview: false,
+				Label:   "Set up config repo",
+			},
+		})
+	}
 
 	// sec may be nil (e.g. a status payload from an agent build that
 	// predates the security section). All security-derived checks live in

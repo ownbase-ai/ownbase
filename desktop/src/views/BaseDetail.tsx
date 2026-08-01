@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 
+import { CopyButton } from "../components/CopyButton";
 import {
   Badge,
   Button,
@@ -516,6 +517,17 @@ function FindingRow({
           />
         </div>
       )}
+      {action.kind === "form" && formOpen && action.form === "config-setup" && (
+        <div className="mt-3 border-t border-amber-500/10 pt-3">
+          <ConfigSetupForm
+            base={base}
+            onDone={() => {
+              setFormOpen(false);
+              onChanged();
+            }}
+          />
+        </div>
+      )}
       {action.kind === "form" && formOpen && action.form === "deploy" && action.service && (
         <div className="mt-3 border-t border-amber-500/10 pt-3">
           <DeployForm
@@ -536,6 +548,151 @@ function FindingRow({
         <LogView lines={lines} className="mt-3 max-h-48 w-full" />
       )}
     </li>
+  );
+}
+
+/**
+ * Point a Base at its external config repo.
+ *
+ * Order: deploy key (so the Base can clone) → paste the public key on the
+ * host → enter the git URL → optional seed → config setup.
+ */
+export function ConfigSetupForm({
+  base,
+  onDone,
+}: {
+  base: string;
+  onDone: () => void;
+}) {
+  const [repo, setRepo] = useState("");
+  const [ref, setRef] = useState("main");
+  const [init, setInit] = useState(true);
+  const [publicKey, setPublicKey] = useState<string | null>(null);
+  const [busy, setBusy] = useState<"key" | "setup" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+
+  async function loadKey() {
+    setBusy("key");
+    setError(null);
+    try {
+      const host = repo.includes("gitlab")
+        ? "gitlab.com"
+        : repo.includes("bitbucket")
+          ? "bitbucket.org"
+          : "github.com";
+      const r = await api.sshKeyAdd(base, host);
+      setPublicKey(r.public_key);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function runSetup() {
+    if (!repo.trim()) return;
+    setBusy("setup");
+    setError(null);
+    try {
+      await api.configSetup(base, {
+        repo: repo.trim(),
+        ref: ref.trim() || "main",
+        init,
+      });
+      setDone(true);
+      onDone();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs leading-relaxed text-zinc-500">
+        What runs on this Base is decided in a git repo you own. The Base clones
+        it read-only; you commit changes from this computer.
+      </p>
+      <Field label="Config repo URL" hint="git@github.com:you/mybase-config.git">
+        <Input
+          value={repo}
+          onChange={(e) => setRepo(e.target.value)}
+          placeholder="git@github.com:you/mybase-config.git"
+          spellCheck={false}
+          disabled={busy !== null || done}
+        />
+      </Field>
+      <Field label="Branch" hint="Usually main.">
+        <Input
+          value={ref}
+          onChange={(e) => setRef(e.target.value)}
+          placeholder="main"
+          spellCheck={false}
+          disabled={busy !== null || done}
+        />
+      </Field>
+      <label className="flex cursor-pointer items-start gap-3 text-sm text-zinc-300">
+        <input
+          type="checkbox"
+          className="mt-1"
+          checked={init}
+          onChange={(e) => setInit(e.target.checked)}
+          disabled={busy !== null || done}
+        />
+        <span>
+          Seed a starter ownbase.yaml if the repo is empty
+          <span className="mt-0.5 block text-xs text-zinc-500">
+            Postgres with point-in-time recovery. Safe to uncheck if the repo
+            already has a config.
+          </span>
+        </span>
+      </label>
+
+      <div className="space-y-2 rounded-md border border-zinc-800 bg-zinc-950/40 p-3">
+        <p className="text-xs font-medium text-zinc-300">
+          1. Register the Base&apos;s deploy key on the repo
+        </p>
+        <p className="text-xs leading-relaxed text-zinc-500">
+          Read-only. The Base uses this key to clone — different from the owner
+          key you use to SSH in.
+        </p>
+        {!publicKey ? (
+          <Button
+            variant="secondary"
+            busy={busy === "key"}
+            disabled={busy !== null || done}
+            onClick={() => void loadKey()}
+          >
+            Generate deploy key
+          </Button>
+        ) : (
+          <div className="space-y-2">
+            <p className="selectable break-all font-mono text-[11px] text-zinc-300">
+              {publicKey}
+            </p>
+            <CopyButton value={publicKey} label="Copy public key" />
+          </div>
+        )}
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        <Button
+          busy={busy === "setup"}
+          disabled={busy !== null || done || !repo.trim()}
+          onClick={() => void runSetup()}
+        >
+          {done ? "Configured" : "Point Base at this repo"}
+        </Button>
+      </div>
+      {error && <p className="text-xs text-red-300">{error}</p>}
+      {done && (
+        <p className="text-xs text-emerald-300">
+          Config source set. The Base is pulling and reconciling.
+        </p>
+      )}
+    </div>
   );
 }
 

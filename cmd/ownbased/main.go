@@ -1063,13 +1063,20 @@ func reconcileLoop(
 
 	// 1. Sync the checkout with the external config repo (read-only). A no-op
 	// until a config source is set via `ownbasectl config setup`.
-	if src, err := configsource.Load(configsource.DefaultStatePath); err != nil {
-		fmt.Fprintf(os.Stderr, "ownbased: load config source: %v\n", err)
+	src, srcErr := configsource.Load(configsource.DefaultStatePath)
+	if srcErr != nil {
+		fmt.Fprintf(os.Stderr, "ownbased: load config source: %v\n", srcErr)
 	} else if src.Configured() {
 		if err := configsource.EnsureCheckout(context.Background(), src, checkoutPath, gitssh.Env()); err != nil {
 			// Non-fatal — reconcile continues with whatever is already on disk.
 			fmt.Fprintf(os.Stderr, "ownbased: sync config repo: %v\n", err)
 		}
+	} else {
+		// Fresh Base: wizard/create finished but config setup has not run.
+		// Do not treat a missing checkout as a parse error every tick — that
+		// spams the journal and left the Security panel looking broken.
+		// afterReconcile still runs (secwatch, vulns) with Config=nil.
+		return state, nil
 	}
 
 	// 2. Parse ownbase.yaml from the checkout.

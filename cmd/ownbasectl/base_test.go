@@ -180,6 +180,7 @@ func TestRegisterProfile_KeepsOwnerKey(t *testing.T) {
 
 func TestCheckupFindings_AllClear(t *testing.T) {
 	body := []byte(`{
+		"config": {"repo_url": "git@example.com/x.git"},
 		"security": {
 			"backup_restorable": true,
 			"exposure": {"available": true, "firewall_active": true, "unexpected_count": 0},
@@ -205,6 +206,7 @@ func TestCheckupFindings_AllClear(t *testing.T) {
 // can finish. They live as a reading on the Security tab.
 func TestCheckupFindings_UnfixedCVEsAreNotFindings(t *testing.T) {
 	body := []byte(`{
+		"config": {"repo_url": "git@example.com/x.git"},
 		"security": {
 			"backup_restorable": true,
 			"exposure": {"available": true, "firewall_active": true, "unexpected_count": 0},
@@ -228,6 +230,7 @@ func TestCheckupFindings_UnfixedCVEsAreNotFindings(t *testing.T) {
 // Banned IPs are fail2ban working, not a to-do.
 func TestCheckupFindings_BannedIPsAreNotFindings(t *testing.T) {
 	body := []byte(`{
+		"config": {"repo_url": "git@example.com/x.git"},
 		"security": {
 			"backup_restorable": true,
 			"exposure": {"available": true, "firewall_active": true, "unexpected_count": 0},
@@ -248,6 +251,7 @@ func TestCheckupFindings_BannedIPsAreNotFindings(t *testing.T) {
 
 func TestCheckupFindings_FlagsIssues(t *testing.T) {
 	body := []byte(`{
+		"config": {"repo_url": "git@example.com/x.git"},
 		"security": {
 			"backup_restorable": false,
 			"exposure": {"available": true, "firewall_active": false, "unexpected_count": 2},
@@ -350,6 +354,7 @@ func TestCheckupFindings_FlagsIssues(t *testing.T) {
 // re-doing something that is already working.
 func TestCheckupFindings_BackupConfiguredButNotYetVerified(t *testing.T) {
 	body := []byte(`{
+		"config": {"repo_url": "git@example.com/x.git"},
 		"security": {
 			"backup_restorable": false,
 			"last_backup": "2026-07-04T00:27:18Z",
@@ -382,6 +387,7 @@ func TestCheckupFindings_BackupConfiguredButNotYetVerified(t *testing.T) {
 // older agent build) must not skip the unrelated updates.drift scan.
 func TestCheckupFindings_NoSecuritySection_StillScansUpdates(t *testing.T) {
 	body := []byte(`{
+		"config": {"repo_url": "git@example.com/x.git"},
 		"updates": {"drift": [{"service": "crm", "up_to_date": false}]}
 	}`)
 	findings := checkupFindings("mybase", body)
@@ -396,6 +402,7 @@ func TestCheckupFindings_NoSecuritySection_StillScansUpdates(t *testing.T) {
 func TestCheckupFindings_StaleScan(t *testing.T) {
 	stale := time.Now().UTC().Add(-50 * time.Hour).Format(time.RFC3339)
 	body := []byte(`{
+		"config": {"repo_url": "git@example.com/x.git"},
 		"security": {
 			"backup_restorable": true,
 			"vulns": {
@@ -421,6 +428,7 @@ func TestCheckupFindings_StaleScan(t *testing.T) {
 func TestCheckupFindings_StaleScanStillSurfacesFixableHostCVEs(t *testing.T) {
 	stale := time.Now().UTC().Add(-50 * time.Hour).Format(time.RFC3339)
 	body := []byte(`{
+		"config": {"repo_url": "git@example.com/x.git"},
 		"security": {
 			"backup_restorable": true,
 			"vulns": {
@@ -454,6 +462,7 @@ func TestCheckupFindings_StaleScanStillSurfacesFixableHostCVEs(t *testing.T) {
 
 func TestCheckupFindings_ScanUnavailable(t *testing.T) {
 	body := []byte(`{
+		"config": {"repo_url": "git@example.com/x.git"},
 		"security": {
 			"backup_restorable": true,
 			"vulns": {
@@ -474,6 +483,7 @@ func TestCheckupFindings_ScanUnavailable(t *testing.T) {
 
 func TestCheckupFindings_TrivyMissing(t *testing.T) {
 	body := []byte(`{
+		"config": {"repo_url": "git@example.com/x.git"},
 		"security": {
 			"backup_restorable": true,
 			"vulns": {
@@ -527,5 +537,27 @@ func TestLinuxArchForHost(t *testing.T) {
 	arch := linuxArchForHost()
 	if arch != "amd64" && arch != "arm64" {
 		t.Errorf("unexpected arch: %q", arch)
+	}
+}
+
+func TestCheckupFindings_ConfigNotSetUp(t *testing.T) {
+	// Deliberately omit "config" — a fresh Base after the wizard.
+	body := []byte(`{
+		"security": {
+			"backup_restorable": true,
+			"vulns": {
+				"available": true,
+				"trivy_installed": true,
+				"scanned_at": "2026-07-31T12:00:00Z",
+				"host": {"critical": 0, "high": 0}
+			}
+		}
+	}`)
+	findings := checkupFindings("mybase", body)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 config finding, got %d: %+v", len(findings), findings)
+	}
+	if findings[0].Action.Form != "config-setup" {
+		t.Errorf("expected config-setup form, got %+v", findings[0].Action)
 	}
 }

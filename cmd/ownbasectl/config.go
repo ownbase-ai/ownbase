@@ -149,7 +149,7 @@ var defaultOwnbaseYAML = fmt.Sprintf(defaultOwnbaseYAMLTemplate, pgBackRestRef)
 
 func newConfigSetupCmd() *cobra.Command {
 	var repo, ref string
-	var doInit bool
+	var doInit, jsonOut bool
 	cmd := &cobra.Command{
 		Use:   "setup <name> --repo <git-url>",
 		Short: "Point a Base at its external config repo (optionally seeding it)",
@@ -163,16 +163,17 @@ The Base needs READ access to the repo — add its deploy key first with
 		Example: `  ownbasectl config setup mybase --repo git@github.com:org/ownbase-config.git --init`,
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runConfigSetup(args[0], repo, ref, doInit)
+			return runConfigSetup(args[0], repo, ref, doInit, jsonOut)
 		},
 	}
 	cmd.Flags().StringVar(&repo, "repo", "", "git URL of the config repo (required)")
 	cmd.Flags().StringVar(&ref, "ref", "", "branch/ref of the config repo to track (default: main)")
 	cmd.Flags().BoolVar(&doInit, "init", false, "seed a default ownbase.yaml into an empty config repo")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "print the result as JSON")
 	return cmd
 }
 
-func runConfigSetup(base, repo, ref string, doInit bool) error {
+func runConfigSetup(base, repo, ref string, doInit, jsonOut bool) error {
 	if repo == "" {
 		return fmt.Errorf("--repo is required, e.g. --repo git@github.com:org/ownbase-config.git")
 	}
@@ -221,6 +222,15 @@ func runConfigSetup(base, repo, ref string, doInit bool) error {
 	payload, _ := json.Marshal(map[string]string{"repo_url": repo, "ref": ref})
 	if _, err := apiCall(conn, http.MethodPost, "/config/source", payload); err != nil {
 		return fmt.Errorf("set config source on Base: %w", err)
+	}
+	if jsonOut {
+		return printJSON(map[string]any{
+			"status":   "configured",
+			"base":     base,
+			"repo_url": repo,
+			"ref":      ref,
+			"seeded":   doInit,
+		})
 	}
 	fmt.Printf("Config source set to %s (%s) for %q — the Base will pull and reconcile.\n", repo, ref, base)
 	return nil

@@ -319,6 +319,25 @@ export async function backupSetupRun(
   return cli.text(args, creds);
 }
 
+/** Ensure the Base has a git deploy key; returns the public half to register. */
+export function sshKeyAdd(
+  base: string,
+  host = "github.com",
+): Promise<{ public_key: string }> {
+  return cli.json(["ssh-key", "add", base, "--host", host]);
+}
+
+/** Point the Base at its external config repo (optionally seed ownbase.yaml). */
+export function configSetup(
+  base: string,
+  opts: { repo: string; ref?: string; init?: boolean },
+): Promise<{ status: string; repo_url: string; ref: string; seeded: boolean }> {
+  const args = ["config", "setup", base, "--repo", opts.repo, "--json"];
+  if (opts.ref) args.push("--ref", opts.ref);
+  if (opts.init) args.push("--init");
+  return cli.json(args);
+}
+
 // ---------------------------------------------------------------------------
 // Sessions
 // ---------------------------------------------------------------------------

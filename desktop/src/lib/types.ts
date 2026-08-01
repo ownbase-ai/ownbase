@@ -100,7 +100,7 @@ export interface FindingAction {
   /** Desktop tab to open for kind=open. */
   tab?: "security" | "backups" | "updates";
   /** Named form flow for kind=form. */
-  form?: "backup-setup" | "deploy";
+  form?: "backup-setup" | "deploy" | "config-setup";
   /** Service the form targets (deploy). */
   service?: string;
   /** Default --ref for deploy. */
