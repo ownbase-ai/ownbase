@@ -27,7 +27,9 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -319,11 +321,16 @@ func loadPrivateKey(keyPath string) (ssh.Signer, error) {
 
 // buildHostKeyCallback returns a host key verifier backed by
 // ~/.ownbase/known_hosts with TOFU semantics:
-//   - Unknown host (not yet in the file): key is appended and a notice is
-//     printed. This covers both the first-ever connect and re-provisioned
-//     servers that appear at a new IP address.
+//   - Unknown host (not yet in the file): every host-key algorithm the
+//     server offers is recorded (via ssh-keyscan when available), not only
+//     the one this handshake negotiated. That way an OpenSSH upgrade that
+//     starts preferring ed25519 over rsa does not look like a MITM.
 //   - Known host with matching key: accepted silently.
-//   - Known host with a DIFFERENT key: rejected (possible MITM).
+//   - Known host with a different key type, but every previously recorded
+//     key still present on the server: missing types are appended and the
+//     connection is accepted (same machine, incomplete TOFU).
+//   - Known host whose recorded keys are gone from the server: rejected
+//     (re-provision or MITM) — operator removes the stale known_hosts line.
 func buildHostKeyCallback(host string) (ssh.HostKeyCallback, error) {
 	khPath, err := knownHostsPath()
 	if err != nil {
@@ -354,23 +361,38 @@ func buildHostKeyCallback(host string) (ssh.HostKeyCallback, error) {
 		}
 
 		var keyErr *knownhosts.KeyError
-		if errors.As(cbErr, &keyErr) && len(keyErr.Want) == 0 {
-			// Host is not in the file at all — TOFU: append and accept.
-			f, ferr := os.OpenFile(khPath, os.O_APPEND|os.O_WRONLY, 0o600)
-			if ferr != nil {
-				return fmt.Errorf("write known_hosts: %w", ferr)
-			}
-			defer f.Close()
-			normalized := knownhosts.Normalize(hostname)
-			line := knownhosts.Line([]string{normalized}, key)
-			if _, werr := fmt.Fprintln(f, line); werr != nil {
-				return fmt.Errorf("write known_hosts entry: %w", werr)
+		if !errors.As(cbErr, &keyErr) {
+			return fmt.Errorf("host key check for %s: %w", hostname, cbErr)
+		}
+
+		normalized := knownhosts.Normalize(hostname)
+		scanHost, scanPort := splitHostPort(hostname, remote)
+
+		if len(keyErr.Want) == 0 {
+			// Host is not in the file at all — TOFU: record every key type.
+			keys := collectHostKeys(scanHost, scanPort, key)
+			if err := appendHostKeys(khPath, normalized, keys); err != nil {
+				return err
 			}
 			fmt.Fprintf(os.Stderr, "ownbasectl: added %s to ~/.ownbase/known_hosts\n", hostname)
 			return nil
 		}
 
-		// Key mismatch for a known host — reject (possible MITM or re-keyed server).
+		// Known host, handshake offered a key we do not have on file.
+		// If every key we *do* have is still on the server, this is incomplete
+		// TOFU (e.g. only rsa recorded, openssh now prefers ed25519) — not a
+		// re-key. Append the missing types and accept.
+		scanned, scanErr := keyscanHost(scanHost, scanPort)
+		if scanErr == nil && len(scanned) > 0 &&
+			pubKeyInList(key, scanned) &&
+			allKnownKeysStillPresent(keyErr.Want, scanned) {
+			if err := appendHostKeys(khPath, normalized, scanned); err != nil {
+				return err
+			}
+			fmt.Fprintf(os.Stderr, "ownbasectl: updated host keys for %s in ~/.ownbase/known_hosts\n", hostname)
+			return nil
+		}
+
 		return fmt.Errorf("host key mismatch for %s — if you re-provisioned the server, remove the old entry from ~/.ownbase/known_hosts: %w", hostname, cbErr)
 	}, nil
 }
@@ -381,4 +403,144 @@ func knownHostsPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(home, ".ownbase", "known_hosts"), nil
+}
+
+// splitHostPort pulls the dial host and port out of the callback hostname
+// (often "[ip]:22") and remote address.
+func splitHostPort(hostname string, remote net.Addr) (host string, port int) {
+	port = 22
+	h := hostname
+	if hostPart, portPart, err := net.SplitHostPort(hostname); err == nil {
+		h = hostPart
+		if p, err := strconv.Atoi(portPart); err == nil && p > 0 {
+			port = p
+		}
+	} else {
+		h = strings.Trim(hostname, "[]")
+	}
+	if remote != nil {
+		if _, portPart, err := net.SplitHostPort(remote.String()); err == nil {
+			if p, err := strconv.Atoi(portPart); err == nil && p > 0 {
+				port = p
+			}
+		}
+	}
+	// Dial target for keyscan should be the bare host (or IP), not the
+	// knownhosts-normalized form.
+	return h, port
+}
+
+// collectHostKeys returns every host key the server offers, always including
+// the key from this handshake. Falls back to just presented when keyscan fails.
+func collectHostKeys(host string, port int, presented ssh.PublicKey) []ssh.PublicKey {
+	scanned, err := keyscanHost(host, port)
+	if err != nil || len(scanned) == 0 {
+		return []ssh.PublicKey{presented}
+	}
+	if !pubKeyInList(presented, scanned) {
+		scanned = append(scanned, presented)
+	}
+	return scanned
+}
+
+// keyscanHost runs `ssh-keyscan` for all key types. Returns nil, err when the
+// binary is missing or the host does not answer — callers fall back.
+func keyscanHost(host string, port int) ([]ssh.PublicKey, error) {
+	if host == "" {
+		return nil, fmt.Errorf("empty host")
+	}
+	if _, err := exec.LookPath("ssh-keyscan"); err != nil {
+		return nil, err
+	}
+	if port <= 0 {
+		port = 22
+	}
+	// -T is connect timeout (seconds). Default keyscan tries every type.
+	cmd := exec.Command("ssh-keyscan", "-T", "5", "-p", strconv.Itoa(port), host)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	var keys []ssh.PublicKey
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		_, _, pub, _, _, err := ssh.ParseKnownHosts([]byte(line))
+		if err != nil {
+			continue
+		}
+		if !pubKeyInList(pub, keys) {
+			keys = append(keys, pub)
+		}
+	}
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("ssh-keyscan %s: no keys parsed", host)
+	}
+	return keys, nil
+}
+
+func pubKeyEqual(a, b ssh.PublicKey) bool {
+	return a.Type() == b.Type() && bytes.Equal(a.Marshal(), b.Marshal())
+}
+
+func pubKeyInList(key ssh.PublicKey, list []ssh.PublicKey) bool {
+	for _, k := range list {
+		if pubKeyEqual(key, k) {
+			return true
+		}
+	}
+	return false
+}
+
+func allKnownKeysStillPresent(want []knownhosts.KnownKey, scanned []ssh.PublicKey) bool {
+	if len(want) == 0 {
+		return false
+	}
+	for _, w := range want {
+		if w.Key == nil || !pubKeyInList(w.Key, scanned) {
+			return false
+		}
+	}
+	return true
+}
+
+// appendHostKeys writes any of keys not already present for normalized host.
+func appendHostKeys(khPath, normalized string, keys []ssh.PublicKey) error {
+	existing, _ := os.ReadFile(khPath)
+	var have []ssh.PublicKey
+	for _, line := range strings.Split(string(existing), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		_, hosts, pub, _, _, err := ssh.ParseKnownHosts([]byte(line))
+		if err != nil {
+			continue
+		}
+		for _, h := range hosts {
+			if h == normalized || h == knownhosts.Normalize(normalized) {
+				have = append(have, pub)
+				break
+			}
+		}
+	}
+
+	f, err := os.OpenFile(khPath, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600)
+	if err != nil {
+		return fmt.Errorf("write known_hosts: %w", err)
+	}
+	defer f.Close()
+	for _, key := range keys {
+		if pubKeyInList(key, have) {
+			continue
+		}
+		line := knownhosts.Line([]string{normalized}, key)
+		if _, err := fmt.Fprintln(f, line); err != nil {
+			return fmt.Errorf("write known_hosts entry: %w", err)
+		}
+		have = append(have, key)
+	}
+	return nil
 }

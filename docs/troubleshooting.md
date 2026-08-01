@@ -120,10 +120,14 @@ You are running `ownbasectl` built from source (`go build` / `go run`), which in
 
 ### "host key mismatch for <host>"
 
-`ownbasectl` verifies host keys against `~/.ownbase/known_hosts` (trust-on-first-use). A mismatch means the machine at that address presents a different key than the one recorded — either you re-provisioned the server (likely) or something is intercepting the connection (worth ruling out). If you re-provisioned:
+`ownbasectl` verifies host keys against `~/.ownbase/known_hosts` (trust-on-first-use). A mismatch means the machine at that address presents a key that is not on file *and* the keys that *are* on file are no longer offered by the server — either you re-provisioned it, or something is intercepting the connection.
+
+If you only ever connected once before an OpenSSH package upgrade, older clients may have recorded a single key type (often `ssh-rsa`). Current `ownbasectl` records every type and, when the old keys are still on the server, quietly fills in the missing ones on the next connect. Upgrade the CLI and retry before wiping entries.
+
+If you re-provisioned the server (new machine at the same IP):
 
 ```bash
-# remove the stale line for the host, then reconnect (the new key is re-added on first use)
+# remove the stale line for the host, then reconnect (the new keys are re-added on first use)
 grep -v '<host>' ~/.ownbase/known_hosts > /tmp/kh && mv /tmp/kh ~/.ownbase/known_hosts
 ```
 
