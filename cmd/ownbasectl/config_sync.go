@@ -18,6 +18,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/ownbase/ownbase/internal/agentd"
 	"github.com/ownbase/ownbase/internal/tunnel"
 	"github.com/ownbase/ownbase/internal/vault"
 )
@@ -30,13 +31,18 @@ import (
 // SSH read of config-source.yaml (older daemons / first repair only). The
 // profile check avoids an extra SSH round-trip on every status after adopt
 // or a previous backfill.
+//
+// Vault access here is best-effort against an already-running agent — never
+// EnsureRunning. status/checkup only reach this after connectToServer, so the
+// agent is up; calling EnsureRunning from a `go test` binary would spawn the
+// test binary as "agent run" and re-enter the whole suite.
 func ensureConfigKnown(base string, body []byte) []byte {
 	if url, ref := configFromStatusJSON(body); url != "" {
 		syncProfileConfig(base, url, ref)
 		return body
 	}
 
-	if p, err := loadProfile(base); err == nil {
+	if p, ok := tryLoadProfile(base); ok {
 		if url := strings.TrimSpace(p.ConfigRepoURL); url != "" {
 			ref := strings.TrimSpace(p.ConfigRef)
 			if enriched, err := injectStatusConfig(body, url, ref); err == nil {
@@ -78,8 +84,13 @@ var configSourceReadCmd = "sudo cat /opt/ownbase/config-source.yaml 2>/dev/null 
 
 // configFromBaseSSH reads /opt/ownbase/config-source.yaml over SSH via the
 // Base's vault profile. Used when the daemon is older than status.config.
+// Uses tryLoadProfile so a missing agent cannot start the test binary.
 func configFromBaseSSH(base string) (url, ref string) {
-	target, _, err := baseTarget(base)
+	p, ok := tryLoadProfile(base)
+	if !ok || strings.TrimSpace(p.Host) == "" {
+		return "", ""
+	}
+	target, err := sshTarget(p)
 	if err != nil {
 		return "", ""
 	}
@@ -120,22 +131,34 @@ func applyConfigSource(p *vault.Profile, url, ref string) {
 	}
 }
 
-func syncProfileConfig(base, url, ref string) {
-	p, err := loadProfile(base)
+// tryLoadProfile reads a profile only if the credential agent is already up.
+// It never starts the agent (see ensureConfigKnown).
+func tryLoadProfile(base string) (vault.Profile, bool) {
+	c, err := agentd.NewClient()
 	if err != nil {
+		return vault.Profile{}, false
+	}
+	p, err := c.Get(base)
+	if err != nil {
+		return vault.Profile{}, false
+	}
+	return p, true
+}
+
+func syncProfileConfig(base, url, ref string) {
+	p, ok := tryLoadProfile(base)
+	if !ok {
 		return
 	}
 	if p.ConfigRepoURL == url && (ref == "" || p.ConfigRef == ref || (p.ConfigRef == "" && ref == vault.DefaultConfigRef)) {
 		return
 	}
-	if err := saveProfile(base, func(p *vault.Profile) {
-		p.ConfigRepoURL = url
-		if ref != "" {
-			p.ConfigRef = ref
-		} else if p.ConfigRef == "" {
-			p.ConfigRef = vault.DefaultConfigRef
-		}
-	}); err != nil {
+	applyConfigSource(&p, url, ref)
+	c, err := agentd.NewClient()
+	if err != nil {
+		return
+	}
+	if err := c.Put(base, p); err != nil {
 		fmt.Fprintf(os.Stderr, "ownbasectl: warning: could not save config repo to the vault: %v\n", err)
 	}
 }
