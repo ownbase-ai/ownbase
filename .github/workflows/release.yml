@@ -265,3 +265,29 @@ jobs:
           fi
           ls -la "$stage"
           gh release upload "$VERSION" "$stage"/* --clobber
+
+  # Homebrew cask for the desktop app. Runs after every app matrix cell so both
+  # macOS DMGs are on the release; GoReleaser already pushed the CLI cask.
+  homebrew-app:
+    name: Homebrew cask (app)
+    needs: app
+    runs-on: ubuntu-latest
+    # Skip cleanly when the tap token is not configured (forks, dry runs).
+    if: ${{ success() }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Publish ownbase cask to homebrew-tap
+        env:
+          TAG: ${{ github.ref_name }}
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${HOMEBREW_TAP_GITHUB_TOKEN:-}" ]; then
+            echo "HOMEBREW_TAP_GITHUB_TOKEN not set — skipping app cask publish."
+            exit 0
+          fi
+          chmod +x .github/scripts/publish-ownbase-cask.sh
+          .github/scripts/publish-ownbase-cask.sh

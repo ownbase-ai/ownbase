@@ -8,7 +8,11 @@ Working on the app itself is documented in [desktop/README.md](../desktop/README
 
 ## Installing it
 
-Download the release for your platform and drag it in. On macOS the first launch needs a right-click → Open, because the app is not notarized yet.
+```bash
+brew install --cask ownbase-ai/tap/ownbase
+```
+
+That installs `OwnBase.app` and clears the Gatekeeper quarantine flag. The app is not Apple-notarized yet; if you download the `.dmg` by hand instead, the first launch needs a right-click → Open.
 
 The app bundles `ownbasectl`, so there is nothing else to install. If you also want the CLI on your `PATH` — worth it, since it is what an agent will use — see [INSTALL.md](../INSTALL.md#install-ownbasectl).
 

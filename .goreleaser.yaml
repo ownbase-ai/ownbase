@@ -133,10 +133,18 @@ release:
     name: ownbase
   draft: false
   footer: |
-    ## Install ownbasectl
+    ## Install
+
+    **CLI**
 
     ```sh
     brew install --cask ownbase-ai/tap/ownbasectl
     ```
 
-    Or download the archive for your platform above.
+    **Desktop app** (macOS; published after the app build job finishes)
+
+    ```sh
+    brew install --cask ownbase-ai/tap/ownbase
+    ```
+
+    Or download the archive / DMG for your platform above.
