@@ -850,7 +850,16 @@ function BackupSetupForm({
 
   async function doApply() {
     if (!preview || !password) return;
-    if (
+    if (!preview.would_change) {
+      // Still store secrets + run first backup, but do not claim a git commit.
+      if (
+        !window.confirm(
+          "ownbase.yaml already has this backup configuration. Store credentials on the Base and run the first snapshot?",
+        )
+      ) {
+        return;
+      }
+    } else if (
       !window.confirm(
         `Store backup credentials on the Base and commit this change to your config repo?\n\n${preview.commit_message}\n\nThe restic password is never recoverable from OwnBase — save it somewhere safe.`,
       )
@@ -933,7 +942,7 @@ function BackupSetupForm({
             disabled={busy !== null || !password}
             onClick={() => void doApply()}
           >
-            Confirm and set up
+            {preview.would_change ? "Confirm and set up" : "Store credentials and back up"}
           </Button>
         )}
       </div>
@@ -1666,6 +1675,7 @@ function Backups({
 }) {
   const { last_backup, last_verified, backup_restorable } = status.security;
   const configured = Boolean(last_backup);
+  const hasConfig = Boolean(status.config?.repo_url);
 
   return (
     <div className="space-y-5">
@@ -1683,7 +1693,14 @@ function Backups({
               disk. Backups go to an encrypted off-machine repository you own
               (S3, B2, or SFTP).
             </p>
-            <BackupSetupForm base={base.name} onDone={onChanged} />
+            {hasConfig ? (
+              <BackupSetupForm base={base.name} onDone={onChanged} />
+            ) : (
+              <Unavailable>
+                Set up a config repo first (Overview) — backup settings are
+                committed to ownbase.yaml.
+              </Unavailable>
+            )}
           </div>
         ) : (
           <>

@@ -875,6 +875,13 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 				_ = cfg.AuditLog.Record(a, authz.OutcomeApplied, "")
 			}
 		}
+		// Distinct trailers so the CLI can tell a no-op from a real restart
+		// (both end with ---OK--- for back-compat with stream parsers).
+		if restart {
+			fmt.Fprintf(fw, "==> Restart pending — process will exit for systemd\n")
+		} else {
+			fmt.Fprintf(fw, "==> Already current — no restart\n")
+		}
 		fmt.Fprintf(fw, "---OK---\n")
 		flush()
 		if restart {

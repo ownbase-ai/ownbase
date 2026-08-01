@@ -356,7 +356,8 @@ kernel is still running; `security reboot` is what closes that gap
 | Host OS packages with a patch | `ownbasectl security fix <name>` — auto-rescans after; may leave a reboot required |
 | Reboot required | `ownbasectl security reboot <name>` |
 | Scanner missing | `ownbasectl security install-scanner <name>` |
-| Caddy image CVE | `ownbasectl self-update <name>` — the pin lives in the daemon binary |
+| Caddy image CVE (local-build daemon) | `ownbasectl upgrade <name> --apply` — rebuilds hardened Caddy on the Base |
+| Caddy image CVE (old registry-pinned daemon) | `ownbasectl self-update <name>` first, then `upgrade --apply` |
 | Service image CVE / behind source | `ownbasectl deploy <name> <svc> --ref <tag>` (use `--dry-run --json` first) |
 | Image CVE with no fix available | Wait for the upstream maintainer |
 

@@ -99,13 +99,44 @@ func (c *configRepo) git(args ...string) ([]byte, error) {
 	cmd.Env = gitEnv()
 	out, err := cmd.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
-		return out, fmt.Errorf("git %s timed out after %s — the remote may need credentials this process does not have (run the equivalent git command once in a terminal, or switch the remote to SSH with an agent key)", args[0], gitTimeout)
+		return out, fmt.Errorf("git %s timed out after %s — the remote may need credentials this process does not have (run the equivalent git command once in a terminal, or switch the remote to SSH with an agent key)", gitVerb(args), gitTimeout)
 	}
 	return out, err
 }
 
 func (c *configRepo) gitIn(args ...string) ([]byte, error) {
 	return c.git(append([]string{"-C", c.dir}, args...)...)
+}
+
+// gitVerb returns the git subcommand from an argv, skipping leading flags and
+// their values (-C <dir>, -c <key=val>, …) so timeout errors say "push" not "-C".
+func gitVerb(args []string) string {
+	takesValue := map[string]bool{
+		"-C": true, "-c": true, "--git-dir": true, "--work-tree": true,
+		"--namespace": true, "--config-env": true,
+	}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			if i+1 < len(args) {
+				return args[i+1]
+			}
+			break
+		}
+		if strings.HasPrefix(a, "-") {
+			// -c=foo or --git-dir=path form
+			if name, _, ok := strings.Cut(a, "="); ok {
+				_ = name
+				continue
+			}
+			if takesValue[a] {
+				i++ // skip the value
+			}
+			continue
+		}
+		return a
+	}
+	return "command"
 }
 
 // readOwnbaseYAML returns the current ownbase.yaml text, or "" when the file

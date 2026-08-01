@@ -336,7 +336,8 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 	// daemon has nothing to reconcile and services cannot be declared.
 	// Wizard create intentionally stops before this step — surface it as a
 	// form, not a scary missing-tools message on the Security tab.
-	if _, hasConfig := s["config"].(map[string]any); !hasConfig {
+	_, hasConfig := s["config"].(map[string]any)
+	if !hasConfig {
 		findings = append(findings, checkupFinding{
 			Summary: "Config repo not set up — nothing is declared to run yet",
 			Fix:     "ownbasectl config setup " + base + " --repo <git-url> --init",
@@ -361,18 +362,23 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 			// and working — what's missing is just the verify-restore
 			// drill, which re-running setup would not skip ahead of and
 			// would misleadingly suggest is the fix.
+			//
+			// Also require a config repo: backup setup commits core.backup
+			// into ownbase.yaml, so without config the form cannot finish.
 			lastBackup, _ := sec["last_backup"].(string)
 			if lastBackup == "" {
-				findings = append(findings, checkupFinding{
-					Summary: "Backups not configured",
-					Fix:     "ownbasectl backup setup " + base + " --repo <url> --password <pw>",
-					Action: checkupAction{
-						Kind:    actionForm,
-						Form:    "backup-setup",
-						Preview: true,
-						Label:   "Set up backups",
-					},
-				})
+				if hasConfig {
+					findings = append(findings, checkupFinding{
+						Summary: "Backups not configured",
+						Fix:     "ownbasectl backup setup " + base + " --repo <url> --password <pw>",
+						Action: checkupAction{
+							Kind:    actionForm,
+							Form:    "backup-setup",
+							Preview: true,
+							Label:   "Set up backups",
+						},
+					})
+				}
 			} else {
 				findings = append(findings, checkupFinding{
 					Summary: "Backups not yet verified restorable",
@@ -538,28 +544,44 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 					continue
 				}
 				if strings.HasPrefix(svc, "ownbase-core-") {
-					// Caddy is built on the Base from the Dockerfile embedded
-					// in the daemon. upgrade --apply rebuilds it (current Go
-					// + alpine apk upgrade). A daemon that predates that
-					// Dockerfile needs self-update first — the button still
-					// helps after, and is the right action either way once
-					// the Base is on a recent OwnBase.
-					findings = append(findings, checkupFinding{
-						Summary: fmt.Sprintf("%d CVE(s) with a patch in core image %q", n, svc),
-						Fix:     "ownbasectl upgrade " + base + " --apply",
-						Action: checkupAction{
-							Kind:    actionRun,
-							Run:     "upgrade --apply",
-							Label:   "Rebuild Caddy",
-							Confirm: "Rebuilds the hardened Caddy image on this Base (downloads Go toolchains on first build) and restarts the proxy. Brief interruption to HTTPS.",
-						},
-					})
+					// Local-build daemons rebuild Caddy via upgrade --apply.
+					// Registry-pinned daemons only re-pull the same digest —
+					// they need self-update first to pick up the Dockerfile.
+					imgRef, _ := img["image"].(string)
+					if coreNeedsSelfUpdate(s, imgRef) {
+						findings = append(findings, checkupFinding{
+							Summary: fmt.Sprintf("%d CVE(s) with a patch in core image %q — daemon must self-update first", n, svc),
+							Fix:     "ownbasectl self-update " + base,
+							Action: checkupAction{
+								Kind:    actionRun,
+								Run:     "self-update",
+								Label:   "Update OwnBase",
+								Confirm: "Replaces the OwnBase daemon with the latest signed release (~10s restart). Then use Rebuild Caddy (or upgrade --apply) so the hardened image is built.",
+							},
+						})
+					} else {
+						findings = append(findings, checkupFinding{
+							Summary: fmt.Sprintf("%d CVE(s) with a patch in core image %q", n, svc),
+							Fix:     "ownbasectl upgrade " + base + " --apply",
+							Action: checkupAction{
+								Kind:    actionRun,
+								Run:     "upgrade --apply",
+								Label:   "Rebuild Caddy",
+								Confirm: "Rebuilds the hardened Caddy image on this Base (downloads Go toolchains on first build) and restarts the proxy. Brief interruption to HTTPS.",
+							},
+						})
+					}
 					continue
 				}
-				// User services: deploy a newer ref. The app form shows the
-				// diff before committing.
+				// User services: deploy a newer ref only when that ref would
+				// actually move the pin. If drift says up_to_date (or the
+				// suggested ref matches the pinned one), deploy is a no-op and
+				// the finding is not finishable — leave it off Overview.
 				svcKey := strings.TrimPrefix(svc, "ownbase-")
-				suggested := suggestedDeployRef(s, svcKey)
+				suggested, canDeploy := suggestedDeployRef(s, svcKey)
+				if !canDeploy {
+					continue
+				}
 				findings = append(findings, checkupFinding{
 					Summary: fmt.Sprintf("%d CVE(s) with a patch in image for %q", n, svc),
 					Fix:     fmt.Sprintf("ownbasectl deploy %s %s --ref %s", base, svcKey, suggested),
@@ -634,10 +656,14 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 }
 
 // suggestedDeployRef picks a default --ref for a service from updates.drift.
-func suggestedDeployRef(status map[string]any, service string) string {
+// canDeploy is false when a deploy of that ref would be a no-op (already
+// pinned / up_to_date), so callers can skip an unfinishable finding.
+func suggestedDeployRef(status map[string]any, service string) (ref string, canDeploy bool) {
 	updates, _ := status["updates"].(map[string]any)
 	if updates == nil {
-		return "main"
+		// No drift data yet — still allow the form; deploy resolves via
+		// git ls-remote and no-ops honestly if already current.
+		return "main", true
 	}
 	drift, _ := updates["drift"].([]any)
 	for _, raw := range drift {
@@ -648,14 +674,49 @@ func suggestedDeployRef(status map[string]any, service string) string {
 		if svc, _ := d["service"].(string); svc != service {
 			continue
 		}
-		if tag, _ := d["newest_tag"].(string); tag != "" {
-			return tag
+		if upToDate, _ := d["up_to_date"].(bool); upToDate {
+			return "", false
 		}
-		if branch, _ := d["branch"].(string); branch != "" {
-			return branch
+		pinned, _ := d["ref"].(string)
+		suggested := ""
+		if tag, _ := d["newest_tag"].(string); tag != "" {
+			suggested = tag
+		} else if branch, _ := d["branch"].(string); branch != "" {
+			suggested = branch
+		} else {
+			suggested = "main"
+		}
+		// If the suggested ref is already what is pinned (branch name or
+		// matching SHA), deploy would be unchanged.
+		if pinned != "" && (pinned == suggested || strings.HasPrefix(pinned, suggested)) {
+			return suggested, false
+		}
+		return suggested, true
+	}
+	// Service not in drift list (blank ref, or detection never ran).
+	return "main", true
+}
+
+// coreNeedsSelfUpdate is true when the running Caddy image is still a
+// registry pull (docker.io/library/caddy@…) rather than the local hardened
+// build. Those daemons' `upgrade --apply` only re-pulls the same digest.
+func coreNeedsSelfUpdate(status map[string]any, imageRef string) bool {
+	if strings.Contains(imageRef, "localhost/ownbase-core-caddy") {
+		return false
+	}
+	// No version field (or empty) usually means a pre-self-update daemon.
+	if ver, _ := status["version"].(string); ver != "" && ver != "dev" {
+		// Recent enough to report version, but still on a registry image —
+		// self-update brings the Dockerfile; then upgrade rebuilds.
+		if strings.Contains(imageRef, "docker.io/library/caddy") || strings.HasPrefix(imageRef, "caddy:") {
+			return true
 		}
 	}
-	return "main"
+	// Registry-style refs always need migration off the pull path.
+	if strings.Contains(imageRef, "docker.io/library/caddy") || strings.HasPrefix(imageRef, "caddy:") {
+		return true
+	}
+	return false
 }
 
 // scanIsStale reports whether a scanned_at timestamp is older than

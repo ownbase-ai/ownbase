@@ -83,17 +83,28 @@ func runSelfUpdate(base, version string) error {
 	}
 
 	var gotOK bool
+	var sawRestart, sawNoop bool
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if line == "---OK---" {
+		switch {
+		case line == "---OK---":
 			gotOK = true
 			continue
+		case strings.Contains(line, "Already running") || strings.Contains(line, "already current"):
+			sawNoop = true
+		case strings.Contains(line, "Installing to") || strings.Contains(line, "RestartPending") || strings.Contains(line, "will exit"):
+			sawRestart = true
 		}
 		fmt.Println(line)
 	}
-	// Dropped connection after ---OK--- is expected: the daemon exited.
+	// Dropped connection after ---OK--- is expected when the daemon exits
+	// to restart. A no-op update also ends with ---OK--- but stays up.
 	if gotOK {
+		if sawNoop && !sawRestart {
+			fmt.Println("\n  Already on the requested version — no restart.")
+			return nil
+		}
 		fmt.Println("\n  Daemon updated. It is restarting under systemd — give it a few seconds.")
 		return nil
 	}

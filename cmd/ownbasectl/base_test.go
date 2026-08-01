@@ -309,7 +309,7 @@ func TestCheckupFindings_FlagsIssues(t *testing.T) {
 		{"unexpected internet-reachable port", actionOpen, "", "security", ""},
 		{"Host reboot required", actionRun, "security reboot", "", ""},
 		{"host CVE(s) have a patch available", actionRun, "security fix", "", ""},
-		{"CVE(s) with a patch in core image", actionRun, "upgrade --apply", "", ""},
+		{"CVE(s) with a patch in core image", actionRun, "self-update", "", ""},
 		{"CVE scan failed for service \"ownbase-crm\"", actionOpen, "", "security", ""},
 		{"runtime file(s) drifted", actionOpen, "", "security", ""},
 		{"behind its source repo", actionForm, "", "", "deploy"},
@@ -559,5 +559,101 @@ func TestCheckupFindings_ConfigNotSetUp(t *testing.T) {
 	}
 	if findings[0].Action.Form != "config-setup" {
 		t.Errorf("expected config-setup form, got %+v", findings[0].Action)
+	}
+}
+
+func TestCheckupFindings_BackupRequiresConfig(t *testing.T) {
+	// No config key — backup setup cannot finish, so it must not appear.
+	body := []byte(`{
+		"security": {
+			"backup_restorable": false,
+			"vulns": {
+				"available": true,
+				"trivy_installed": true,
+				"scanned_at": "2026-07-31T12:00:00Z",
+				"host": {"critical": 0, "high": 0}
+			}
+		}
+	}`)
+	findings := checkupFindings("mybase", body)
+	for _, f := range findings {
+		if f.Action.Form == "backup-setup" {
+			t.Fatalf("backup-setup must not appear without config, got %+v", findings)
+		}
+	}
+	if len(findings) != 1 || findings[0].Action.Form != "config-setup" {
+		t.Fatalf("expected only config-setup, got %+v", findings)
+	}
+}
+
+func TestCheckupFindings_CoreLocalImageUsesUpgrade(t *testing.T) {
+	body := []byte(`{
+		"config": {"repo_url": "git@example.com/x.git"},
+		"version": "v0.4.0",
+		"security": {
+			"backup_restorable": true,
+			"vulns": {
+				"available": true,
+				"trivy_installed": true,
+				"scanned_at": "2026-07-31T12:00:00Z",
+				"host": {"critical": 0, "high": 0},
+				"images": [{
+					"service": "ownbase-core-caddy",
+					"image": "localhost/ownbase-core-caddy:local",
+					"summary": {"critical": 0, "high": 2, "fixable_critical": 0, "fixable_high": 2}
+				}]
+			}
+		}
+	}`)
+	findings := checkupFindings("mybase", body)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d: %+v", len(findings), findings)
+	}
+	if findings[0].Action.Run != "upgrade --apply" {
+		t.Errorf("local caddy image should offer upgrade --apply, got %+v", findings[0].Action)
+	}
+}
+
+func TestCheckupFindings_ImageCVESkippedWhenUpToDate(t *testing.T) {
+	body := []byte(`{
+		"config": {"repo_url": "git@example.com/x.git"},
+		"security": {
+			"backup_restorable": true,
+			"vulns": {
+				"available": true,
+				"trivy_installed": true,
+				"scanned_at": "2026-07-31T12:00:00Z",
+				"host": {"critical": 0, "high": 0},
+				"images": [{
+					"service": "ownbase-crm",
+					"image": "localhost/crm:abc",
+					"summary": {"critical": 1, "high": 0, "fixable_critical": 1, "fixable_high": 0}
+				}]
+			}
+		},
+		"updates": {"drift": [{"service": "crm", "ref": "abc", "up_to_date": true, "newest_tag": "v1.0.0"}]}
+	}`)
+	findings := checkupFindings("mybase", body)
+	for _, f := range findings {
+		if strings.Contains(f.Summary, "crm") || f.Action.Form == "deploy" {
+			t.Fatalf("up_to_date service must not get a deploy finding: %+v", findings)
+		}
+	}
+}
+
+func TestGitVerbSkipsFlagsWithValues(t *testing.T) {
+	cases := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"-C", "/tmp/x", "push", "origin", "main"}, "push"},
+		{[]string{"clone", "url", "dir"}, "clone"},
+		{[]string{"-c", "user.name=x", "commit", "-m", "hi"}, "commit"},
+		{[]string{"--git-dir=/tmp/g", "status"}, "status"},
+	}
+	for _, c := range cases {
+		if got := gitVerb(c.args); got != c.want {
+			t.Errorf("gitVerb(%v) = %q, want %q", c.args, got, c.want)
+		}
 	}
 }
