@@ -45,6 +45,10 @@ type APIConfig struct {
 	// the daemon is still initializing and the scan cannot be started yet.
 	// Called by /security/fix (after upgrade) and /security/scan (on-demand).
 	TriggerScan func() bool
+	// NotifyReboot, when non-nil, is called after /security/fix with the
+	// current reboot-required marker so the daemon's cached status reflects
+	// the marker immediately (not on the next 5-minute secwatch tick).
+	NotifyReboot func(secwatch.RebootResult)
 	// AuditLog, when non-nil, receives one record per host-mutating security
 	// action (patch, reboot). Nil is safe — the handlers still run.
 	AuditLog authz.AuditLogger
@@ -416,10 +420,14 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 		recordPatch(authz.OutcomeApplied, "")
 
 		// A successful upgrade can leave the machine needing a reboot (new
-		// kernel). Surface that here so the operator does not have to wait
-		// for the next secwatch tick to learn the CVE scan is no longer
-		// the whole story.
-		if reboot := secwatch.GatherRebootRequired(); reboot.Required {
+		// kernel). Surface that here and push it into the cached status so
+		// the next /status read (and therefore the app's refresh) sees it
+		// without waiting for the 5-minute secwatch tick.
+		reboot := secwatch.GatherRebootRequired()
+		if cfg.NotifyReboot != nil {
+			cfg.NotifyReboot(reboot)
+		}
+		if reboot.Required {
 			fmt.Fprintf(fw, "\n==> A reboot is required for some upgrades to take effect")
 			if len(reboot.Packages) > 0 {
 				fmt.Fprintf(fw, " (%s)", strings.Join(reboot.Packages, ", "))

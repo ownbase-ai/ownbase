@@ -411,6 +411,43 @@ func TestCheckupFindings_StaleScan(t *testing.T) {
 	}
 }
 
+// A stale scan that still lists fixable host CVEs must raise both findings —
+// rescan and apply patches. Treating stale as exclusive of available used to
+// hide Apply patches while per-image findings still fired.
+func TestCheckupFindings_StaleScanStillSurfacesFixableHostCVEs(t *testing.T) {
+	stale := time.Now().UTC().Add(-50 * time.Hour).Format(time.RFC3339)
+	body := []byte(`{
+		"security": {
+			"backup_restorable": true,
+			"vulns": {
+				"available": true,
+				"trivy_installed": true,
+				"scanned_at": "` + stale + `",
+				"host": {
+					"critical": 2, "high": 1,
+					"fixable_critical": 2, "fixable_high": 0
+				}
+			}
+		}
+	}`)
+	findings := checkupFindings("mybase", body)
+	if len(findings) != 2 {
+		t.Fatalf("expected stale + fixable findings, got %d: %+v", len(findings), findings)
+	}
+	var sawStale, sawFixable bool
+	for _, f := range findings {
+		if f.Action.Run == "security scan" {
+			sawStale = true
+		}
+		if f.Action.Run == "security fix" {
+			sawFixable = true
+		}
+	}
+	if !sawStale || !sawFixable {
+		t.Errorf("want both security scan and security fix actions, got %+v", findings)
+	}
+}
+
 func TestCheckupFindings_ScanUnavailable(t *testing.T) {
 	body := []byte(`{
 		"security": {

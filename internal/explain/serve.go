@@ -61,6 +61,19 @@ func (s *StatusServer) SetUpdates(u UpdateStatus) {
 	s.mu.Unlock()
 }
 
+// SetReboot updates the reboot-required fields on the cached status so a
+// just-finished security fix is visible on the next /status read without
+// waiting for the 5-minute secwatch tick. Safe for concurrent use.
+func (s *StatusServer) SetReboot(required bool, packages []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.status == nil {
+		return
+	}
+	s.status.Security.RebootRequired = required
+	s.status.Security.RebootPackages = packages
+}
+
 // SetToken updates the Bearer token required to access /status. Passing an
 // empty string disables authentication. Safe for concurrent use; takes effect
 // on the next request without restarting the server.

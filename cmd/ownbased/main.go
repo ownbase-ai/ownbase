@@ -337,6 +337,9 @@ func run(cfg agentConfig) error {
 	// the closure can reference them. The API handler captures the variable by
 	// pointer — any call after the assignment will invoke the real function.
 	var triggerScan func()
+	// notifyReboot is assigned below once lastReboot lives; the MountAPI
+	// closure forwards so wiring can happen before the main-loop locals exist.
+	var notifyReboot func(secwatch.RebootResult)
 
 	if cfg.statusAddr != "" {
 		mux := http.NewServeMux()
@@ -358,6 +361,14 @@ func run(cfg agentConfig) error {
 					return true
 				}
 				return false
+			},
+			// NotifyReboot keeps lastReboot + the cached /status in sync the
+			// moment security fix finishes, so a desktop refresh sees the
+			// reboot finding without waiting for the secwatch tick.
+			NotifyReboot: func(r secwatch.RebootResult) {
+				if notifyReboot != nil {
+					notifyReboot(r)
+				}
 			},
 			// UpgradeCore pulls the latest pinned image for Caddy (the sole
 			// core package) and restarts it. Progress is written to w for
@@ -603,6 +614,13 @@ func run(cfg agentConfig) error {
 	var lastReboot secwatch.RebootResult
 	var lastUnexpectedCount = -1 // -1 = first run; used for transition detection
 
+	// Wired now that lastReboot is in scope. Also mirrors into StatusSrv so a
+	// /status read between security fix and the next afterReconcile is honest.
+	notifyReboot = func(r secwatch.RebootResult) {
+		lastReboot = r
+		statusSrv.SetReboot(r.Required, r.Packages)
+	}
+
 	// lastVulnStatus holds the most recent trivy scan result. It is only ever
 	// read and written on the main select loop (via vulnResultCh below), so
 	// no mutex is needed.
@@ -633,13 +651,14 @@ func run(cfg agentConfig) error {
 		// Skip when config is nil (parse failure): the expected-port allowlist
 		// would be incomplete, producing false port.exposed audit events until
 		// the config is repaired and the next probe runs with valid state.
+		// Reboot marker is two file stats — cheap enough to re-read on every
+		// status push, so a security-fix → rescan path cannot clobber a
+		// NotifyReboot update with a stale lastReboot from the previous tick.
+		lastReboot = secwatch.GatherRebootRequired()
+
 		if time.Since(lastSecProbe) >= secProbeInterval && state.Config != nil {
 			lastExposure = secwatch.GatherExposure(ctx, state.Config, cfg.sshPort)
 			lastAccess = secwatch.GatherAccess(ctx)
-			// Reboot marker is a pair of file stats — cheap enough to share the
-			// probe cadence, and the only way a post-upgrade CVE scan stays honest
-			// about a still-running vulnerable kernel.
-			lastReboot = secwatch.GatherRebootRequired()
 			lastSecProbe = time.Now()
 
 			// Emit a port.exposed audit record on transition into/out of unexpected

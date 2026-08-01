@@ -426,17 +426,23 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 						Label: "Rescan",
 					},
 				})
-			case scannedAt != "" && scanIsStale(scannedAt):
-				findings = append(findings, checkupFinding{
-					Summary: "CVE scan is more than 48 hours old",
-					Fix:     "ownbasectl security scan " + base,
-					Action: checkupAction{
-						Kind:  actionRun,
-						Run:   "security scan",
-						Label: "Rescan",
-					},
-				})
-			case available:
+			default:
+				// available == true. Staleness and fixable CVEs are independent:
+				// a 49-hour-old scan that still lists patches is both "rescan"
+				// and "apply patches". Treating stale as exclusive of available
+				// used to hide Apply patches while per-image findings (below)
+				// still fired from the same payload.
+				if scannedAt != "" && scanIsStale(scannedAt) {
+					findings = append(findings, checkupFinding{
+						Summary: "CVE scan is more than 48 hours old",
+						Fix:     "ownbasectl security scan " + base,
+						Action: checkupAction{
+							Kind:  actionRun,
+							Run:   "security scan",
+							Label: "Rescan",
+						},
+					})
+				}
 				// Only fixable CVEs raise a finding. Unfixed counts live on
 				// the Security tab: there is nothing a person can finish.
 				if host, ok := vulns["host"].(map[string]any); ok {
