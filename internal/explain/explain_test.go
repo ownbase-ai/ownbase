@@ -36,6 +36,31 @@ func TestGather_EmptyInput(t *testing.T) {
 	if len(s.Services) != 0 {
 		t.Errorf("expected 0 services, got %d", len(s.Services))
 	}
+	if s.Config != nil {
+		t.Errorf("expected nil Config, got %+v", s.Config)
+	}
+}
+
+func TestGather_ConfigSource(t *testing.T) {
+	s := explain.Gather(explain.GatherInput{
+		ConfigSource: explain.ConfigSourceStatus{
+			RepoURL: "git@github.com:org/config.git",
+			Ref:     "main",
+		},
+	})
+	if s.Config == nil {
+		t.Fatal("expected Config to be set")
+	}
+	if s.Config.RepoURL != "git@github.com:org/config.git" || s.Config.Ref != "main" {
+		t.Errorf("Config = %+v", s.Config)
+	}
+
+	empty := explain.Gather(explain.GatherInput{
+		ConfigSource: explain.ConfigSourceStatus{RepoURL: "  "},
+	})
+	if empty.Config != nil {
+		t.Errorf("whitespace-only RepoURL should omit Config, got %+v", empty.Config)
+	}
 }
 
 func TestGather_Services_SortedAlphabetically(t *testing.T) {

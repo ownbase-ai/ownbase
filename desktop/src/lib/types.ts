@@ -100,11 +100,19 @@ export interface VerifyResult {
 export interface BaseStatus {
   generated_at: string;
   schema_version: string;
+  /** External config repo the Base tracks — preferred over the vault profile. */
+  config?: ConfigSourceStatus;
   services?: ServiceStatus[];
   jobs?: JobStatus[];
   security: SecurityStatus;
   updates: UpdateStatus;
   audit: AuditSummary;
+}
+
+/** internal/explain.ConfigSourceStatus */
+export interface ConfigSourceStatus {
+  repo_url: string;
+  ref?: string;
 }
 
 /** internal/explain.ServiceStatus */

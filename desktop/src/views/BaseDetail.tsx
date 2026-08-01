@@ -327,8 +327,16 @@ function Overview({
             {base.ssh_user}@{base.host}:{base.ssh_port ?? 22}
           </Row>
           <Row label="Config repo">
-            {base.config_repo_url ? (
-              <span className="font-mono text-xs">{base.config_repo_url}</span>
+            {status.config?.repo_url || base.config_repo_url ? (
+              <span className="font-mono text-xs">
+                {status.config?.repo_url || base.config_repo_url}
+                {(status.config?.ref || base.config_ref) && (
+                  <span className="text-zinc-500">
+                    {" "}
+                    ({status.config?.ref || base.config_ref})
+                  </span>
+                )}
+              </span>
             ) : (
               <span className="text-zinc-500">not set up yet</span>
             )}

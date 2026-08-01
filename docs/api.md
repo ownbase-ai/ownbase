@@ -50,6 +50,10 @@ Schema (`schema_version: v3`):
 {
   "generated_at": "2026-06-19T22:00:00Z",
   "schema_version": "v3",
+  "config": {
+    "repo_url": "git@github.com:org/ownbase-config.git",
+    "ref": "main"
+  },
   "services": [
     {
       "name": "auth",

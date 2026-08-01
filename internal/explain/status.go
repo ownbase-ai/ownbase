@@ -29,11 +29,24 @@ const DefaultAuditMaxRecords = 20
 type BaseStatus struct {
 	GeneratedAt   time.Time       `json:"generated_at"`
 	SchemaVersion string          `json:"schema_version"`
-	Services      []ServiceStatus `json:"services"`
-	Jobs          []JobStatus     `json:"jobs,omitempty"`
-	Security      SecurityStatus  `json:"security"`
-	Updates       UpdateStatus    `json:"updates"`
-	Audit         AuditSummary    `json:"audit"`
+	// Config is the external config repo this Base tracks. Omitted when
+	// `ownbasectl config setup` has never run on this machine — the vault
+	// profile can also hold a copy for client-side commits, but the Base is
+	// the source of truth for what is actually checked out.
+	Config   *ConfigSourceStatus `json:"config,omitempty"`
+	Services []ServiceStatus     `json:"services"`
+	Jobs     []JobStatus         `json:"jobs,omitempty"`
+	Security SecurityStatus      `json:"security"`
+	Updates  UpdateStatus        `json:"updates"`
+	Audit    AuditSummary        `json:"audit"`
+}
+
+// ConfigSourceStatus is the external git repo holding ownbase.yaml.
+type ConfigSourceStatus struct {
+	// RepoURL is the git URL (e.g. git@github.com:org/ownbase-config.git).
+	RepoURL string `json:"repo_url"`
+	// Ref is the branch/ref tracked (usually "main").
+	Ref string `json:"ref,omitempty"`
 }
 
 // ServiceStatus is the health and source state of one service.

@@ -75,6 +75,10 @@ func checkup(conn *connection, base string, jsonOut, doVerify bool) error {
 	if err != nil {
 		return err
 	}
+	// Backfill the vault profile (and inject status.config for older daemons)
+	// so the app does not claim "config not set up" when the Base is tracking
+	// a real repo. Same path as fetchStatusBody.
+	body = ensureConfigKnown(base, body)
 
 	if jsonOut {
 		printCheckupJSON(base, body, verifyResult)

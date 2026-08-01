@@ -49,6 +49,16 @@ func printStatusSummary(base string, body []byte) error {
 	if ver, ok := s["schema_version"].(string); ok {
 		fmt.Printf("  Schema:   %s\n", ver)
 	}
+	if cfg, ok := s["config"].(map[string]any); ok {
+		if repo, _ := cfg["repo_url"].(string); repo != "" {
+			ref, _ := cfg["ref"].(string)
+			if ref != "" {
+				fmt.Printf("  Config:   %s (%s)\n", repo, ref)
+			} else {
+				fmt.Printf("  Config:   %s\n", repo)
+			}
+		}
+	}
 
 	fmt.Println()
 	fmt.Println("  Services:")
