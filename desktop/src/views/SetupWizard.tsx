@@ -74,7 +74,10 @@ export function SetupWizard({
   const [caddyEmail, setCaddyEmail] = useState("");
 
   return (
-    <div className="mx-auto flex h-full w-full max-w-2xl flex-col gap-6 overflow-y-auto px-8 py-10">
+    // Scroll the full main pane so the scrollbar sits on the window edge,
+    // not inset against the max-w-2xl content column.
+    <div className="h-full min-h-0 overflow-y-auto">
+      <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-8 py-10">
       <header>
         <h1 className="text-lg font-medium text-zinc-100">Set up a Base</h1>
         <p className="mt-1 text-sm leading-relaxed text-zinc-500">
@@ -189,6 +192,7 @@ export function SetupWizard({
       )}
 
       {step === "done" && <DoneStep base={name} mode={mode} onOpen={() => onFinished(name)} />}
+      </div>
     </div>
   );
 }
