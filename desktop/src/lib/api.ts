@@ -332,7 +332,8 @@ export function configSetup(
   base: string,
   opts: { repo: string; ref?: string; init?: boolean },
 ): Promise<{ status: string; repo_url: string; ref: string; seeded: boolean }> {
-  const args = ["config", "setup", base, "--repo", opts.repo, "--json"];
+  // cli.json appends --json; do not add it here.
+  const args = ["config", "setup", base, "--repo", opts.repo];
   if (opts.ref) args.push("--ref", opts.ref);
   if (opts.init) args.push("--init");
   return cli.json(args);
