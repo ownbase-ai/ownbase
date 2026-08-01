@@ -52,6 +52,14 @@ func ensureConfigKnown(base string, body []byte) []byte {
 		}
 	}
 
+	// No status.config and no profile URL. Only open SSH when the Base looks
+	// configured (services present) — a fresh install with no config yet must
+	// not pay an SSH round-trip on every status/checkup. adopt already copies
+	// config-source.yaml when registering; this path is for older profiles.
+	if !statusHasServices(body) {
+		return body
+	}
+
 	url, ref := configFromBaseSSH(base)
 	if url == "" {
 		return body
@@ -61,6 +69,16 @@ func ensureConfigKnown(base string, body []byte) []byte {
 		return enriched
 	}
 	return body
+}
+
+func statusHasServices(body []byte) bool {
+	var doc struct {
+		Services []json.RawMessage `json:"services"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return false
+	}
+	return len(doc.Services) > 0
 }
 
 func configFromStatusJSON(body []byte) (url, ref string) {

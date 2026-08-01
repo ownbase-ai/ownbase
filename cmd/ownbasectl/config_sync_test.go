@@ -84,3 +84,29 @@ func TestEnsureConfigKnown_PreservesWhenPresent(t *testing.T) {
 		t.Fatalf("got %q %q from %s", url, ref, out)
 	}
 }
+
+func TestEnsureConfigKnown_NoSSHWhenNoServices(t *testing.T) {
+	// A Base with no services and no profile config must not open SSH.
+	// configFromBaseSSH would need a profile; without one it no-ops, and
+	// statusHasServices short-circuits first.
+	in := []byte(`{"schema_version":"v3","services":[]}`)
+	out := ensureConfigKnown("nonexistent-base-for-test", in)
+	if url, _ := configFromStatusJSON(out); url != "" {
+		t.Fatalf("expected no config injected, got %q", url)
+	}
+	if string(out) != string(in) {
+		t.Fatalf("body changed without a config source:\n%s", out)
+	}
+}
+
+func TestStatusHasServices(t *testing.T) {
+	if statusHasServices([]byte(`{"services":[]}`)) {
+		t.Fatal("empty services should be false")
+	}
+	if !statusHasServices([]byte(`{"services":[{"name":"api"}]}`)) {
+		t.Fatal("non-empty services should be true")
+	}
+	if statusHasServices([]byte(`{`)) {
+		t.Fatal("bad json should be false")
+	}
+}

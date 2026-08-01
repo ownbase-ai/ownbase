@@ -420,6 +420,9 @@ function RemoveBase({
       await api.deleteBase(base.name, {
         keepVm: isLocalVM ? !destroyVM : true,
       });
+      // Parent navigates away; clear busy so Cancel is not stuck disabled if
+      // the list reload is slow and this panel is still briefly mounted.
+      setBusy(false);
       onRemoved();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
