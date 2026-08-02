@@ -72,9 +72,19 @@ type Applier struct {
 	// secrets files. Empty means secrets.DefaultKeyPath
 	// (/opt/ownbase/age/key.age). Configurable mainly for tests.
 	AgeKeyPath string
+
+	// builtThisApply tracks image build keys completed during the current
+	// reconcile.Apply plan so N replicas sharing # BuildImage= only clone
+	// and podman-build once. Cleared by BeginApply at the start of each plan.
+	builtThisApply map[string]bool
 }
 
 var _ reconcile.Applier = (*Applier)(nil)
+
+// BeginApply resets per-plan state. Called by reconcile.Apply via type assert.
+func (p *Applier) BeginApply() {
+	p.builtThisApply = make(map[string]bool)
+}
 
 func (p *Applier) quadletDir() string {
 	if p.QuadletDir != "" {
@@ -643,6 +653,14 @@ func (p *Applier) buildImage(containerName, source, ref, dockerfile, buildCtx, u
 		imageName = "localhost/" + containerName + ":local"
 	}
 
+	// One build per (image, source, ref, dockerfile, context) per plan —
+	// replicas 1..N-1 hit this after replica 0 already built the shared tag.
+	key := imageName + "\x00" + source + "\x00" + ref + "\x00" + dockerfile + "\x00" + buildCtx
+	if p.builtThisApply != nil && p.builtThisApply[key] {
+		fmt.Fprintf(os.Stderr, "podman.Applier: reusing %s already built this apply\n", imageName)
+		return nil
+	}
+
 	repoPath := repos.RepoPath(source)
 
 	// Clone into a temp directory.
@@ -679,6 +697,10 @@ func (p *Applier) buildImage(containerName, source, ref, dockerfile, buildCtx, u
 			imageName, source, ref, err, out)
 	}
 	fmt.Fprintf(os.Stderr, "podman.Applier: built %s from %s@%s\n", imageName, source, ref)
+	if p.builtThisApply == nil {
+		p.builtThisApply = make(map[string]bool)
+	}
+	p.builtThisApply[key] = true
 	return nil
 }
 
