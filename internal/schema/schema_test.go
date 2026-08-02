@@ -657,7 +657,7 @@ func TestOwnbaseConfig_TunnelPorts_Replicas(t *testing.T) {
 	n := 3
 	cfg := schema.OwnbaseConfig{
 		Services: map[string]schema.ServiceDecl{
-			"alpha": {Repo: "a", Port: 3000},
+			"alpha":  {Repo: "a", Port: 3000},
 			"worker": {Repo: "w", Port: 4096, Replicas: &n},
 		},
 	}

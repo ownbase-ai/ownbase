@@ -607,13 +607,15 @@ func TestLinuxArchForHost(t *testing.T) {
 
 func TestCheckupFindings_ConfigNotSetUp(t *testing.T) {
 	// Deliberately omit "config" — a fresh Base after the wizard.
+	// scanned_at must be fresh so the 48h stale-scan rule does not fire.
+	fresh := time.Now().UTC().Format(time.RFC3339)
 	body := []byte(`{
 		"security": {
 			"backup_restorable": true,
 			"vulns": {
 				"available": true,
 				"trivy_installed": true,
-				"scanned_at": "2026-07-31T12:00:00Z",
+				"scanned_at": "` + fresh + `",
 				"host": {"critical": 0, "high": 0}
 			}
 		}
@@ -629,13 +631,14 @@ func TestCheckupFindings_ConfigNotSetUp(t *testing.T) {
 
 func TestCheckupFindings_BackupRequiresConfig(t *testing.T) {
 	// No config key — backup setup cannot finish, so it must not appear.
+	fresh := time.Now().UTC().Format(time.RFC3339)
 	body := []byte(`{
 		"security": {
 			"backup_restorable": false,
 			"vulns": {
 				"available": true,
 				"trivy_installed": true,
-				"scanned_at": "2026-07-31T12:00:00Z",
+				"scanned_at": "` + fresh + `",
 				"host": {"critical": 0, "high": 0}
 			}
 		}
@@ -652,6 +655,7 @@ func TestCheckupFindings_BackupRequiresConfig(t *testing.T) {
 }
 
 func TestCheckupFindings_CoreLocalImageUsesUpgrade(t *testing.T) {
+	fresh := time.Now().UTC().Format(time.RFC3339)
 	body := []byte(`{
 		"config": {"repo_url": "git@example.com/x.git"},
 		"version": "v0.4.0",
@@ -660,7 +664,7 @@ func TestCheckupFindings_CoreLocalImageUsesUpgrade(t *testing.T) {
 			"vulns": {
 				"available": true,
 				"trivy_installed": true,
-				"scanned_at": "2026-07-31T12:00:00Z",
+				"scanned_at": "` + fresh + `",
 				"host": {"critical": 0, "high": 0},
 				"images": [{
 					"service": "ownbase-core-caddy",
@@ -683,6 +687,7 @@ func TestCheckupFindings_CoreLocalImageUsesUpgrade(t *testing.T) {
 // registry Caddy image (first local build pending). Must not stuck-loop on
 // self-update.
 func TestCheckupFindings_CoreRegistryImageWithVersionUsesUpgrade(t *testing.T) {
+	fresh := time.Now().UTC().Format(time.RFC3339)
 	body := []byte(`{
 		"config": {"repo_url": "git@example.com/x.git"},
 		"version": "v0.4.0",
@@ -691,7 +696,7 @@ func TestCheckupFindings_CoreRegistryImageWithVersionUsesUpgrade(t *testing.T) {
 			"vulns": {
 				"available": true,
 				"trivy_installed": true,
-				"scanned_at": "2026-07-31T12:00:00Z",
+				"scanned_at": "` + fresh + `",
 				"host": {"critical": 0, "high": 0},
 				"images": [{
 					"service": "ownbase-core-caddy",
@@ -712,6 +717,7 @@ func TestCheckupFindings_CoreRegistryImageWithVersionUsesUpgrade(t *testing.T) {
 
 func TestCheckupFindings_CoreOldDaemonNeedsSelfUpdate(t *testing.T) {
 	// No status.version — pre-migration daemon.
+	fresh := time.Now().UTC().Format(time.RFC3339)
 	body := []byte(`{
 		"config": {"repo_url": "git@example.com/x.git"},
 		"security": {
@@ -719,7 +725,7 @@ func TestCheckupFindings_CoreOldDaemonNeedsSelfUpdate(t *testing.T) {
 			"vulns": {
 				"available": true,
 				"trivy_installed": true,
-				"scanned_at": "2026-07-31T12:00:00Z",
+				"scanned_at": "` + fresh + `",
 				"host": {"critical": 0, "high": 0},
 				"images": [{
 					"service": "ownbase-core-caddy",
@@ -739,6 +745,7 @@ func TestCheckupFindings_CoreOldDaemonNeedsSelfUpdate(t *testing.T) {
 }
 
 func TestCheckupFindings_ImageCVESkippedWhenUpToDate(t *testing.T) {
+	fresh := time.Now().UTC().Format(time.RFC3339)
 	body := []byte(`{
 		"config": {"repo_url": "git@example.com/x.git"},
 		"security": {
@@ -746,7 +753,7 @@ func TestCheckupFindings_ImageCVESkippedWhenUpToDate(t *testing.T) {
 			"vulns": {
 				"available": true,
 				"trivy_installed": true,
-				"scanned_at": "2026-07-31T12:00:00Z",
+				"scanned_at": "` + fresh + `",
 				"host": {"critical": 0, "high": 0},
 				"images": [{
 					"service": "ownbase-crm",
