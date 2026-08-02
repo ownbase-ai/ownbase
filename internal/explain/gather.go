@@ -111,15 +111,26 @@ func Gather(in GatherInput) *BaseStatus {
 func gatherServices(cfg *schema.OwnbaseConfig, running map[string]bool) []ServiceStatus {
 	result := make([]ServiceStatus, 0, len(cfg.Services))
 	for name, decl := range cfg.Services {
-		isRunning := running["ownbase-"+name]
+		names := schema.ContainerNames(name, decl.Replicas)
+		runningCount := 0
+		for _, cname := range names {
+			if running[cname] {
+				runningCount++
+			}
+		}
+		allRunning := runningCount == len(names) && len(names) > 0
 		domains := decl.EffectiveDomains()
 		svc := ServiceStatus{
 			Name:     name,
-			Running:  isRunning,
-			Healthy:  isRunning,
+			Running:  allRunning,
+			Healthy:  allRunning,
 			Domains:  domains,
 			Port:     decl.Port,
 			Requires: decl.Requires,
+		}
+		if decl.IsReplicated() {
+			svc.Replicas = decl.ReplicaCount()
+			svc.RunningReplicas = runningCount
 		}
 		if len(domains) > 0 {
 			svc.Domain = domains[0]

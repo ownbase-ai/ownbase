@@ -95,10 +95,12 @@ func Discover(raw string) ([]Target, error) {
 		if svc.Port == 0 || len(domains) == 0 {
 			continue
 		}
+		// Replicated services tunnel to replica 0 only (developer inspection).
+		primary := schema.PrimaryContainerName(name, svc.Replicas)
 		targets = append(targets, Target{
 			Service:  name,
 			Port:     svc.Port,
-			HostPort: hostPorts[name],
+			HostPort: hostPorts[primary],
 			Domains:  domains,
 		})
 	}

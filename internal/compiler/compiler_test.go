@@ -225,13 +225,13 @@ func TestCompile_ContainersJoinOnlyDeclaredNetworks(t *testing.T) {
 func TestCompile_CaddyRouteOnlyForDomainAndPort(t *testing.T) {
 	model := compiler.CompileToModel(testInputFull(t))
 	for _, r := range model.Routes {
-		if r.Host == "" || r.Upstream == "" {
+		if r.Host == "" || len(r.Upstreams) == 0 {
 			t.Errorf("route has empty host or upstream: %+v", r)
 		}
 	}
 	// postgres has no domain — should have no route.
 	for _, r := range model.Routes {
-		if strings.Contains(r.Upstream, "postgres") {
+		if strings.Contains(strings.Join(r.Upstreams, " "), "postgres") {
 			t.Errorf("postgres should have no Caddy route, but found: %+v", r)
 		}
 	}
@@ -271,8 +271,8 @@ func TestCompile_MultiDomain_OneRoutePerDomain(t *testing.T) {
 			continue
 		}
 		wantHosts[r.Host] = true
-		if r.Upstream != "ownbase-app:3000" {
-			t.Errorf("route %q: upstream = %q, want ownbase-app:3000", r.Host, r.Upstream)
+		if len(r.Upstreams) != 1 || r.Upstreams[0] != "ownbase-app:3000" {
+			t.Errorf("route %q: upstreams = %v, want [ownbase-app:3000]", r.Host, r.Upstreams)
 		}
 	}
 	for host, seen := range wantHosts {
@@ -289,8 +289,10 @@ func TestCompile_MultiDomain_OneRoutePerDomain(t *testing.T) {
 func TestCompile_RouteUpstreamUsesContainerName(t *testing.T) {
 	model := compiler.CompileToModel(testInputMinimal(t))
 	for _, r := range model.Routes {
-		if strings.HasPrefix(r.Upstream, "localhost:") {
-			t.Errorf("route %q: upstream %q must not use localhost — Caddy cannot reach host loopback", r.Host, r.Upstream)
+		for _, u := range r.Upstreams {
+			if strings.HasPrefix(u, "localhost:") {
+				t.Errorf("route %q: upstream %q must not use localhost — Caddy cannot reach host loopback", r.Host, u)
+			}
 		}
 	}
 }
@@ -878,7 +880,7 @@ func TestCompile_Job_EnvAppendedAfterServiceEnv(t *testing.T) {
 func TestCompile_Job_NeverPublicOrHealthProbed(t *testing.T) {
 	model := compiler.CompileToModel(testInputJobs(t))
 	for _, r := range model.Routes {
-		if strings.Contains(r.Upstream, "job") {
+		if strings.Contains(strings.Join(r.Upstreams, " "), "job") {
 			t.Errorf("job must have no Caddy route, got %+v", r)
 		}
 	}
@@ -1016,4 +1018,179 @@ func TestCompile_Job_NoExtraNetworkOrVolumeCreated(t *testing.T) {
 			t.Errorf("unexpected network %q", n.Name)
 		}
 	}
+}
+
+func intPtr(n int) *int { return &n }
+
+func boolPtr(b bool) *bool { return &b }
+
+func TestCompile_Replicas_IndexedNamesAndEnv(t *testing.T) {
+	in := compiler.Input{
+		Config: &schema.OwnbaseConfig{
+			SchemaVersion: "v1",
+			Services: map[string]schema.ServiceDecl{
+				"worker": {
+					Repo:     "https://github.com/example/worker.git",
+					Port:     4096,
+					Replicas: intPtr(3),
+				},
+			},
+		},
+	}
+	model := compiler.CompileToModel(in)
+	var workers []compiler.ContainerModel
+	for _, c := range model.Containers {
+		if strings.HasPrefix(c.Name, "ownbase-worker") {
+			workers = append(workers, c)
+		}
+	}
+	if len(workers) != 3 {
+		t.Fatalf("got %d worker containers, want 3", len(workers))
+	}
+	for i, c := range workers {
+		wantName := fmt.Sprintf("ownbase-worker-%d", i)
+		if c.Name != wantName {
+			t.Errorf("container[%d].Name = %q, want %q", i, c.Name, wantName)
+		}
+		if c.ServiceName != "worker" {
+			t.Errorf("%s ServiceName = %q", c.Name, c.ServiceName)
+		}
+		if c.ReplicaIndex != i || c.ReplicaCount != 3 {
+			t.Errorf("%s replica %d/%d, want %d/3", c.Name, c.ReplicaIndex, c.ReplicaCount, i)
+		}
+		if c.Image != "localhost/ownbase-worker:local" {
+			t.Errorf("%s Image = %q", c.Name, c.Image)
+		}
+		wantIdx := fmt.Sprintf("OWNBASE_REPLICA_INDEX=%d", i)
+		wantCnt := "OWNBASE_REPLICA_COUNT=3"
+		if !containsStr(c.Env, wantIdx) || !containsStr(c.Env, wantCnt) {
+			t.Errorf("%s env missing replica identity: %v", c.Name, c.Env)
+		}
+	}
+
+	out := compiler.Compile(in)
+	unit := out.QuadletUnits["ownbase-worker-1.container"]
+	if !strings.Contains(unit, "# Service=worker\n") {
+		t.Error("replica unit missing # Service= provenance")
+	}
+	if !strings.Contains(unit, "# BuildImage=localhost/ownbase-worker:local\n") {
+		t.Error("replica unit missing # BuildImage= provenance")
+	}
+	// Non-replicated golden path: no Service/BuildImage comments.
+	plain := compiler.Compile(testInputMinimal(t))
+	hello := plain.QuadletUnits["ownbase-hello.container"]
+	if strings.Contains(hello, "# Service=") || strings.Contains(hello, "# BuildImage=") {
+		t.Error("non-replicated unit must not emit replica provenance")
+	}
+}
+
+func TestCompile_Replicas_PerReplicaAndSharedVolumes(t *testing.T) {
+	in := compiler.Input{
+		Config: &schema.OwnbaseConfig{
+			SchemaVersion: "v1",
+			Services: map[string]schema.ServiceDecl{
+				"worker": {
+					Repo:     "https://github.com/example/worker.git",
+					Replicas: intPtr(2),
+					Volumes: []schema.VolumeDecl{
+						{Name: "state", Mount: "/state"},
+						{Name: "shared", Mount: "/shared", PerReplica: boolPtr(false)},
+					},
+				},
+			},
+		},
+	}
+	model := compiler.CompileToModel(in)
+	volNames := map[string]bool{}
+	for _, v := range model.Volumes {
+		volNames[v.Name] = true
+	}
+	for _, want := range []string{
+		"ownbase-worker-state-0",
+		"ownbase-worker-state-1",
+		"ownbase-worker-shared",
+	} {
+		if !volNames[want] {
+			t.Errorf("missing volume %q in %v", want, volNames)
+		}
+	}
+	if volNames["ownbase-worker-state"] {
+		t.Error("shared-named state volume should not exist when per-replica")
+	}
+
+	var c0 *compiler.ContainerModel
+	for i := range model.Containers {
+		if model.Containers[i].Name == "ownbase-worker-0" {
+			c0 = &model.Containers[i]
+		}
+	}
+	if c0 == nil {
+		t.Fatal("ownbase-worker-0 missing")
+	}
+	mounts := map[string]string{}
+	for _, m := range c0.VolumeMounts {
+		mounts[m.MountPath] = m.VolumeName
+	}
+	if mounts["/state"] != "ownbase-worker-state-0" {
+		t.Errorf("state mount = %q", mounts["/state"])
+	}
+	if mounts["/shared"] != "ownbase-worker-shared" {
+		t.Errorf("shared mount = %q", mounts["/shared"])
+	}
+}
+
+func TestCompile_Replicas_MultiUpstream(t *testing.T) {
+	in := compiler.Input{
+		Config: &schema.OwnbaseConfig{
+			SchemaVersion: "v1",
+			Services: map[string]schema.ServiceDecl{
+				"web": {
+					Repo:     "https://github.com/example/web.git",
+					Port:     3000,
+					Domain:   "web.example.com",
+					Replicas: intPtr(2),
+				},
+			},
+		},
+	}
+	model := compiler.CompileToModel(in)
+	if len(model.Routes) != 1 {
+		t.Fatalf("routes = %d, want 1", len(model.Routes))
+	}
+	r := model.Routes[0]
+	want := []string{"ownbase-web-0:3000", "ownbase-web-1:3000"}
+	if len(r.Upstreams) != 2 || r.Upstreams[0] != want[0] || r.Upstreams[1] != want[1] {
+		t.Errorf("upstreams = %v, want %v", r.Upstreams, want)
+	}
+	out := compiler.Compile(in)
+	if !strings.Contains(out.Caddyfile, "reverse_proxy ownbase-web-0:3000 ownbase-web-1:3000") {
+		t.Errorf("Caddyfile missing multi-upstream:\n%s", out.Caddyfile)
+	}
+}
+
+func TestCompile_Replicas_OneStillIndexed(t *testing.T) {
+	in := compiler.Input{
+		Config: &schema.OwnbaseConfig{
+			SchemaVersion: "v1",
+			Services: map[string]schema.ServiceDecl{
+				"solo": {
+					Repo:     "https://github.com/example/solo.git",
+					Replicas: intPtr(1),
+				},
+			},
+		},
+	}
+	model := compiler.CompileToModel(in)
+	if len(model.Containers) != 1 || model.Containers[0].Name != "ownbase-solo-0" {
+		t.Fatalf("containers = %+v, want ownbase-solo-0", model.Containers)
+	}
+}
+
+func containsStr(ss []string, s string) bool {
+	for _, x := range ss {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }

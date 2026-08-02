@@ -156,8 +156,8 @@ func (p *Applier) start(a reconcile.PlannedAction) error {
 	if strings.HasSuffix(a.UnitFilename, ".container") {
 		src, ref, dockerfile, buildCtx := parseBuildProvenance(a.UnitContent)
 		if src != "" {
-			if err := p.buildImage(a.Action.Target, src, ref, dockerfile, buildCtx); err != nil {
-				return fmt.Errorf("build image for %s: %w", a.Action.Target, err)
+			if err := p.buildImage(a.Action.Target, src, ref, dockerfile, buildCtx, a.UnitContent); err != nil {
+				return err
 			}
 		}
 
@@ -336,7 +336,13 @@ func (p *Applier) injectSecrets(containerName, unitFilename, unitContent string)
 		return unitContent, nil
 	}
 
-	service := strings.TrimPrefix(containerName, "ownbase-")
+	// Prefer # Service= (replica units) so ownbase-opencode-2 opens
+	// opencode.yaml.age rather than the non-existent opencode-2.yaml.age.
+	// Fall back to trimming the ownbase- prefix for unindexed containers.
+	service := parseQuadletComment("Service", unitContent)
+	if service == "" {
+		service = strings.TrimPrefix(containerName, "ownbase-")
+	}
 	secretsDir := p.SecretsDir
 	if secretsDir == "" {
 		secretsDir = "/opt/ownbase/secrets"
@@ -521,8 +527,8 @@ func (p *Applier) restart(a reconcile.PlannedAction) error {
 	if strings.HasSuffix(a.UnitFilename, ".container") {
 		src, ref, dockerfile, buildCtx := parseBuildProvenance(a.UnitContent)
 		if src != "" {
-			if err := p.buildImage(a.Action.Target, src, ref, dockerfile, buildCtx); err != nil {
-				return fmt.Errorf("build image for %s: %w", a.Action.Target, err)
+			if err := p.buildImage(a.Action.Target, src, ref, dockerfile, buildCtx, a.UnitContent); err != nil {
+				return err
 			}
 		}
 
@@ -628,8 +634,14 @@ func (p *Applier) reload(a reconcile.PlannedAction) error {
 // ref is the branch, tag, or commit SHA; empty means the default branch.
 // dockerfile is relative to the repo root; empty means "Dockerfile".
 // buildCtx is a subdirectory to use as the build context; empty means root.
-func (p *Applier) buildImage(containerName, source, ref, dockerfile, buildCtx string) error {
-	imageName := "localhost/" + containerName + ":local"
+func (p *Applier) buildImage(containerName, source, ref, dockerfile, buildCtx, unitContent string) error {
+	// Default tag matches the historical derivation. Replica units emit
+	// # BuildImage=localhost/ownbase-<service>:local so every replica shares
+	// one image instead of building N tags from N clones.
+	imageName := parseQuadletComment("BuildImage", unitContent)
+	if imageName == "" {
+		imageName = "localhost/" + containerName + ":local"
+	}
 
 	repoPath := repos.RepoPath(source)
 

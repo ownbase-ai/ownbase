@@ -1,0 +1,27 @@
+schema_version: v1
+
+services:
+  worker:
+    repo: https://github.com/example/worker.git
+    ref: abc123
+    port: 4096
+    internal: true
+    domain: worker.example.com
+    replicas: 4
+    health_probe:
+      http: /global/health
+    volumes:
+      - name: state
+        mount: /home/worker/.local/share
+        backup: ["."]
+      - name: workspaces
+        mount: /workspaces
+        per_replica: false
+        backup: ["."]
+
+  web:
+    repo: https://github.com/example/web.git
+    ref: def456
+    port: 3000
+    domain: web.example.com
+    replicas: 2

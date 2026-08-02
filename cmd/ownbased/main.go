@@ -1462,7 +1462,12 @@ func annotateSecretsFingerprints(units map[string]string, secretsDir string) {
 		if !strings.HasSuffix(filename, ".container") {
 			continue
 		}
-		service := strings.TrimSuffix(strings.TrimPrefix(filename, "ownbase-"), ".container")
+		// Prefer # Service= (replica units) so ownbase-opencode-2.container
+		// fingerprints opencode.yaml.age, not a non-existent opencode-2 file.
+		service := parseServiceComment(content)
+		if service == "" {
+			service = strings.TrimSuffix(strings.TrimPrefix(filename, "ownbase-"), ".container")
+		}
 		sources := []string{service}
 		if jobService := parseJobServiceComment(content); jobService != "" {
 			// service (derived by trimming only "ownbase-") is "job-<name>"
@@ -1491,7 +1496,16 @@ func annotateSecretsFingerprints(units map[string]string, secretsDir string) {
 // provenance comment that internal/compiler's renderContainer emits for job
 // containers. Returns "" for a non-job container (the comment is absent).
 func parseJobServiceComment(unitContent string) string {
-	const prefix = "# JobService="
+	return parseQuadletCommentLine(unitContent, "# JobService=")
+}
+
+// parseServiceComment extracts "# Service=<name>" from replica container
+// units. Empty for unindexed (non-replicated) containers.
+func parseServiceComment(unitContent string) string {
+	return parseQuadletCommentLine(unitContent, "# Service=")
+}
+
+func parseQuadletCommentLine(unitContent, prefix string) string {
 	for _, line := range strings.Split(unitContent, "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, prefix) {

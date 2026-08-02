@@ -67,12 +67,15 @@ type PGBackRest struct {
 }
 
 // Container is the Podman container name for the Postgres service.
-func (p PGBackRest) Container() string { return "ownbase-" + p.Service }
+// Replicated database providers are not a v1 goal; this always targets the
+// primary (replica 0 / unindexed) container.
+func (p PGBackRest) Container() string {
+	return schema.PrimaryContainerName(p.Service, nil)
+}
 
 // Unit is the systemd unit for the Postgres service.
 func (p PGBackRest) Unit() string {
-	return "ownbase-" + p.Service + ".service"
-
+	return p.Container() + ".service"
 }
 
 // database returns the database to connect to, defaulting to the superuser's
@@ -103,19 +106,26 @@ type volumeMount struct{ Volume, Mount string }
 // serviceVolumeMounts lists a service's volumes as the compiler creates them,
 // including the implicit "ownbase-<name>-data" that a service declaring no
 // volumes: gets at its data_path. Reading the declaration directly would miss
-// that one, which is the shape most Bases have.
+// that one, which is the shape most Bases have. For replicated services only
+// the primary (index 0 / shared) volumes are returned — pgBackRest targets
+// the primary container.
 func serviceVolumeMounts(name string, svc schema.ServiceDecl) []volumeMount {
 	if len(svc.Volumes) == 0 {
 		mount := svc.DataPath
 		if mount == "" {
 			mount = "/data"
 		}
-		return []volumeMount{{Volume: fmt.Sprintf("ownbase-%s-data", name), Mount: mount}}
+		perReplica := svc.DataPathIsPerReplica()
+		return []volumeMount{{
+			Volume: schema.DataVolumeName(name, svc.Replicas, 0, perReplica),
+			Mount:  mount,
+		}}
 	}
 	out := make([]volumeMount, 0, len(svc.Volumes))
 	for _, v := range svc.Volumes {
+		perReplica := svc.VolumeIsPerReplica(v)
 		out = append(out, volumeMount{
-			Volume: fmt.Sprintf("ownbase-%s-%s", name, v.Name),
+			Volume: schema.VolumeName(name, v.Name, svc.Replicas, 0, perReplica),
 			Mount:  v.Mount,
 		})
 	}

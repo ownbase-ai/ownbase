@@ -494,11 +494,12 @@ func topoSortContainers(desiredContainers map[string]string, unitContents map[st
 		content := unitContents[unitFile]
 		reqs := parseRequires(content)
 		for _, svcName := range reqs {
-			providerContainer := "ownbase-" + svcName
-			// Only add edges for providers that are also in the desired set.
-			// Unknown providers are silently skipped — schema validation
-			// already ensures requires: names are valid service keys.
-			if _, ok := desiredContainers[providerContainer]; ok {
+			// Expand to every container belonging to the provider service
+			// (unindexed ownbase-<svc> or ownbase-<svc>-0..N-1). Schema
+			// validation already ensures requires: names are valid keys;
+			// unknown/missing providers yield an empty expansion and are
+			// skipped.
+			for _, providerContainer := range schema.MatchReplicaContainers(svcName, desiredContainers) {
 				deps[containerName][providerContainer] = true
 			}
 		}

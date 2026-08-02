@@ -15,6 +15,16 @@ import (
 // CurrentSchemaVersion is the only version this binary understands.
 const CurrentSchemaVersion = "v1"
 
+// MaxReplicas is the upper bound on ServiceDecl.Replicas. High enough for a
+// dedicated machine's concurrent workers; low enough that a typo cannot ask
+// the Base to materialize hundreds of containers.
+const MaxReplicas = 64
+
+// ContainerNamePrefix is the prefix every OwnBase-managed container name
+// carries (services, jobs, core). Used by naming helpers and by callers that
+// classify containers by prefix alone.
+const ContainerNamePrefix = "ownbase-"
+
 // RepoMode is a deprecated field kept only for parsing backward compatibility.
 // It has no behavioral effect. Users should remove it from ownbase.yaml.
 type RepoMode string
@@ -258,6 +268,24 @@ type ServiceDecl struct {
 	// service when they do not already exist. Nothing sensitive is written
 	// to ownbase.yaml — only the names of the keys to fill in.
 	GeneratedSecrets []GeneratedSecretDecl `yaml:"generated_secrets,omitempty"`
+
+	// Replicas, when set, runs this service as N indexed containers named
+	// ownbase-<service>-0 … ownbase-<service>-(N-1). Each replica gets its
+	// own loopback publish (for health_probe and tunnel) and, by default,
+	// its own copy of every declared volume (see VolumeDecl.PerReplica).
+	//
+	// Absent (nil) preserves the single unindexed container ownbase-<service>
+	// — byte-identical to configs that predate this field. When set, even
+	// replicas: 1 is indexed (ownbase-<service>-0) so scaling 1→N never
+	// renames containers or orphans volumes.
+	//
+	// This is concurrency, not high availability: a Base is one machine.
+	// Routing, session affinity, and leasing stay in the application that
+	// talks to the workers — OwnBase only provides stable, addressable
+	// replicas with durable per-replica storage.
+	//
+	// Allowed range when set: 1..MaxReplicas.
+	Replicas *int `yaml:"replicas,omitempty"`
 }
 
 // GeneratedSecretType is the kind of value a GeneratedSecretDecl produces.
@@ -472,10 +500,13 @@ func ParseSecretDest(spec string) SecretDest {
 }
 
 // VolumeDecl declares one named Podman volume for a service.
-// The Podman volume name is "ownbase-<service>-<name>".
+// The Podman volume name is "ownbase-<service>-<name>", or
+// "ownbase-<service>-<name>-<i>" when the service is replicated and this
+// volume is per-replica (the default).
 type VolumeDecl struct {
 	// Name is the short name for this volume (e.g. "config", "media", "cache").
-	// The Podman volume is named "ownbase-<service>-<name>".
+	// The Podman volume is named "ownbase-<service>-<name>" (shared) or
+	// "ownbase-<service>-<name>-<i>" (per-replica).
 	Name string `yaml:"name"`
 
 	// Mount is where the volume is mounted inside the container (e.g. "/config").
@@ -485,7 +516,16 @@ type VolumeDecl struct {
 	// relative to Mount. Use "." to back up the entire volume.
 	// Examples: ["."], ["./config", "./data/db"], ["./music", "./photos"]
 	// Omit (or leave empty) to exclude this volume from backups entirely.
+	// When the volume is per-replica, every replica's copy is enumerated.
 	Backup []string `yaml:"backup,omitempty"`
+
+	// PerReplica controls whether a replicated service gets one volume per
+	// replica (true) or one shared volume mounted by every replica (false).
+	// Nil defaults to true when the service has replicas: set, and is ignored
+	// when the service is not replicated. Prefer the default for worker state
+	// that assumes exclusive ownership; set false for a shared workspace or
+	// cache that every replica should see.
+	PerReplica *bool `yaml:"per_replica,omitempty"`
 }
 
 // HealthProbeDecl describes how the agent verifies a service is healthy.
@@ -588,32 +628,35 @@ func (c *OwnbaseConfig) HasPublicDomain() bool {
 }
 
 // TunnelBasePort is the first loopback port the compiler allocates to
-// any port'd service's direct-to-container publish. Each eligible service
-// gets one port, assigned by sorted name starting here — deliberately
-// decoupled from any service's own container Port so that a service can
-// declare port: 80/443 (or share a port number with another service)
-// without colliding with Caddy's machine-wide bind or with each other on
-// the loopback publish. Despite the name, this isn't exclusively for
-// `ownbasectl tunnel`: the daemon's own HTTP health_probe (internal/podman's
-// waitForContainer) also dials a service's container directly over this
-// same loopback publish, including for domain-less internal services the
-// tunnel never bridges — see TunnelPorts.
+// any port'd container's direct-to-container publish. Ports are assigned by
+// a running allocator over sorted services (and their replicas) starting
+// here — deliberately decoupled from any service's own container Port so
+// that a service can declare port: 80/443 (or share a port number with
+// another service) without colliding with Caddy's machine-wide bind or with
+// each other on the loopback publish. Despite the name, this isn't
+// exclusively for `ownbasectl tunnel`: the daemon's own HTTP health_probe
+// (internal/podman's waitForContainer) also dials a container directly over
+// this same loopback publish, including for domain-less internal services
+// the tunnel never bridges — see TunnelPorts.
 const TunnelBasePort = 41000
 
 // TunnelPorts returns the deterministic loopback port assigned to each
-// port'd service, keyed by service name. Eligibility here is intentionally
-// broader than HasPublicDomain/what `ownbasectl tunnel` bridges: ANY service
-// with a Port set gets an entry, domain or not, because two independent
+// port'd container, keyed by **container name** (e.g. "ownbase-hello" or
+// "ownbase-opencode-2"). Eligibility is intentionally broader than
+// HasPublicDomain/what `ownbasectl tunnel` bridges: ANY service with a Port
+// set gets an entry per container, domain or not, because two independent
 // things depend on this loopback publish existing —
 //  1. `ownbasectl tunnel`'s SSH bridge (domain'd services only — see
-//     internal/bridge.Discover, which filters this map down).
+//     internal/bridge.Discover, which filters this map down and uses
+//     PrimaryContainerName for replicated services).
 //  2. The daemon's own startup HTTP health_probe (internal/podman's
 //     waitForContainer), which needs a loopback port to dial for ANY
-//     port'd service, including purely-internal ones with no domain.
+//     port'd container, including purely-internal ones with no domain.
 //
-// Narrowing this to domain'd-only (as a prior version of this function did)
-// silently broke health_probe for domain-less services, since the compiler
-// then emitted no PublishPort line for them to dial at all.
+// A non-replicated service still gets exactly one port at the same offset
+// it would have under the old one-port-per-service scheme, so configs
+// without replicas: produce identical assignments. A service with
+// replicas: N consumes N consecutive ports.
 //
 // Ports are recomputed fresh from the current config on every call — never
 // persisted — which is safe because the compiler (building the Quadlet
@@ -633,11 +676,142 @@ func (c *OwnbaseConfig) TunnelPorts() map[string]int {
 	}
 	sort.Strings(names)
 
-	ports := make(map[string]int, len(names))
-	for i, name := range names {
-		ports[name] = TunnelBasePort + i
+	ports := make(map[string]int)
+	next := TunnelBasePort
+	for _, name := range names {
+		svc := c.Services[name]
+		for _, cname := range ContainerNames(name, svc.Replicas) {
+			ports[cname] = next
+			next++
+		}
 	}
 	return ports
+}
+
+// IsReplicated reports whether this service declares replicas: (even 1).
+// Absent replicas: is not replicated and keeps the unindexed container name.
+func (s ServiceDecl) IsReplicated() bool {
+	return s.Replicas != nil
+}
+
+// ReplicaCount returns how many containers this service compiles to.
+// Absent replicas: yields 1 (the unindexed single container).
+func (s ServiceDecl) ReplicaCount() int {
+	if s.Replicas == nil {
+		return 1
+	}
+	return *s.Replicas
+}
+
+// VolumeIsPerReplica reports whether volume v is instantiated once per
+// replica. Always false when the service is not replicated. When replicated,
+// nil PerReplica defaults to true.
+func (s ServiceDecl) VolumeIsPerReplica(v VolumeDecl) bool {
+	if !s.IsReplicated() {
+		return false
+	}
+	if v.PerReplica == nil {
+		return true
+	}
+	return *v.PerReplica
+}
+
+// DataPathIsPerReplica reports whether the data_path: shorthand volume is
+// per-replica. Same default as VolumeIsPerReplica when Volumes is empty.
+func (s ServiceDecl) DataPathIsPerReplica() bool {
+	return s.IsReplicated()
+}
+
+// ContainerName returns the Podman/systemd container name for one instance
+// of service. When replicas is nil the name is unindexed ("ownbase-<service>");
+// when set it is "ownbase-<service>-<index>".
+func ContainerName(service string, replicas *int, index int) string {
+	if replicas == nil {
+		return ContainerNamePrefix + service
+	}
+	return fmt.Sprintf("%s%s-%d", ContainerNamePrefix, service, index)
+}
+
+// ContainerNames returns every container name for a service, in index order.
+func ContainerNames(service string, replicas *int) []string {
+	if replicas == nil {
+		return []string{ContainerNamePrefix + service}
+	}
+	n := *replicas
+	if n < 1 {
+		n = 1
+	}
+	out := make([]string, n)
+	for i := 0; i < n; i++ {
+		out[i] = ContainerName(service, replicas, i)
+	}
+	return out
+}
+
+// PrimaryContainerName is the stable single address for consumers that need
+// one host (gendb DATABASE_URL, ownbasectl tunnel, pgBackRest): replica 0
+// when replicated, otherwise the unindexed name.
+func PrimaryContainerName(service string, replicas *int) string {
+	return ContainerName(service, replicas, 0)
+}
+
+// VolumeName returns the Podman volume name for one volume instance.
+// perReplica and index are ignored when the service is not using per-replica
+// volumes for this entry (shared name "ownbase-<service>-<vol>").
+func VolumeName(service, vol string, replicas *int, index int, perReplica bool) string {
+	base := fmt.Sprintf("%s%s-%s", ContainerNamePrefix, service, vol)
+	if replicas == nil || !perReplica {
+		return base
+	}
+	return fmt.Sprintf("%s-%d", base, index)
+}
+
+// DataVolumeName is VolumeName for the data_path: shorthand volume ("data").
+func DataVolumeName(service string, replicas *int, index int, perReplica bool) string {
+	return VolumeName(service, "data", replicas, index, perReplica)
+}
+
+// ServiceKeyFromContainer trims the ownbase- prefix and, when the remainder
+// ends in -<digits> and matches a known replicated service pattern, is not
+// used for secrets lookup — callers that need the service key should prefer
+// the # Service= provenance comment. This helper only strips the prefix.
+func ServiceKeyFromContainer(containerName string) string {
+	return strings.TrimPrefix(containerName, ContainerNamePrefix)
+}
+
+// MatchReplicaContainers returns every name in desired that belongs to
+// service (unindexed ownbase-<service> or ownbase-<service>-<digits>).
+// Used by reconcile topo-sort to expand requires: edges across replicas.
+func MatchReplicaContainers(service string, desired map[string]string) []string {
+	exact := ContainerNamePrefix + service
+	prefix := exact + "-"
+	var out []string
+	for name := range desired {
+		if name == exact {
+			out = append(out, name)
+			continue
+		}
+		if strings.HasPrefix(name, prefix) {
+			suffix := strings.TrimPrefix(name, prefix)
+			if isAllDigits(suffix) {
+				out = append(out, name)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // Validate returns the first structural error in the config, or nil.
@@ -665,6 +839,9 @@ func (c *OwnbaseConfig) Validate() error {
 		if err := svc.validate(name, c.Services); err != nil {
 			return err
 		}
+	}
+	if err := validateReplicaNameCollisions(c.Services); err != nil {
+		return err
 	}
 	for name, job := range c.Jobs {
 		if err := job.validate(name, c.Services); err != nil {
@@ -700,6 +877,12 @@ func (s ServiceDecl) validate(name string, allServices map[string]ServiceDecl) e
 	if s.Port < 0 || s.Port > 65535 {
 		return fmt.Errorf("service %q: port %d is out of range", name, s.Port)
 	}
+	if s.Replicas != nil {
+		n := *s.Replicas
+		if n < 1 || n > MaxReplicas {
+			return fmt.Errorf("service %q: replicas %d is out of range (must be 1..%d)", name, n, MaxReplicas)
+		}
+	}
 	for _, cap := range s.Requires {
 		if _, ok := allServices[cap]; !ok {
 			return fmt.Errorf("service %q: required capability %q does not match any service key",
@@ -725,6 +908,30 @@ func (s ServiceDecl) validate(name string, allServices map[string]ServiceDecl) e
 		}
 	}
 	return s.validateDatabase(name, allServices)
+}
+
+// validateReplicaNameCollisions rejects configs where a generated replica
+// container name would collide with another service's container name — e.g.
+// service "web" with replicas: 2 and a service literally named "web-0" both
+// compile to "ownbase-web-0".
+func validateReplicaNameCollisions(services map[string]ServiceDecl) error {
+	// claimed[containerName] = service key that owns it
+	claimed := make(map[string]string)
+	var names []string
+	for name := range services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		svc := services[name]
+		for _, cname := range ContainerNames(name, svc.Replicas) {
+			if other, ok := claimed[cname]; ok {
+				return fmt.Errorf("service %q: container name %q collides with service %q (rename one of them, or adjust replicas:)", name, cname, other)
+			}
+			claimed[cname] = name
+		}
+	}
+	return nil
 }
 
 func (g GeneratedSecretDecl) validate(svcName string, idx int, allServices map[string]ServiceDecl) error {

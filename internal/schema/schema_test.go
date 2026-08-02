@@ -19,6 +19,7 @@ func TestParseConfig_ValidFixtures(t *testing.T) {
 		"../../testdata/minimal/ownbase.yaml",
 		"../../testdata/valid/full-config.yaml",
 		"../../testdata/valid/jobs.yaml",
+		"../../testdata/valid/replicas.yaml",
 	}
 	for _, path := range fixtures {
 		t.Run(filepath.Base(filepath.Dir(path)), func(t *testing.T) {
@@ -52,6 +53,8 @@ func TestParseConfig_InvalidFixtures(t *testing.T) {
 		{"job-unknown-service.yaml", `service "does-not-exist" does not match any service key`},
 		{"job-missing-command.yaml", "command is required"},
 		{"job-missing-schedule.yaml", "schedule is required"},
+		{"replicas-zero.yaml", "replicas"},
+		{"replicas-collision.yaml", "collides"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.file, func(t *testing.T) {
@@ -600,22 +603,18 @@ func TestOwnbaseConfig_TunnelPorts_AnyPortedServiceEligibleDomainOrNot(t *testin
 		},
 	}
 	got := cfg.TunnelPorts()
-	// Eligibility is Port != 0 alone — domain-less services need an entry
-	// too, since the daemon's own HTTP health_probe dials this loopback
-	// publish for ANY port'd service, not just ones ownbasectl dev bridges
-	// (that narrower, domain'd-only filter lives in
-	// internal/bridge.Discover instead).
+	// Keys are container names. Eligibility is Port != 0 alone.
 	if len(got) != 2 {
-		t.Fatalf("expected exactly 2 eligible (port'd) services, got %v", got)
+		t.Fatalf("expected exactly 2 eligible (port'd) containers, got %v", got)
 	}
-	if _, ok := got["domain-and-port"]; !ok {
-		t.Errorf("expected \"domain-and-port\" to be assigned a port, got %v", got)
+	if _, ok := got["ownbase-domain-and-port"]; !ok {
+		t.Errorf("expected ownbase-domain-and-port to be assigned a port, got %v", got)
 	}
-	if _, ok := got["port-only"]; !ok {
-		t.Errorf("expected \"port-only\" (domain-less) to also be assigned a port, got %v", got)
+	if _, ok := got["ownbase-port-only"]; !ok {
+		t.Errorf("expected ownbase-port-only (domain-less) to also be assigned a port, got %v", got)
 	}
-	if _, ok := got["domain-only"]; ok {
-		t.Errorf("expected \"domain-only\" (no port) to be excluded, got %v", got)
+	if _, ok := got["ownbase-domain-only"]; ok {
+		t.Errorf("expected ownbase-domain-only (no port) to be excluded, got %v", got)
 	}
 }
 
@@ -626,8 +625,8 @@ func TestOwnbaseConfig_TunnelPorts_SingleService(t *testing.T) {
 		},
 	}
 	got := cfg.TunnelPorts()
-	if got["hello"] != schema.TunnelBasePort {
-		t.Errorf("hello port = %d, want %d", got["hello"], schema.TunnelBasePort)
+	if got["ownbase-hello"] != schema.TunnelBasePort {
+		t.Errorf("ownbase-hello port = %d, want %d", got["ownbase-hello"], schema.TunnelBasePort)
 	}
 }
 
@@ -642,15 +641,71 @@ func TestOwnbaseConfig_TunnelPorts_DeterministicSortedAssignment(t *testing.T) {
 	// Run several times to make sure map iteration order never affects the result.
 	for i := 0; i < 5; i++ {
 		got := cfg.TunnelPorts()
-		if got["alpha"] != schema.TunnelBasePort {
-			t.Errorf("alpha port = %d, want %d", got["alpha"], schema.TunnelBasePort)
+		if got["ownbase-alpha"] != schema.TunnelBasePort {
+			t.Errorf("ownbase-alpha port = %d, want %d", got["ownbase-alpha"], schema.TunnelBasePort)
 		}
-		if got["multi"] != schema.TunnelBasePort+1 {
-			t.Errorf("multi port = %d, want %d", got["multi"], schema.TunnelBasePort+1)
+		if got["ownbase-multi"] != schema.TunnelBasePort+1 {
+			t.Errorf("ownbase-multi port = %d, want %d", got["ownbase-multi"], schema.TunnelBasePort+1)
 		}
-		if got["zeta"] != schema.TunnelBasePort+2 {
-			t.Errorf("zeta port = %d, want %d", got["zeta"], schema.TunnelBasePort+2)
+		if got["ownbase-zeta"] != schema.TunnelBasePort+2 {
+			t.Errorf("ownbase-zeta port = %d, want %d", got["ownbase-zeta"], schema.TunnelBasePort+2)
 		}
+	}
+}
+
+func TestOwnbaseConfig_TunnelPorts_Replicas(t *testing.T) {
+	n := 3
+	cfg := schema.OwnbaseConfig{
+		Services: map[string]schema.ServiceDecl{
+			"alpha": {Repo: "a", Port: 3000},
+			"worker": {Repo: "w", Port: 4096, Replicas: &n},
+		},
+	}
+	got := cfg.TunnelPorts()
+	// alpha first (sorted), one port; worker next, three consecutive ports.
+	if got["ownbase-alpha"] != schema.TunnelBasePort {
+		t.Errorf("alpha = %d, want %d", got["ownbase-alpha"], schema.TunnelBasePort)
+	}
+	for i := 0; i < 3; i++ {
+		name := schema.ContainerName("worker", &n, i)
+		want := schema.TunnelBasePort + 1 + i
+		if got[name] != want {
+			t.Errorf("%s = %d, want %d", name, got[name], want)
+		}
+	}
+	if len(got) != 4 {
+		t.Errorf("len = %d, want 4: %v", len(got), got)
+	}
+}
+
+func TestValidate_ReplicaNameCollision(t *testing.T) {
+	n := 2
+	cfg := &schema.OwnbaseConfig{
+		SchemaVersion: "v1",
+		Services: map[string]schema.ServiceDecl{
+			"web":   {Repo: "https://github.com/org/web.git", Replicas: &n},
+			"web-0": {Repo: "https://github.com/org/other.git"},
+		},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected collision error")
+	}
+	if !strings.Contains(err.Error(), "collides") {
+		t.Errorf("error = %v, want collides", err)
+	}
+}
+
+func TestValidate_ReplicasRange(t *testing.T) {
+	zero := 0
+	cfg := &schema.OwnbaseConfig{
+		SchemaVersion: "v1",
+		Services: map[string]schema.ServiceDecl{
+			"web": {Repo: "https://github.com/org/web.git", Replicas: &zero},
+		},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected range error for replicas: 0")
 	}
 }
 

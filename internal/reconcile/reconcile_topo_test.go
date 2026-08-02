@@ -141,3 +141,32 @@ func TestTopoSort_CycleDetected(t *testing.T) {
 		t.Errorf("expected 'cycle' in error, got: %v", err)
 	}
 }
+
+func TestTopoSort_ReplicatedProvider(t *testing.T) {
+	// consumer requires provider; provider has two replica containers.
+	// Both provider replicas must start before the consumer.
+	containers := map[string]string{
+		"ownbase-provider-0": "ownbase-provider-0.container",
+		"ownbase-provider-1": "ownbase-provider-1.container",
+		"ownbase-consumer":   "ownbase-consumer.container",
+	}
+	contents := map[string]string{
+		"ownbase-provider-0.container": "# Generated\n",
+		"ownbase-provider-1.container": "# Generated\n",
+		"ownbase-consumer.container":   "# Requires=provider\n",
+	}
+	result, err := topoSortContainers(containers, contents)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	pos := map[string]int{}
+	for i, name := range result {
+		pos[name] = i
+	}
+	if pos["ownbase-provider-0"] > pos["ownbase-consumer"] {
+		t.Errorf("provider-0 after consumer: %v", result)
+	}
+	if pos["ownbase-provider-1"] > pos["ownbase-consumer"] {
+		t.Errorf("provider-1 after consumer: %v", result)
+	}
+}
