@@ -130,7 +130,8 @@ func gatherServices(cfg *schema.OwnbaseConfig, running map[string]bool) []Servic
 		}
 		if decl.IsReplicated() {
 			svc.Replicas = decl.ReplicaCount()
-			svc.RunningReplicas = runningCount
+			rr := runningCount
+			svc.RunningReplicas = &rr
 		}
 		if len(domains) > 0 {
 			svc.Domain = domains[0]

@@ -449,6 +449,28 @@ func Diff(desired compiler.RuntimeOutput, current runtime.CurrentState, opts Dif
 // Dependency ordering helpers
 // ---------------------------------------------------------------------------
 
+// containerBelongsToService reports whether containerName (with its unit
+// content) is an instance of the given services: key. Replica units emit
+// "# Service=<key>"; unindexed units match only the exact name
+// "ownbase-<key>" so a separate service literally named "web-0" is never
+// treated as a replica of "web".
+func containerBelongsToService(containerName, unitContent, service string) bool {
+	if svc := parseQuadletCommentValue(unitContent, "# Service="); svc != "" {
+		return svc == service
+	}
+	return containerName == "ownbase-"+service
+}
+
+func parseQuadletCommentValue(unitContent, prefix string) string {
+	for _, line := range strings.Split(unitContent, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimPrefix(line, prefix)
+		}
+	}
+	return ""
+}
+
 // parseRequires extracts the comma-separated service names from the
 // "# Requires=dep1,dep2" provenance comment emitted by the compiler.
 // Returns nil when the comment is absent or has no names.
@@ -494,13 +516,15 @@ func topoSortContainers(desiredContainers map[string]string, unitContents map[st
 		content := unitContents[unitFile]
 		reqs := parseRequires(content)
 		for _, svcName := range reqs {
-			// Expand to every container belonging to the provider service
-			// (unindexed ownbase-<svc> or ownbase-<svc>-0..N-1). Schema
-			// validation already ensures requires: names are valid keys;
-			// unknown/missing providers yield an empty expansion and are
-			// skipped.
-			for _, providerContainer := range schema.MatchReplicaContainers(svcName, desiredContainers) {
-				deps[containerName][providerContainer] = true
+			// Expand to every container that belongs to the provider service.
+			// Ownership is # Service= (replica units) or exact ownbase-<svc>
+			// (unindexed) — never a bare name-prefix match, which would treat
+			// an unrelated service "web-0" as a replica of "web".
+			for provider := range desiredContainers {
+				pContent := unitContents[desiredContainers[provider]]
+				if containerBelongsToService(provider, pContent, svcName) {
+					deps[containerName][provider] = true
+				}
 			}
 		}
 	}

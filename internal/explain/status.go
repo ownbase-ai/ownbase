@@ -70,8 +70,9 @@ type ServiceStatus struct {
 	// Zero/omitted means a single unindexed container (replicas: absent).
 	Replicas int `json:"replicas,omitempty"`
 	// RunningReplicas is how many of the service's containers are up.
-	// Omitted when Replicas is 0.
-	RunningReplicas int `json:"running_replicas,omitempty"`
+	// Nil/omitted when the service is not replicated; a pointer so a fully
+	// stopped pool still serializes as 0 rather than vanishing from JSON.
+	RunningReplicas *int `json:"running_replicas,omitempty"`
 
 	// Repo is the external git URL (repo:) the service builds from.
 	Repo string `json:"repo,omitempty"`

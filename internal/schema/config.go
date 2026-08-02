@@ -779,41 +779,6 @@ func ServiceKeyFromContainer(containerName string) string {
 	return strings.TrimPrefix(containerName, ContainerNamePrefix)
 }
 
-// MatchReplicaContainers returns every name in desired that belongs to
-// service (unindexed ownbase-<service> or ownbase-<service>-<digits>).
-// Used by reconcile topo-sort to expand requires: edges across replicas.
-func MatchReplicaContainers(service string, desired map[string]string) []string {
-	exact := ContainerNamePrefix + service
-	prefix := exact + "-"
-	var out []string
-	for name := range desired {
-		if name == exact {
-			out = append(out, name)
-			continue
-		}
-		if strings.HasPrefix(name, prefix) {
-			suffix := strings.TrimPrefix(name, prefix)
-			if isAllDigits(suffix) {
-				out = append(out, name)
-			}
-		}
-	}
-	sort.Strings(out)
-	return out
-}
-
-func isAllDigits(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
-}
-
 // Validate returns the first structural error in the config, or nil.
 func (c *OwnbaseConfig) Validate() error {
 	if c.SchemaVersion == "" {

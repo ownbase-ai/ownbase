@@ -201,3 +201,47 @@ func TestAllLocalHostnames_Empty(t *testing.T) {
 		t.Errorf("expected empty result for no targets, got %v", got)
 	}
 }
+
+func TestDiscover_ReplicasUnitKeyIsPrimaryStem(t *testing.T) {
+	// ParseActualHostPorts keys by unit stem (ownbase-worker-0 → "worker-0").
+	// Tunnel must look up that key, not the bare service name.
+	yaml := `
+schema_version: v1
+services:
+  worker:
+    repo: https://github.com/example/worker.git
+    port: 4096
+    domain: worker.example.com
+    internal: true
+    replicas: 3
+  plain:
+    repo: https://github.com/example/plain.git
+    port: 3000
+    domain: plain.example.com
+`
+	targets, err := bridge.Discover(yaml)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	byName := map[string]bridge.Target{}
+	for _, tg := range targets {
+		byName[tg.Service] = tg
+	}
+	w, ok := byName["worker"]
+	if !ok {
+		t.Fatal("worker target missing")
+	}
+	if w.UnitKey != "worker-0" {
+		t.Errorf("worker.UnitKey = %q, want worker-0", w.UnitKey)
+	}
+	if w.HostPort != schema.TunnelBasePort+1 {
+		// plain sorts first (alphabetically), then worker's three ports —
+		// primary is the first of worker's block = base+1.
+		// Wait: sorted names are plain, worker. plain gets base+0, worker-0 gets base+1.
+		t.Errorf("worker.HostPort = %d, want %d", w.HostPort, schema.TunnelBasePort+1)
+	}
+	p := byName["plain"]
+	if p.UnitKey != "plain" {
+		t.Errorf("plain.UnitKey = %q, want plain", p.UnitKey)
+	}
+}
