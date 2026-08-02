@@ -65,14 +65,16 @@ type PGBackRest struct {
 	// can say which path was looked for rather than which one is usual.
 	DataDir string
 
-	// Dependants are the services that declare requires: on Service. A
-	// production restore stops them first, because a client holding a
-	// connection through a data-directory swap sees corruption, not an outage.
+	// Dependants are the services that declare requires: on Service (keys
+	// for progress messages). A production restore stops them first, because
+	// a client holding a connection through a data-directory swap sees
+	// corruption, not an outage.
 	Dependants []string
 
-	// DependantUnits are the primary systemd unit names for Dependants, in
-	// the same order (ownbase-<dep>.service or ownbase-<dep>-0.service).
-	// Empty entries fall back to the unreplicated name for hand-built tests.
+	// DependantUnits are every systemd unit that must stop/start for those
+	// dependants — all replica instances, not only primary. Flat list in
+	// stable service then index order. When empty, dependantUnits falls back
+	// to unreplicated names derived from Dependants (hand-built tests).
 	DependantUnits []string
 }
 
@@ -221,8 +223,11 @@ func FindPGBackRest(oc *schema.OwnbaseConfig) (PGBackRest, error) {
 			for _, req := range depSvc.Requires {
 				if req == name {
 					out.Dependants = append(out.Dependants, dep)
-					out.DependantUnits = append(out.DependantUnits,
-						schema.PrimaryContainerName(dep, depSvc.Replicas)+".service")
+					// Stop/start every replica — leaving any running keeps DB
+					// connections through the data-directory swap.
+					for _, cname := range schema.ContainerNames(dep, depSvc.Replicas) {
+						out.DependantUnits = append(out.DependantUnits, cname+".service")
+					}
 					break
 				}
 			}

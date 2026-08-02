@@ -93,8 +93,10 @@ func TestFindPGBackRest_ReplicatedPrimaryNames(t *testing.T) {
 	if pb.DataVolume != "ownbase-postgres-data-0" {
 		t.Errorf("DataVolume = %q, want ownbase-postgres-data-0", pb.DataVolume)
 	}
-	if len(pb.DependantUnits) != 1 || pb.DependantUnits[0] != "ownbase-api-0.service" {
-		t.Errorf("DependantUnits = %v, want [ownbase-api-0.service]", pb.DependantUnits)
+	// Every api replica unit must stop/start — not only primary.
+	wantUnits := []string{"ownbase-api-0.service", "ownbase-api-1.service"}
+	if len(pb.DependantUnits) != 2 || pb.DependantUnits[0] != wantUnits[0] || pb.DependantUnits[1] != wantUnits[1] {
+		t.Errorf("DependantUnits = %v, want %v", pb.DependantUnits, wantUnits)
 	}
 }
 
