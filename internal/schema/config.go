@@ -628,13 +628,12 @@ func (c *OwnbaseConfig) HasPublicDomain() bool {
 }
 
 // TunnelBasePort is the first loopback port the compiler allocates to
-// any port'd container's direct-to-container publish. Ports are assigned by
-// a running allocator over sorted services (and their replicas) starting
-// here — deliberately decoupled from any service's own container Port so
-// that a service can declare port: 80/443 (or share a port number with
-// another service) without colliding with Caddy's machine-wide bind or with
-// each other on the loopback publish. Despite the name, this isn't
-// exclusively for `ownbasectl tunnel`: the daemon's own HTTP health_probe
+// any port'd container's direct-to-container publish. Assignment is
+// deliberately decoupled from any service's own container Port so that a
+// service can declare port: 80/443 (or share a port number with another
+// service) without colliding with Caddy's machine-wide bind or with each
+// other on the loopback publish. Despite the name, this isn't exclusively
+// for `ownbasectl tunnel`: the daemon's own HTTP health_probe
 // (internal/podman's waitForContainer) also dials a container directly over
 // this same loopback publish, including for domain-less internal services
 // the tunnel never bridges — see TunnelPorts.
@@ -653,10 +652,17 @@ const TunnelBasePort = 41000
 //     waitForContainer), which needs a loopback port to dial for ANY
 //     port'd container, including purely-internal ones with no domain.
 //
-// A non-replicated service still gets exactly one port at the same offset
-// it would have under the old one-port-per-service scheme, so configs
-// without replicas: produce identical assignments. A service with
-// replicas: N consumes N consecutive ports.
+// Allocation is strided so adding replicas: to one service does not
+// renumber unrelated services (which would restart them):
+//
+//	port(service_i, replica_j) = TunnelBasePort + i + j*N
+//
+// where i is the sorted index among port'd services and N is how many
+// port'd services there are. Replica 0 (and every unreplicated service)
+// therefore lands on exactly the same port the old one-port-per-service
+// scheme assigned — configs without replicas: stay byte-identical. Extra
+// replicas occupy higher bands (base+N, base+2N, …) that no unreplicated
+// service uses.
 //
 // Ports are recomputed fresh from the current config on every call — never
 // persisted — which is safe because the compiler (building the Quadlet
@@ -676,13 +682,13 @@ func (c *OwnbaseConfig) TunnelPorts() map[string]int {
 	}
 	sort.Strings(names)
 
+	n := len(names)
 	ports := make(map[string]int)
-	next := TunnelBasePort
-	for _, name := range names {
+	for i, name := range names {
 		svc := c.Services[name]
-		for _, cname := range ContainerNames(name, svc.Replicas) {
-			ports[cname] = next
-			next++
+		for j, cname := range ContainerNames(name, svc.Replicas) {
+			// j=0 preserves the historic one-port-per-service slot.
+			ports[cname] = TunnelBasePort + i + j*n
 		}
 	}
 	return ports

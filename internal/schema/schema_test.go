@@ -662,19 +662,52 @@ func TestOwnbaseConfig_TunnelPorts_Replicas(t *testing.T) {
 		},
 	}
 	got := cfg.TunnelPorts()
-	// alpha first (sorted), one port; worker next, three consecutive ports.
+	// Strided: port(i,j) = base + i + j*N. alpha i=0; worker i=1; N=2.
 	if got["ownbase-alpha"] != schema.TunnelBasePort {
 		t.Errorf("alpha = %d, want %d", got["ownbase-alpha"], schema.TunnelBasePort)
 	}
-	for i := 0; i < 3; i++ {
-		name := schema.ContainerName("worker", &n, i)
-		want := schema.TunnelBasePort + 1 + i
+	for j := 0; j < 3; j++ {
+		name := schema.ContainerName("worker", &n, j)
+		want := schema.TunnelBasePort + 1 + j*2
 		if got[name] != want {
 			t.Errorf("%s = %d, want %d", name, got[name], want)
 		}
 	}
 	if len(got) != 4 {
 		t.Errorf("len = %d, want 4: %v", len(got), got)
+	}
+}
+
+func TestOwnbaseConfig_TunnelPorts_ReplicasDoNotShiftNeighbors(t *testing.T) {
+	// Adding replicas: to the middle service must not renumber zeta.
+	plain := schema.OwnbaseConfig{
+		Services: map[string]schema.ServiceDecl{
+			"alpha": {Repo: "a", Port: 3000},
+			"beta":  {Repo: "b", Port: 3000},
+			"zeta":  {Repo: "z", Port: 3000},
+		},
+	}
+	before := plain.TunnelPorts()
+
+	n := 4
+	withRep := schema.OwnbaseConfig{
+		Services: map[string]schema.ServiceDecl{
+			"alpha": {Repo: "a", Port: 3000},
+			"beta":  {Repo: "b", Port: 3000, Replicas: &n},
+			"zeta":  {Repo: "z", Port: 3000},
+		},
+	}
+	after := withRep.TunnelPorts()
+
+	if before["ownbase-alpha"] != after["ownbase-alpha"] {
+		t.Errorf("alpha shifted: %d → %d", before["ownbase-alpha"], after["ownbase-alpha"])
+	}
+	if before["ownbase-zeta"] != after["ownbase-zeta"] {
+		t.Errorf("zeta shifted: %d → %d", before["ownbase-zeta"], after["ownbase-zeta"])
+	}
+	// beta renames to beta-0; replica 0 keeps the old beta slot.
+	if after["ownbase-beta-0"] != before["ownbase-beta"] {
+		t.Errorf("beta-0 = %d, want former beta slot %d", after["ownbase-beta-0"], before["ownbase-beta"])
 	}
 }
 
