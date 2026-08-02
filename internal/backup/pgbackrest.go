@@ -34,6 +34,11 @@ type PGBackRest struct {
 	// Service is the ownbase.yaml key of the Postgres service.
 	Service string
 
+	// Replicas is Service's replicas: pointer (nil = unreplicated). Used so
+	// Container/Unit and DataVolume agree on primary naming when the
+	// provider is replicated (not a v1 goal, but names must stay consistent).
+	Replicas *int
+
 	// Stanza is the pgBackRest stanza name.
 	Stanza string
 
@@ -64,13 +69,17 @@ type PGBackRest struct {
 	// production restore stops them first, because a client holding a
 	// connection through a data-directory swap sees corruption, not an outage.
 	Dependants []string
+
+	// DependantUnits are the primary systemd unit names for Dependants, in
+	// the same order (ownbase-<dep>.service or ownbase-<dep>-0.service).
+	// Empty entries fall back to the unreplicated name for hand-built tests.
+	DependantUnits []string
 }
 
 // Container is the Podman container name for the Postgres service.
-// Replicated database providers are not a v1 goal; this always targets the
-// primary (replica 0 / unindexed) container.
+// Always the primary (replica 0 / unindexed) container.
 func (p PGBackRest) Container() string {
-	return schema.PrimaryContainerName(p.Service, nil)
+	return schema.PrimaryContainerName(p.Service, p.Replicas)
 }
 
 // Unit is the systemd unit for the Postgres service.
@@ -163,6 +172,7 @@ func FindPGBackRest(oc *schema.OwnbaseConfig) (PGBackRest, error) {
 
 		out := PGBackRest{
 			Service:   name,
+			Replicas:  svc.Replicas,
 			Stanza:    envValue(svc.Env, "PGBACKREST_STANZA"),
 			SuperUser: envValue(svc.Env, "POSTGRES_USER"),
 			Database:  envValue(svc.Env, "POSTGRES_DB"),
@@ -207,9 +217,12 @@ func FindPGBackRest(oc *schema.OwnbaseConfig) (PGBackRest, error) {
 			if dep == name {
 				continue
 			}
-			for _, req := range oc.Services[dep].Requires {
+			depSvc := oc.Services[dep]
+			for _, req := range depSvc.Requires {
 				if req == name {
 					out.Dependants = append(out.Dependants, dep)
+					out.DependantUnits = append(out.DependantUnits,
+						schema.PrimaryContainerName(dep, depSvc.Replicas)+".service")
 					break
 				}
 			}
