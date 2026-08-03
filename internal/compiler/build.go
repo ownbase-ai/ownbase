@@ -87,12 +87,16 @@ func build(in Input) RuntimeModel {
 	return model
 }
 
-// buildRoutes collapses containers that share a public domain into one
-// RouteModel with every replica as an upstream (sorted for determinism).
+// buildRoutes collapses replica containers of the same service that share a
+// public domain into one RouteModel with every replica as an upstream.
+// Upstreams are never merged across different services — two apps claiming
+// the same domain is a config error (schema validation) and must not become
+// a silent cross-app load-balance pool.
 func buildRoutes(containers []ContainerModel) []RouteModel {
-	// host → set of upstreams
+	// host → service + upstreams (service pins the first claimant)
 	type pair struct {
 		host      string
+		service   string
 		upstreams map[string]bool
 	}
 	byHost := make(map[string]*pair)
@@ -102,12 +106,22 @@ func buildRoutes(containers []ContainerModel) []RouteModel {
 			continue
 		}
 		upstream := fmt.Sprintf("%s:%d", c.Name, c.PublicPort)
+		// ServiceName is empty for core packages; fall back to container name
+		// so two unrelated empties never merge by accident.
+		svc := c.ServiceName
+		if svc == "" {
+			svc = c.Name
+		}
 		for _, domain := range c.PublicDomains {
 			p, ok := byHost[domain]
 			if !ok {
-				p = &pair{host: domain, upstreams: make(map[string]bool)}
+				p = &pair{host: domain, service: svc, upstreams: make(map[string]bool)}
 				byHost[domain] = p
 				hosts = append(hosts, domain)
+			} else if p.service != svc {
+				// Different service already owns this host — skip. Validate()
+				// rejects this config; defensive so a bypass cannot LB-merge.
+				continue
 			}
 			p.upstreams[upstream] = true
 		}

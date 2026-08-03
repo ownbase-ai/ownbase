@@ -1168,6 +1168,39 @@ func TestCompile_Replicas_MultiUpstream(t *testing.T) {
 	}
 }
 
+func TestCompile_Routes_DoNotMergeAcrossServices(t *testing.T) {
+	// Defensive: even if validation is bypassed, two services on one domain
+	// must not become a single reverse_proxy pool.
+	in := compiler.Input{
+		Config: &schema.OwnbaseConfig{
+			SchemaVersion: "v1",
+			Services: map[string]schema.ServiceDecl{
+				"alpha": {
+					Repo:   "https://github.com/example/alpha.git",
+					Port:   3000,
+					Domain: "shared.example.com",
+				},
+				"beta": {
+					Repo:   "https://github.com/example/beta.git",
+					Port:   4000,
+					Domain: "shared.example.com",
+				},
+			},
+		},
+	}
+	model := compiler.CompileToModel(in)
+	if len(model.Routes) != 1 {
+		t.Fatalf("routes = %d, want 1 (first claimant only)", len(model.Routes))
+	}
+	ups := model.Routes[0].Upstreams
+	if len(ups) != 1 {
+		t.Fatalf("upstreams = %v, want exactly one service (not a cross-app pool)", ups)
+	}
+	if ups[0] != "ownbase-alpha:3000" {
+		t.Errorf("upstream = %q, want ownbase-alpha:3000 (sorted first claimant)", ups[0])
+	}
+}
+
 func TestCompile_Replicas_OneStillIndexed(t *testing.T) {
 	in := compiler.Input{
 		Config: &schema.OwnbaseConfig{

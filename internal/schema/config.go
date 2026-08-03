@@ -814,6 +814,9 @@ func (c *OwnbaseConfig) Validate() error {
 	if err := validateReplicaNameCollisions(c.Services); err != nil {
 		return err
 	}
+	if err := validateDomainUniqueness(c.Services); err != nil {
+		return err
+	}
 	for name, job := range c.Jobs {
 		if err := job.validate(name, c.Services); err != nil {
 			return err
@@ -910,6 +913,31 @@ func validateReplicaNameCollisions(services map[string]ServiceDecl) error {
 				return fmt.Errorf("service %q: volume name %q collides with %s (rename a volumes: entry or adjust per_replica/replicas)", name, volName, other)
 			}
 			volClaimed[volName] = name
+		}
+	}
+	return nil
+}
+
+// validateDomainUniqueness rejects two services claiming the same hostname.
+// Public services would otherwise become one Caddy reverse_proxy pool;
+// tunnel-only services would fight over the same .localhost route. Matches
+// ownbasectl tunnel's "each domain → exactly one service" rule.
+func validateDomainUniqueness(services map[string]ServiceDecl) error {
+	claimed := make(map[string]string) // domain → service key
+	var names []string
+	for name := range services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		for _, d := range services[name].EffectiveDomains() {
+			if d == "" {
+				continue
+			}
+			if other, ok := claimed[d]; ok {
+				return fmt.Errorf("domain %q is claimed by both service %q and service %q (each hostname must belong to exactly one service)", d, other, name)
+			}
+			claimed[d] = name
 		}
 	}
 	return nil

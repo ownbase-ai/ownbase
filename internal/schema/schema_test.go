@@ -769,6 +769,23 @@ func TestValidate_ReplicasRange(t *testing.T) {
 	}
 }
 
+func TestValidate_DomainUniqueness(t *testing.T) {
+	cfg := &schema.OwnbaseConfig{
+		SchemaVersion: "v1",
+		Services: map[string]schema.ServiceDecl{
+			"alpha": {Repo: "https://github.com/org/a.git", Domain: "app.example.com", Port: 3000},
+			"beta":  {Repo: "https://github.com/org/b.git", Domain: "app.example.com", Port: 4000},
+		},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected domain collision error")
+	}
+	if !strings.Contains(err.Error(), "app.example.com") {
+		t.Errorf("error = %v, want domain name", err)
+	}
+}
+
 func TestBackupCoreConfig_Validate_InvalidInterval(t *testing.T) {
 	cfg := &schema.OwnbaseConfig{
 		SchemaVersion: "v1",
