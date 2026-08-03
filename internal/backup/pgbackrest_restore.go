@@ -242,8 +242,10 @@ func restoreIntoProduction(ctx context.Context, pb PGBackRest, opts RestoreOptio
 
 	for _, dep := range pb.Dependants {
 		progressf(opts.Progress, "==> Stopping %s (depends on %s)\n", dep, pb.Service)
-		if err := systemctlUnit(ctx, "stop", "ownbase-"+dep+".service"); err != nil {
-			return out, fmt.Errorf("stop dependant %s: %w", dep, err)
+	}
+	for _, unit := range dependantUnits(pb) {
+		if err := systemctlUnit(ctx, "stop", unit); err != nil {
+			return out, fmt.Errorf("stop dependant unit %s: %w", unit, err)
 		}
 	}
 
@@ -441,8 +443,10 @@ func (b *bringBack) dependants() {
 	b.startedDependants = true
 	for _, dep := range b.pb.Dependants {
 		progressf(b.progress, "==> Starting %s\n", dep)
-		if err := b.startUnit("ownbase-" + dep + ".service"); err != nil {
-			fmt.Fprintf(os.Stderr, "db restore: start dependant %s: %v\n", dep, err)
+	}
+	for _, unit := range dependantUnits(b.pb) {
+		if err := b.startUnit(unit); err != nil {
+			fmt.Fprintf(os.Stderr, "db restore: start dependant unit %s: %v\n", unit, err)
 		}
 	}
 }
@@ -491,8 +495,13 @@ func databaseServing(pb PGBackRest) bool {
 // servingProbeTimeout bounds the "is it back" probe during cleanup.
 const servingProbeTimeout = 15 * time.Second
 
-// dependantUnits names the units an operator would start by hand.
+// dependantUnits names every unit that must stop/start for Dependants —
+// all replica instances when DependantUnits is populated, otherwise the
+// unreplicated ownbase-<dep>.service names (hand-built tests).
 func dependantUnits(pb PGBackRest) []string {
+	if len(pb.DependantUnits) > 0 {
+		return append([]string(nil), pb.DependantUnits...)
+	}
 	units := make([]string, 0, len(pb.Dependants))
 	for _, dep := range pb.Dependants {
 		units = append(units, "ownbase-"+dep+".service")

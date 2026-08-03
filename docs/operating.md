@@ -25,8 +25,10 @@
 | See what's deployed and healthy | `ownbasectl status <base>` (declared services: `ownbase.yaml`) |
 | Add or change a service | `ownbasectl service add/update/remove <base> <name> ...` |
 | Deploy / update a service to a ref | `ownbasectl deploy <base> <name> --ref <ref>` |
+| Scale a worker pool | `ownbasectl service update <base> <name> --replicas N` (concurrency on one machine, not HA; see [ownbase-yaml.md](ownbase-yaml.md#replicas-replicas)) |
+| Inspect one worker over tunnel | `ownbasectl tunnel <base>` — for a replicated service this is **replica 0** only |
 | See what's behind | `ownbasectl updates <base>` |
-| Set a secret | `ownbasectl secrets set <base> <service> KEY=value` |
+| Set a secret | `ownbasectl secrets set <base> <service> KEY=value` (one file shared by all replicas of that service) |
 | Full health check | `ownbasectl checkup <base>` |
 | Get a shell on the Base | `ownbasectl ssh <base>` (recorded; never plain `ssh`) |
 | Run one command on the Base | `ownbasectl ssh <base> -- <command>` |

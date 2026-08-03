@@ -57,6 +57,8 @@ All external traffic routes to the declared `port:` via Caddy. No routing config
 
 Persistent data is stored in a Podman named volume `ownbase-<name>-data`, mounted at `data_path:` (defaults to `/data`). Declare `data_path:` when the service writes data elsewhere.
 
+A service may set `replicas: N` to run N indexed containers (`ownbase-<name>-0` … `N-1`) sharing one image and one secrets file. The **capability name remains the service key** — consumers still `requires: <name>`, not a member. Volumes default to per-replica; set `per_replica: false` for a shared mount. Routing and session affinity stay outside OwnBase. Full details: [ownbase-yaml.md](ownbase-yaml.md#replicas-replicas).
+
 ---
 
 ## The Dockerfile is the build interface

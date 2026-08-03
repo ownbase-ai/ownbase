@@ -49,6 +49,7 @@ type serviceFieldFlags struct {
 	requires        []string
 	env             []string
 	addCapabilities []string
+	replicas        int
 }
 
 func (f *serviceFieldFlags) register(cmd *cobra.Command) {
@@ -66,6 +67,7 @@ func (f *serviceFieldFlags) register(cmd *cobra.Command) {
 	fl.StringSliceVar(&f.requires, "requires", nil, "capability (service key) this service depends on; repeatable; replaces the full list")
 	fl.StringArrayVar(&f.env, "env", nil, "KEY=VALUE static environment variable to set; repeatable")
 	fl.StringSliceVar(&f.addCapabilities, "add-capabilities", nil, "Linux capability to add back after the default DropCapability=ALL, e.g. NET_BIND_SERVICE for a service that binds directly to a port below 1024; repeatable, replaces the full list; only set what the service genuinely needs")
+	fl.IntVar(&f.replicas, "replicas", 0, "run N indexed containers (1..64); omitted = single unindexed container; volumes default to per-replica when set")
 }
 
 func newServiceAddCmd() *cobra.Command {
@@ -108,7 +110,7 @@ func runServiceAdd(base, name string, f serviceFieldFlags, jsonOut bool) error {
 		if _, exists := cfg.Services[name]; exists {
 			return "", "", fmt.Errorf("service %q already exists on %q — use 'ownbasectl service update' to change it", name, base)
 		}
-		cfg.Services[name] = schema.ServiceDecl{
+		decl := schema.ServiceDecl{
 			Repo:            f.repo,
 			Ref:             f.ref,
 			Dockerfile:      f.dockerfile,
@@ -123,6 +125,11 @@ func runServiceAdd(base, name string, f serviceFieldFlags, jsonOut bool) error {
 			Env:             env,
 			AddCapabilities: f.addCapabilities,
 		}
+		if f.replicas > 0 {
+			r := f.replicas
+			decl.Replicas = &r
+		}
+		cfg.Services[name] = decl
 		content, err := schema.MarshalConfig(cfg)
 		if err != nil {
 			return "", "", fmt.Errorf("encode ownbase.yaml: %w", err)
@@ -260,6 +267,14 @@ func runServiceUpdate(cmd *cobra.Command, base, name string, f serviceFieldFlags
 				return "", "", err
 			}
 			decl.Env = mergeEnvPairs(decl.Env, newEnv)
+		}
+		if changed("replicas") {
+			if f.replicas <= 0 {
+				decl.Replicas = nil
+			} else {
+				r := f.replicas
+				decl.Replicas = &r
+			}
 		}
 		cfg.Services[name] = decl
 		content, err := schema.MarshalConfig(cfg)

@@ -56,7 +56,8 @@ type ConfigSourceStatus struct {
 type ServiceStatus struct {
 	Name string `json:"name"`
 
-	// Running is true when the container is up.
+	// Running is true when every container for this service is up
+	// (all replicas when replicas: is set).
 	Running bool `json:"running"`
 	// Healthy is true when Running and the last health probe passed.
 	// V1: same as Running; future: driven by the health probe result.
@@ -64,6 +65,14 @@ type ServiceStatus struct {
 	// HealthProbeResult is the last health probe outcome, if any.
 	// Empty means no probe has run yet. (M12 Tier-2 seam.)
 	HealthProbeResult string `json:"health_probe_result,omitempty"`
+
+	// Replicas is the declared replica count when replicas: is set.
+	// Zero/omitted means a single unindexed container (replicas: absent).
+	Replicas int `json:"replicas,omitempty"`
+	// RunningReplicas is how many of the service's containers are up.
+	// Nil/omitted when the service is not replicated; a pointer so a fully
+	// stopped pool still serializes as 0 rather than vanishing from JSON.
+	RunningReplicas *int `json:"running_replicas,omitempty"`
 
 	// Repo is the external git URL (repo:) the service builds from.
 	Repo string `json:"repo,omitempty"`

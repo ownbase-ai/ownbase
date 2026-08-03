@@ -538,8 +538,11 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 			}
 
 			// Per-image findings: a service with fixable CVEs, or a scan that
-			// failed (unscanned ≠ clean).
+			// failed (unscanned ≠ clean). Vulnscan labels images by container
+			// name (ownbase-worker-0); map back to the services: key before
+			// looking up drift / emitting deploy actions.
 			imagesRaw, _ := vulns["images"].([]any)
+			seenImageSvc := make(map[string]bool) // dedupe N replica images → one finding
 			for _, raw := range imagesRaw {
 				img, ok := raw.(map[string]any)
 				if !ok {
@@ -602,13 +605,17 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 				// actually move the pin. If drift says up_to_date (or the
 				// suggested ref matches the pinned one), deploy is a no-op and
 				// the finding is not finishable — leave it off Overview.
-				svcKey := strings.TrimPrefix(svc, "ownbase-")
+				svcKey := serviceKeyFromContainerLabel(s, svc)
+				if seenImageSvc[svcKey] {
+					continue
+				}
 				suggested, canDeploy := suggestedDeployRef(s, svcKey)
 				if !canDeploy {
 					continue
 				}
+				seenImageSvc[svcKey] = true
 				findings = append(findings, checkupFinding{
-					Summary: fmt.Sprintf("%d CVE(s) with a patch in image for %q", n, svc),
+					Summary: fmt.Sprintf("%d CVE(s) with a patch in image for %q", n, svcKey),
 					Fix:     fmt.Sprintf("ownbasectl deploy %s %s --ref %s", base, svcKey, suggested),
 					Action: checkupAction{
 						Kind:         actionForm,
@@ -719,6 +726,70 @@ func deploySuggestionFromDrift(d map[string]any) (ref string, canDeploy bool) {
 		return suggested, false
 	}
 	return suggested, true
+}
+
+// serviceKeyFromContainerLabel maps a vulnscan image label (container name,
+// e.g. "ownbase-worker-0" or "ownbase-crm") to the ownbase.yaml services:
+// key used by deploy and updates.drift ("worker", "crm").
+//
+// Replica containers are ownbase-<svc>-<i>; a bare TrimPrefix would yield
+// "worker-0", which never matches drift. Prefer an exact known service key,
+// then strip a trailing -N when the base name is a known service.
+func serviceKeyFromContainerLabel(status map[string]any, label string) string {
+	key := strings.TrimPrefix(label, "ownbase-")
+	if key == "" {
+		return label
+	}
+	if knownServiceKey(status, key) {
+		return key
+	}
+	// ownbase-worker-0 → try "worker" when that service exists.
+	if i := strings.LastIndex(key, "-"); i > 0 {
+		suf := key[i+1:]
+		allDigits := suf != ""
+		for _, r := range suf {
+			if r < '0' || r > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if allDigits {
+			base := key[:i]
+			if knownServiceKey(status, base) {
+				return base
+			}
+		}
+	}
+	return key
+}
+
+// knownServiceKey is true when name appears in updates.drift or status.services.
+func knownServiceKey(status map[string]any, name string) bool {
+	if updates, _ := status["updates"].(map[string]any); updates != nil {
+		if drift, _ := updates["drift"].([]any); drift != nil {
+			for _, raw := range drift {
+				d, ok := raw.(map[string]any)
+				if !ok {
+					continue
+				}
+				if svc, _ := d["service"].(string); svc == name {
+					return true
+				}
+			}
+		}
+	}
+	if services, _ := status["services"].([]any); services != nil {
+		for _, raw := range services {
+			svc, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			if n, _ := svc["name"].(string); n == name {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // suggestedDeployRef picks a default --ref for a service from updates.drift.

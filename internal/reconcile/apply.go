@@ -36,9 +36,20 @@ type Applier interface {
 // Apply is idempotent when the plan is empty (returns nil immediately).
 // The caller is responsible for passing a non-nil checkpoint, applier, and
 // log; use authz.NopAuditLog() when audit recording is not required.
+// applySession is an optional extension for appliers that need per-plan
+// setup (e.g. clearing a build cache so N replica starts share one image
+// build). Detected by type assertion so the Applier interface stays small.
+type applySession interface {
+	BeginApply()
+}
+
 func Apply(plan Plan, checkpoint authz.Checkpoint, applier Applier, log authz.AuditLogger) error {
 	if plan.IsEmpty() {
 		return nil
+	}
+
+	if s, ok := applier.(applySession); ok {
+		s.BeginApply()
 	}
 
 	applied := make([]PlannedAction, 0, len(plan.Actions))

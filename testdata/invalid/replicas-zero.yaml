@@ -1,0 +1,6 @@
+schema_version: v1
+
+services:
+  worker:
+    repo: https://github.com/example/worker.git
+    replicas: 0

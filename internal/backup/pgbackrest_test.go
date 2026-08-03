@@ -62,6 +62,42 @@ func TestFindPGBackRest_FindsPostgresRepoAndDependants(t *testing.T) {
 	if pb.Container() != "ownbase-postgres" || pb.Unit() != "ownbase-postgres.service" {
 		t.Errorf("Container/Unit = %q/%q", pb.Container(), pb.Unit())
 	}
+	if len(pb.DependantUnits) != 1 || pb.DependantUnits[0] != "ownbase-api.service" {
+		t.Errorf("DependantUnits = %v, want [ownbase-api.service]", pb.DependantUnits)
+	}
+}
+
+func TestFindPGBackRest_ReplicatedPrimaryNames(t *testing.T) {
+	// Replicating Postgres is not a v1 goal, but Container/DataVolume must
+	// still agree on primary naming if someone sets replicas:.
+	n := 2
+	oc := pgConfig()
+	pg := oc.Services["postgres"]
+	pg.Replicas = &n
+	pg.DataPath = DefaultPostgresDataDir // so DataVolume is discovered
+	oc.Services["postgres"] = pg
+	api := oc.Services["api"]
+	api.Replicas = &n
+	oc.Services["api"] = api
+
+	pb, err := FindPGBackRest(oc)
+	if err != nil {
+		t.Fatalf("FindPGBackRest: %v", err)
+	}
+	if pb.Container() != "ownbase-postgres-0" {
+		t.Errorf("Container = %q, want ownbase-postgres-0", pb.Container())
+	}
+	if pb.Unit() != "ownbase-postgres-0.service" {
+		t.Errorf("Unit = %q, want ownbase-postgres-0.service", pb.Unit())
+	}
+	if pb.DataVolume != "ownbase-postgres-data-0" {
+		t.Errorf("DataVolume = %q, want ownbase-postgres-data-0", pb.DataVolume)
+	}
+	// Every api replica unit must stop/start — not only primary.
+	wantUnits := []string{"ownbase-api-0.service", "ownbase-api-1.service"}
+	if len(pb.DependantUnits) != 2 || pb.DependantUnits[0] != wantUnits[0] || pb.DependantUnits[1] != wantUnits[1] {
+		t.Errorf("DependantUnits = %v, want %v", pb.DependantUnits, wantUnits)
+	}
 }
 
 // A service called postgres that archives nowhere has no point-in-time recovery

@@ -607,13 +607,15 @@ func TestLinuxArchForHost(t *testing.T) {
 
 func TestCheckupFindings_ConfigNotSetUp(t *testing.T) {
 	// Deliberately omit "config" — a fresh Base after the wizard.
+	// scanned_at must be fresh so the 48h stale-scan rule does not fire.
+	fresh := time.Now().UTC().Format(time.RFC3339)
 	body := []byte(`{
 		"security": {
 			"backup_restorable": true,
 			"vulns": {
 				"available": true,
 				"trivy_installed": true,
-				"scanned_at": "2026-07-31T12:00:00Z",
+				"scanned_at": "` + fresh + `",
 				"host": {"critical": 0, "high": 0}
 			}
 		}
@@ -629,13 +631,14 @@ func TestCheckupFindings_ConfigNotSetUp(t *testing.T) {
 
 func TestCheckupFindings_BackupRequiresConfig(t *testing.T) {
 	// No config key — backup setup cannot finish, so it must not appear.
+	fresh := time.Now().UTC().Format(time.RFC3339)
 	body := []byte(`{
 		"security": {
 			"backup_restorable": false,
 			"vulns": {
 				"available": true,
 				"trivy_installed": true,
-				"scanned_at": "2026-07-31T12:00:00Z",
+				"scanned_at": "` + fresh + `",
 				"host": {"critical": 0, "high": 0}
 			}
 		}
@@ -652,6 +655,7 @@ func TestCheckupFindings_BackupRequiresConfig(t *testing.T) {
 }
 
 func TestCheckupFindings_CoreLocalImageUsesUpgrade(t *testing.T) {
+	fresh := time.Now().UTC().Format(time.RFC3339)
 	body := []byte(`{
 		"config": {"repo_url": "git@example.com/x.git"},
 		"version": "v0.4.0",
@@ -660,7 +664,7 @@ func TestCheckupFindings_CoreLocalImageUsesUpgrade(t *testing.T) {
 			"vulns": {
 				"available": true,
 				"trivy_installed": true,
-				"scanned_at": "2026-07-31T12:00:00Z",
+				"scanned_at": "` + fresh + `",
 				"host": {"critical": 0, "high": 0},
 				"images": [{
 					"service": "ownbase-core-caddy",
@@ -683,6 +687,7 @@ func TestCheckupFindings_CoreLocalImageUsesUpgrade(t *testing.T) {
 // registry Caddy image (first local build pending). Must not stuck-loop on
 // self-update.
 func TestCheckupFindings_CoreRegistryImageWithVersionUsesUpgrade(t *testing.T) {
+	fresh := time.Now().UTC().Format(time.RFC3339)
 	body := []byte(`{
 		"config": {"repo_url": "git@example.com/x.git"},
 		"version": "v0.4.0",
@@ -691,7 +696,7 @@ func TestCheckupFindings_CoreRegistryImageWithVersionUsesUpgrade(t *testing.T) {
 			"vulns": {
 				"available": true,
 				"trivy_installed": true,
-				"scanned_at": "2026-07-31T12:00:00Z",
+				"scanned_at": "` + fresh + `",
 				"host": {"critical": 0, "high": 0},
 				"images": [{
 					"service": "ownbase-core-caddy",
@@ -712,6 +717,7 @@ func TestCheckupFindings_CoreRegistryImageWithVersionUsesUpgrade(t *testing.T) {
 
 func TestCheckupFindings_CoreOldDaemonNeedsSelfUpdate(t *testing.T) {
 	// No status.version — pre-migration daemon.
+	fresh := time.Now().UTC().Format(time.RFC3339)
 	body := []byte(`{
 		"config": {"repo_url": "git@example.com/x.git"},
 		"security": {
@@ -719,7 +725,7 @@ func TestCheckupFindings_CoreOldDaemonNeedsSelfUpdate(t *testing.T) {
 			"vulns": {
 				"available": true,
 				"trivy_installed": true,
-				"scanned_at": "2026-07-31T12:00:00Z",
+				"scanned_at": "` + fresh + `",
 				"host": {"critical": 0, "high": 0},
 				"images": [{
 					"service": "ownbase-core-caddy",
@@ -739,6 +745,7 @@ func TestCheckupFindings_CoreOldDaemonNeedsSelfUpdate(t *testing.T) {
 }
 
 func TestCheckupFindings_ImageCVESkippedWhenUpToDate(t *testing.T) {
+	fresh := time.Now().UTC().Format(time.RFC3339)
 	body := []byte(`{
 		"config": {"repo_url": "git@example.com/x.git"},
 		"security": {
@@ -746,7 +753,7 @@ func TestCheckupFindings_ImageCVESkippedWhenUpToDate(t *testing.T) {
 			"vulns": {
 				"available": true,
 				"trivy_installed": true,
-				"scanned_at": "2026-07-31T12:00:00Z",
+				"scanned_at": "` + fresh + `",
 				"host": {"critical": 0, "high": 0},
 				"images": [{
 					"service": "ownbase-crm",
@@ -762,6 +769,55 @@ func TestCheckupFindings_ImageCVESkippedWhenUpToDate(t *testing.T) {
 		if strings.Contains(f.Summary, "crm") || f.Action.Form == "deploy" {
 			t.Fatalf("up_to_date service must not get a deploy finding: %+v", findings)
 		}
+	}
+}
+
+func TestCheckupFindings_ReplicaImageCVEMapsToServiceKey(t *testing.T) {
+	// Vulnscan labels by container name ownbase-worker-0; deploy must use
+	// the services: key "worker", not "worker-0".
+	fresh := time.Now().UTC().Format(time.RFC3339)
+	body := []byte(`{
+		"config": {"repo_url": "git@example.com/x.git"},
+		"security": {
+			"backup_restorable": true,
+			"vulns": {
+				"available": true,
+				"trivy_installed": true,
+				"scanned_at": "` + fresh + `",
+				"host": {"critical": 0, "high": 0},
+				"images": [
+					{
+						"service": "ownbase-worker-0",
+						"image": "localhost/ownbase-worker:local",
+						"summary": {"critical": 0, "high": 2, "fixable_critical": 0, "fixable_high": 2}
+					},
+					{
+						"service": "ownbase-worker-1",
+						"image": "localhost/ownbase-worker:local",
+						"summary": {"critical": 0, "high": 2, "fixable_critical": 0, "fixable_high": 2}
+					}
+				]
+			}
+		},
+		"updates": {"drift": [{"service": "worker", "ref": "aaa", "branch": "main", "commits_behind": 3, "up_to_date": false}]},
+		"services": [{"name": "worker", "replicas": 2}]
+	}`)
+	findings := checkupFindings("mybase", body)
+	var cveDeploy int
+	for i := range findings {
+		f := findings[i]
+		if f.Action.Form != "deploy" || f.Action.Service != "worker" {
+			continue
+		}
+		if strings.Contains(f.Summary, "CVE") {
+			cveDeploy++
+			if !strings.Contains(f.Fix, "deploy mybase worker ") {
+				t.Errorf("Fix = %q, want deploy mybase worker …", f.Fix)
+			}
+		}
+	}
+	if cveDeploy != 1 {
+		t.Fatalf("expected exactly 1 CVE deploy finding for worker (deduped replicas), got %d in %+v", cveDeploy, findings)
 	}
 }
 

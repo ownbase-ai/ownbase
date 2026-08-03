@@ -82,23 +82,26 @@ func BuildPaths(ctx context.Context, oc *schema.OwnbaseConfig, resolver VolumeRe
 				if len(v.Backup) == 0 {
 					continue
 				}
-				volName := fmt.Sprintf("ownbase-%s-%s", name, v.Name)
-				mp, err := resolver.Resolve(ctx, volName)
-				if err != nil {
-					return nil, fmt.Errorf("backup: resolve volume %s for service %s: %w", volName, name, err)
-				}
-				for _, rel := range v.Backup {
-					paths = append(paths, resolveRelative(mp, rel))
+				for _, volName := range volumeInstances(name, svc, v) {
+					mp, err := resolver.Resolve(ctx, volName)
+					if err != nil {
+						return nil, fmt.Errorf("backup: resolve volume %s for service %s: %w", volName, name, err)
+					}
+					for _, rel := range v.Backup {
+						paths = append(paths, resolveRelative(mp, rel))
+					}
 				}
 			}
 		} else {
 			// Backward compat: single data volume, whole mountpoint.
-			volName := fmt.Sprintf("ownbase-%s-data", name)
-			mp, err := resolver.Resolve(ctx, volName)
-			if err != nil {
-				return nil, fmt.Errorf("backup: resolve volume %s for service %s: %w", volName, name, err)
+			// When replicated, every per-replica data volume is included.
+			for _, volName := range dataVolumeInstances(name, svc) {
+				mp, err := resolver.Resolve(ctx, volName)
+				if err != nil {
+					return nil, fmt.Errorf("backup: resolve volume %s for service %s: %w", volName, name, err)
+				}
+				paths = append(paths, mp)
 			}
-			paths = append(paths, mp)
 		}
 	}
 
@@ -113,6 +116,33 @@ func BuildPaths(ctx context.Context, oc *schema.OwnbaseConfig, resolver VolumeRe
 	}
 
 	return dedup(paths), nil
+}
+
+// volumeInstances returns every Podman volume name for one VolumeDecl,
+// expanding per-replica copies when the service is replicated.
+func volumeInstances(service string, svc schema.ServiceDecl, v schema.VolumeDecl) []string {
+	perReplica := svc.VolumeIsPerReplica(v)
+	if !perReplica {
+		return []string{schema.VolumeName(service, v.Name, svc.Replicas, 0, false)}
+	}
+	out := make([]string, svc.ReplicaCount())
+	for i := 0; i < svc.ReplicaCount(); i++ {
+		out[i] = schema.VolumeName(service, v.Name, svc.Replicas, i, true)
+	}
+	return out
+}
+
+// dataVolumeInstances is volumeInstances for the data_path: shorthand.
+func dataVolumeInstances(service string, svc schema.ServiceDecl) []string {
+	perReplica := svc.DataPathIsPerReplica()
+	if !perReplica {
+		return []string{schema.DataVolumeName(service, svc.Replicas, 0, false)}
+	}
+	out := make([]string, svc.ReplicaCount())
+	for i := 0; i < svc.ReplicaCount(); i++ {
+		out[i] = schema.DataVolumeName(service, svc.Replicas, i, true)
+	}
+	return out
 }
 
 // resolveRelative converts a backup entry relative to a volume mountpoint into

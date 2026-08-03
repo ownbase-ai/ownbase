@@ -360,3 +360,34 @@ func TestBuildPaths_Deterministic(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildPaths_PerReplicaVolumes(t *testing.T) {
+	n := 2
+	shared := false
+	oc := &schema.OwnbaseConfig{
+		SchemaVersion: "v1",
+		Services: map[string]schema.ServiceDecl{
+			"worker": {
+				Repo:     "local/worker",
+				Replicas: &n,
+				Volumes: []schema.VolumeDecl{
+					{Name: "state", Mount: "/state", Backup: []string{"."}},
+					{Name: "shared", Mount: "/shared", Backup: []string{"."}, PerReplica: &shared},
+				},
+			},
+		},
+	}
+	resolver := fakeResolver{
+		"ownbase-worker-state-0":  "/vol/state-0",
+		"ownbase-worker-state-1":  "/vol/state-1",
+		"ownbase-worker-shared":   "/vol/shared",
+		"ownbase-core-caddy-data": "/vol/caddy",
+	}
+	paths, err := backup.BuildPaths(context.Background(), oc, resolver)
+	if err != nil {
+		t.Fatalf("BuildPaths: %v", err)
+	}
+	mustContain(t, paths, "/vol/state-0")
+	mustContain(t, paths, "/vol/state-1")
+	mustContain(t, paths, "/vol/shared")
+}

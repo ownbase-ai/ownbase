@@ -141,3 +141,99 @@ func TestTopoSort_CycleDetected(t *testing.T) {
 		t.Errorf("expected 'cycle' in error, got: %v", err)
 	}
 }
+
+func TestSortContainerNames_NumericReplicaOrder(t *testing.T) {
+	names := []string{
+		"ownbase-worker-10",
+		"ownbase-worker-2",
+		"ownbase-worker-0",
+		"ownbase-alpha",
+		"ownbase-worker-1",
+	}
+	sortContainerNames(names)
+	want := []string{
+		"ownbase-alpha",
+		"ownbase-worker-0",
+		"ownbase-worker-1",
+		"ownbase-worker-2",
+		"ownbase-worker-10",
+	}
+	for i := range want {
+		if names[i] != want[i] {
+			t.Fatalf("sortContainerNames = %v, want %v", names, want)
+		}
+	}
+}
+
+func TestTopoSort_ReplicatedProvider(t *testing.T) {
+	// consumer requires provider; provider has two replica containers.
+	// Both provider replicas must start before the consumer.
+	// Ownership is # Service= on replica units.
+	containers := map[string]string{
+		"ownbase-provider-0": "ownbase-provider-0.container",
+		"ownbase-provider-1": "ownbase-provider-1.container",
+		"ownbase-consumer":   "ownbase-consumer.container",
+	}
+	contents := map[string]string{
+		"ownbase-provider-0.container": "# Service=provider\n",
+		"ownbase-provider-1.container": "# Service=provider\n",
+		"ownbase-consumer.container":   "# Requires=provider\n",
+	}
+	result, err := topoSortContainers(containers, contents)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	pos := map[string]int{}
+	for i, name := range result {
+		pos[name] = i
+	}
+	if pos["ownbase-provider-0"] > pos["ownbase-consumer"] {
+		t.Errorf("provider-0 after consumer: %v", result)
+	}
+	if pos["ownbase-provider-1"] > pos["ownbase-consumer"] {
+		t.Errorf("provider-1 after consumer: %v", result)
+	}
+}
+
+func TestTopoSort_UnrelatedServiceWithDigitSuffix(t *testing.T) {
+	// Unreplicated "web" and a separate service "web-0" must not be linked
+	// by requires: web — ownbase-web-0 is not a replica of web.
+	containers := map[string]string{
+		"ownbase-web":   "ownbase-web.container",
+		"ownbase-web-0": "ownbase-web-0.container",
+		"ownbase-app":   "ownbase-app.container",
+	}
+	contents := map[string]string{
+		"ownbase-web.container":   "# Generated\n",
+		"ownbase-web-0.container": "# Generated\n",
+		"ownbase-app.container":   "# Requires=web\n",
+	}
+	result, err := topoSortContainers(containers, contents)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	pos := map[string]int{}
+	for i, name := range result {
+		pos[name] = i
+	}
+	if pos["ownbase-web"] > pos["ownbase-app"] {
+		t.Errorf("web should start before app: %v", result)
+	}
+	// web-0 has no edge to app; either order relative to app is fine.
+	// The critical check: web-0 must NOT be required before app solely
+	// because of the digit suffix. Detect by ensuring a cycle is not
+	// invented if app required web-0 and web required something else —
+	// here just assert deps only include exact web via empty plan shape:
+	// if web-0 were incorrectly a provider of web, and we add reverse
+	// edge, we'd cycle. Simpler: rebuild deps and count providers of app.
+	deps := map[string]bool{}
+	// Re-run the ownership helper via a mini graph: app should depend only on web.
+	for name := range containers {
+		if containerBelongsToService(name, contents[containers[name]], "web") {
+			deps[name] = true
+		}
+	}
+	if !deps["ownbase-web"] || deps["ownbase-web-0"] || len(deps) != 1 {
+		t.Errorf("belongs-to web = %v, want only ownbase-web", deps)
+	}
+}

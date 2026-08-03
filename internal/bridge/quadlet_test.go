@@ -18,6 +18,16 @@ func TestParseActualHostPorts_TypicalGrepOutput(t *testing.T) {
 	}
 }
 
+func TestParseActualHostPorts_ReplicaUnitStem(t *testing.T) {
+	out := `/etc/containers/systemd/ownbase-worker-0.container:PublishPort=127.0.0.1:41001:4096
+/etc/containers/systemd/ownbase-worker-1.container:PublishPort=127.0.0.1:41002:4096`
+	got := bridge.ParseActualHostPorts(out)
+	want := map[string]int{"worker-0": 41001, "worker-1": 41002}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ParseActualHostPorts() = %v, want %v", got, want)
+	}
+}
+
 func TestParseActualHostPorts_Empty(t *testing.T) {
 	if got := bridge.ParseActualHostPorts(""); len(got) != 0 {
 		t.Errorf("expected no entries for empty input, got %v", got)

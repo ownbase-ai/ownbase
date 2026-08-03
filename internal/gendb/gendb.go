@@ -119,7 +119,7 @@ func Ensure(ctx context.Context, cfg *schema.OwnbaseConfig, opts Config) (Result
 		}
 
 		conn := connectionFor(ref, provider)
-		container := containerName(ref.Service)
+		container := schema.PrimaryContainerName(ref.Service, provider.Replicas)
 
 		password, err := opts.readSecret(ref.Service, postgresPasswordKey)
 		if err != nil {
@@ -185,7 +185,9 @@ type connection struct {
 
 func connectionFor(ref schema.DatabaseRef, provider schema.ServiceDecl) connection {
 	conn := connection{
-		Host: containerName(ref.Service),
+		// Primary container: replica 0 when the provider is replicated.
+		// Replicating a database provider is not a v1 goal.
+		Host: schema.PrimaryContainerName(ref.Service, provider.Replicas),
 		Port: provider.Port,
 		User: envValue(provider.Env, "POSTGRES_USER"),
 	}
@@ -203,8 +205,6 @@ func connectionFor(ref schema.DatabaseRef, provider schema.ServiceDecl) connecti
 	}
 	return conn
 }
-
-func containerName(service string) string { return "ownbase-" + service }
 
 // ensureDatabase creates the database if it is absent, and reports whether it
 // had to. The existence check is separate from the create so that the common

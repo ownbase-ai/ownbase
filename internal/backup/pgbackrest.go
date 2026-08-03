@@ -34,6 +34,11 @@ type PGBackRest struct {
 	// Service is the ownbase.yaml key of the Postgres service.
 	Service string
 
+	// Replicas is Service's replicas: pointer (nil = unreplicated). Used so
+	// Container/Unit and DataVolume agree on primary naming when the
+	// provider is replicated (not a v1 goal, but names must stay consistent).
+	Replicas *int
+
 	// Stanza is the pgBackRest stanza name.
 	Stanza string
 
@@ -60,19 +65,28 @@ type PGBackRest struct {
 	// can say which path was looked for rather than which one is usual.
 	DataDir string
 
-	// Dependants are the services that declare requires: on Service. A
-	// production restore stops them first, because a client holding a
-	// connection through a data-directory swap sees corruption, not an outage.
+	// Dependants are the services that declare requires: on Service (keys
+	// for progress messages). A production restore stops them first, because
+	// a client holding a connection through a data-directory swap sees
+	// corruption, not an outage.
 	Dependants []string
+
+	// DependantUnits are every systemd unit that must stop/start for those
+	// dependants — all replica instances, not only primary. Flat list in
+	// stable service then index order. When empty, dependantUnits falls back
+	// to unreplicated names derived from Dependants (hand-built tests).
+	DependantUnits []string
 }
 
 // Container is the Podman container name for the Postgres service.
-func (p PGBackRest) Container() string { return "ownbase-" + p.Service }
+// Always the primary (replica 0 / unindexed) container.
+func (p PGBackRest) Container() string {
+	return schema.PrimaryContainerName(p.Service, p.Replicas)
+}
 
 // Unit is the systemd unit for the Postgres service.
 func (p PGBackRest) Unit() string {
-	return "ownbase-" + p.Service + ".service"
-
+	return p.Container() + ".service"
 }
 
 // database returns the database to connect to, defaulting to the superuser's
@@ -103,19 +117,26 @@ type volumeMount struct{ Volume, Mount string }
 // serviceVolumeMounts lists a service's volumes as the compiler creates them,
 // including the implicit "ownbase-<name>-data" that a service declaring no
 // volumes: gets at its data_path. Reading the declaration directly would miss
-// that one, which is the shape most Bases have.
+// that one, which is the shape most Bases have. For replicated services only
+// the primary (index 0 / shared) volumes are returned — pgBackRest targets
+// the primary container.
 func serviceVolumeMounts(name string, svc schema.ServiceDecl) []volumeMount {
 	if len(svc.Volumes) == 0 {
 		mount := svc.DataPath
 		if mount == "" {
 			mount = "/data"
 		}
-		return []volumeMount{{Volume: fmt.Sprintf("ownbase-%s-data", name), Mount: mount}}
+		perReplica := svc.DataPathIsPerReplica()
+		return []volumeMount{{
+			Volume: schema.DataVolumeName(name, svc.Replicas, 0, perReplica),
+			Mount:  mount,
+		}}
 	}
 	out := make([]volumeMount, 0, len(svc.Volumes))
 	for _, v := range svc.Volumes {
+		perReplica := svc.VolumeIsPerReplica(v)
 		out = append(out, volumeMount{
-			Volume: fmt.Sprintf("ownbase-%s-%s", name, v.Name),
+			Volume: schema.VolumeName(name, v.Name, svc.Replicas, 0, perReplica),
 			Mount:  v.Mount,
 		})
 	}
@@ -153,6 +174,7 @@ func FindPGBackRest(oc *schema.OwnbaseConfig) (PGBackRest, error) {
 
 		out := PGBackRest{
 			Service:   name,
+			Replicas:  svc.Replicas,
 			Stanza:    envValue(svc.Env, "PGBACKREST_STANZA"),
 			SuperUser: envValue(svc.Env, "POSTGRES_USER"),
 			Database:  envValue(svc.Env, "POSTGRES_DB"),
@@ -197,9 +219,15 @@ func FindPGBackRest(oc *schema.OwnbaseConfig) (PGBackRest, error) {
 			if dep == name {
 				continue
 			}
-			for _, req := range oc.Services[dep].Requires {
+			depSvc := oc.Services[dep]
+			for _, req := range depSvc.Requires {
 				if req == name {
 					out.Dependants = append(out.Dependants, dep)
+					// Stop/start every replica — leaving any running keeps DB
+					// connections through the data-directory swap.
+					for _, cname := range schema.ContainerNames(dep, depSvc.Replicas) {
+						out.DependantUnits = append(out.DependantUnits, cname+".service")
+					}
 					break
 				}
 			}

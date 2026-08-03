@@ -1,0 +1,8 @@
+schema_version: v1
+
+services:
+  web:
+    repo: https://github.com/example/web.git
+    replicas: 2
+  web-0:
+    repo: https://github.com/example/other.git

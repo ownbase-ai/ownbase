@@ -122,6 +122,18 @@ func renderContainer(c ContainerModel) string {
 		fmt.Fprintf(&b, "# JobService=%s\n", c.JobService)
 	}
 
+	// Replica provenance — only on indexed replica units so non-replicated
+	// configs stay byte-identical. # Service= tells injectSecrets which
+	// secrets file to open (ownbase-opencode-2 → opencode.yaml.age).
+	// # BuildImage= tells buildImage to tag the shared service image once
+	// rather than once per replica container name.
+	if c.ReplicaIndex >= 0 && c.ServiceName != "" {
+		fmt.Fprintf(&b, "# Service=%s\n", c.ServiceName)
+		if c.Image != "" {
+			fmt.Fprintf(&b, "# BuildImage=%s\n", c.Image)
+		}
+	}
+
 	// Build provenance — the agent reads these to know where to build from.
 	// Omitted for image-bundled core packages (no build step).
 	if !c.IsImageBundled {
@@ -263,7 +275,7 @@ func renderCaddyfile(routes []RouteModel, acmeEmail string) string {
 
 	for _, r := range routes {
 		fmt.Fprintf(&b, "%s {\n", r.Host)
-		fmt.Fprintf(&b, "\treverse_proxy %s\n", r.Upstream)
+		fmt.Fprintf(&b, "\treverse_proxy %s\n", strings.Join(r.Upstreams, " "))
 		b.WriteString("}\n\n")
 	}
 	return b.String()

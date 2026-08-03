@@ -44,6 +44,18 @@ services:
         backup: ["./music"] # back up only selected subdirs
       - name: cache
         mount: /cache # omit backup: to exclude this volume entirely
+      # When replicas: is set, volumes default to one copy per replica
+      # (ownbase-<service>-<name>-0..N-1). Set per_replica: false for a
+      # single volume mounted by every replica.
+      # - name: workspaces
+      #   mount: /workspaces
+      #   per_replica: false
+      #   backup: ["."]
+
+    # Concurrency: run N indexed containers (ownbase-<name>-0..N-1).
+    # Absent = single unindexed container (ownbase-<name>). When set, even
+    # replicas: 1 is indexed. Not high availability — a Base is one machine.
+    # replicas: 4
 
     env:
       - KEY=value # static environment variables
@@ -90,6 +102,111 @@ jobs:
 ## The no-registry rule
 
 `image:` is intentionally absent from user services. Every user service is **built locally on the Base** from a read-only clone of its `repo:` at the pinned `ref:` — no pre-built application images, ever. The core package (Caddy) is the only exception and is managed by `ownbasectl upgrade`, not by `ownbase.yaml`.
+
+## Replicas: `replicas:`
+
+When a service needs **concurrency** — several always-on workers with warm state, not high availability — set `replicas:`:
+
+```yaml
+services:
+  opencode:
+    repo: git@github.com:me/opencode-worker.git
+    ref: abc123
+    port: 4096
+    internal: true
+    domain: opencode.example.com   # for ownbasectl tunnel (replica 0 only)
+    replicas: 4
+    health_probe:
+      http: /global/health
+    volumes:
+      - name: state
+        mount: /home/opencode/.local/share/opencode
+        backup: ["."]              # per-replica by default → four volumes backed up
+      - name: workspaces
+        mount: /workspaces
+        per_replica: false         # one shared volume, all four mount it
+        backup: ["."]
+```
+
+What OwnBase does:
+
+| Piece | Behavior |
+|---|---|
+| Containers | `ownbase-opencode-0` … `ownbase-opencode-3`, each resolvable by Podman DNS |
+| Image / secrets | One shared image and one secrets file (`opencode.yaml.age`) |
+| Volumes | Per-replica by default (`ownbase-<svc>-<vol>-<i>`); `per_replica: false` for shared |
+| Identity env | `OWNBASE_REPLICA_INDEX` and `OWNBASE_REPLICA_COUNT` injected into each replica |
+| Health | Each replica has its own loopback publish; reconcile gates start on each probe |
+| Caddy | Public replicated services get all replicas as `reverse_proxy` upstreams |
+| Tunnel | `ownbasectl tunnel` bridges **replica 0 only** |
+| Backup | Every per-replica volume with `backup:` is in the restic snapshot |
+| Rolling replace | Sequential apply + health gate: replica *i* is healthy before *i+1* is touched |
+
+What OwnBase does **not** do: session affinity, leasing, load-based placement, or autoscaling. Those belong in the application that talks to the workers (e.g. a harness with Postgres). See `docs/decisions.md`.
+
+### Reaching replicas from another service
+
+Podman DNS resolves **container names**, not service keys. A harness that `requires: [opencode]` joins the opencode capability network and should call:
+
+```text
+http://ownbase-opencode-0:4096
+http://ownbase-opencode-1:4096
+…
+```
+
+Discover *N* from config (`replicas:`) or from status (`replicas` / `running_replicas` on that service). Do not assume a single `ownbase-opencode` hostname when `replicas:` is set — that name only exists when the field is absent.
+
+Each replica also receives:
+
+| Env | Meaning |
+|---|---|
+| `OWNBASE_REPLICA_INDEX` | `0` … `N-1` for this container |
+| `OWNBASE_REPLICA_COUNT` | `N` |
+
+Use these in the worker image entrypoint when a URL must include the index (static `env:` cannot expand another variable):
+
+```bash
+export REDIS_URL="redis://ownbase-redis-${OWNBASE_REPLICA_INDEX}:6379"
+exec opencode serve --hostname 0.0.0.0 --port 4096
+```
+
+### Companion services (cache, queue, “sidecar”)
+
+There is no pod/sidecar type. A companion is another `services:` entry plus `requires:`.
+
+**Shared (usual for Redis / cache / queue):** one companion, no `replicas:`; every worker uses the same hostname.
+
+```yaml
+services:
+  redis:
+    repo: git@github.com:me/redis.git
+    ref: <sha>
+    port: 6379
+    volumes:
+      - name: data
+        mount: /data
+        backup: ["."]
+  opencode:
+    replicas: 4
+    requires: [redis]
+    # workers use redis://ownbase-redis:6379
+```
+
+**Per-worker companion:** give the companion the **same** `replicas: N` and address by index in the worker entrypoint (`ownbase-redis-$OWNBASE_REPLICA_INDEX`). OwnBase does not enforce that pairing — keep *N* in sync yourself. Prefer shared unless you need isolation.
+
+Cross-service volume mounts are still forbidden; companions talk over the network only.
+
+### Rules of thumb
+
+- **Absent `replicas:`** — single unindexed container `ownbase-<name>` (byte-identical to configs that predate the field).
+- **`replicas: 1`** — still indexed (`ownbase-<name>-0`) so scaling 1→N never renames containers or orphans volumes.
+- **Range** — 1..64 when set.
+- **Name collision** — a service named `web-0` cannot coexist with `web` at `replicas: 2` (both would claim `ownbase-web-0`). Volume names are checked the same way: per-replica `state` index 0 collides with a shared volume named `state-0`.
+- **Do not replicate database providers** in v1; `DATABASE_URL` and pgBackRest target the primary container only.
+- **Jobs** are never multiplied by `replicas:`; they reuse the service image once.
+- **Internal workers** — use `internal: true` plus a domain for tunnel inspection; put a public harness in front rather than exposing every replica on Caddy.
+
+CLI: `ownbasectl service add … --replicas 4` and `ownbasectl service update … --replicas 4` (pass `--replicas 0` on update to clear the field).
 
 ## Public domains: `domain:` and `domains:`
 

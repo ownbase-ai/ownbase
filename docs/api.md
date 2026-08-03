@@ -62,6 +62,15 @@ Schema (`schema_version: v3`):
       "repo": "git@github.com:org/auth.git",
       "ref": "v1.0.0",
       "requires": ["postgres"]
+    },
+    {
+      "name": "opencode",
+      "running": true,
+      "healthy": true,
+      "replicas": 4,
+      "running_replicas": 4,
+      "repo": "git@github.com:me/opencode-worker.git",
+      "ref": "abc123"
     }
   ],
   "security": {

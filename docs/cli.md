@@ -460,12 +460,15 @@ ownbasectl service remove mybase crm
 | `--domain` / `--domains` | public hostname(s) |
 | `--internal` | reachable only through `tunnel`, no Caddy route |
 | `--data-path` | mount point for the service's data volume (default `/data`) |
+| `--replicas` | run N indexed containers (1..64); omit for a single unindexed container. On `update`, `--replicas 0` clears the field |
 | `--database` | `<provider-service>/<dbname>` to provision Postgres |
 | `--requires` | capability dependencies |
 | `--env` | `KEY=VALUE`, repeatable |
 | `--add-capabilities` | Linux capabilities to restore |
 
 `update` touches only the fields whose flags were passed. `--env` merges, with new values winning on a duplicate key; `--requires`, `--domains`, and `--add-capabilities` replace their lists entirely.
+
+`--replicas` is concurrency on one machine (warm workers), not high availability. Volumes default to per-replica when set; see [ownbase-yaml.md](ownbase-yaml.md#replicas-replicas). `ownbasectl tunnel` bridges replica 0 only for a replicated service.
 
 `--add-capabilities` restores capabilities after the compiler's default `DropCapability=ALL`. Only the minority of images that bind a port below 1024 need it — `NET_BIND_SERVICE` for something like `traefik/whoami` on port 80. Most images listen on 3000 or 8080 and never do.
 

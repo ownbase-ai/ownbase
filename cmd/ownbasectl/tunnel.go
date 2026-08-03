@@ -178,7 +178,13 @@ func runTunnel(name string, port int) error {
 		// wrong backend instead of failing loudly. Skip it instead — most
 		// commonly this means the service was just added and hasn't been
 		// reconciled/started yet.
-		hostPort, ok := actualPorts[target.Service]
+		// UnitKey is the applied unit stem (service name, or service-0 for
+		// replicas) — not Service alone, which would miss ownbase-<svc>-0.
+		lookup := target.UnitKey
+		if lookup == "" {
+			lookup = target.Service
+		}
+		hostPort, ok := actualPorts[lookup]
 		if !ok {
 			fmt.Fprintf(os.Stderr, "ownbasectl: skipping %q — not yet published on %q (has it been reconciled/started?)\n", target.Service, name)
 			continue

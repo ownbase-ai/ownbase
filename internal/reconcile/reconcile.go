@@ -5,6 +5,7 @@ package reconcile
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/ownbase/ownbase/internal/authz"
@@ -449,6 +450,28 @@ func Diff(desired compiler.RuntimeOutput, current runtime.CurrentState, opts Dif
 // Dependency ordering helpers
 // ---------------------------------------------------------------------------
 
+// containerBelongsToService reports whether containerName (with its unit
+// content) is an instance of the given services: key. Replica units emit
+// "# Service=<key>"; unindexed units match only the exact name
+// "ownbase-<key>" so a separate service literally named "web-0" is never
+// treated as a replica of "web".
+func containerBelongsToService(containerName, unitContent, service string) bool {
+	if svc := parseQuadletCommentValue(unitContent, "# Service="); svc != "" {
+		return svc == service
+	}
+	return containerName == "ownbase-"+service
+}
+
+func parseQuadletCommentValue(unitContent, prefix string) string {
+	for _, line := range strings.Split(unitContent, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimPrefix(line, prefix)
+		}
+	}
+	return ""
+}
+
 // parseRequires extracts the comma-separated service names from the
 // "# Requires=dep1,dep2" provenance comment emitted by the compiler.
 // Returns nil when the comment is absent or has no names.
@@ -494,12 +517,15 @@ func topoSortContainers(desiredContainers map[string]string, unitContents map[st
 		content := unitContents[unitFile]
 		reqs := parseRequires(content)
 		for _, svcName := range reqs {
-			providerContainer := "ownbase-" + svcName
-			// Only add edges for providers that are also in the desired set.
-			// Unknown providers are silently skipped — schema validation
-			// already ensures requires: names are valid service keys.
-			if _, ok := desiredContainers[providerContainer]; ok {
-				deps[containerName][providerContainer] = true
+			// Expand to every container that belongs to the provider service.
+			// Ownership is # Service= (replica units) or exact ownbase-<svc>
+			// (unindexed) — never a bare name-prefix match, which would treat
+			// an unrelated service "web-0" as a replica of "web".
+			for provider := range desiredContainers {
+				pContent := unitContents[desiredContainers[provider]]
+				if containerBelongsToService(provider, pContent, svcName) {
+					deps[containerName][provider] = true
+				}
 			}
 		}
 	}
@@ -521,13 +547,15 @@ func topoSortContainers(desiredContainers map[string]string, unitContents map[st
 	}
 
 	// Collect zero-in-degree nodes in sorted order for determinism.
+	// sortContainerNames uses numeric order on trailing -N so replica 2
+	// starts before replica 10 (lexicographic sort would invert them).
 	queue := make([]string, 0, len(desiredContainers))
 	for name := range desiredContainers {
 		if inDeg[name] == 0 {
 			queue = append(queue, name)
 		}
 	}
-	sort.Strings(queue)
+	sortContainerNames(queue)
 
 	result := make([]string, 0, len(desiredContainers))
 	for len(queue) > 0 {
@@ -543,7 +571,7 @@ func topoSortContainers(desiredContainers map[string]string, unitContents map[st
 				newReady = append(newReady, consumer)
 			}
 		}
-		sort.Strings(newReady)
+		sortContainerNames(newReady)
 		queue = append(queue, newReady...)
 	}
 
@@ -555,11 +583,49 @@ func topoSortContainers(desiredContainers map[string]string, unitContents map[st
 				cycle = append(cycle, name)
 			}
 		}
-		sort.Strings(cycle)
+		sortContainerNames(cycle)
 		return nil, fmt.Errorf("containers involved in cycle: %s", strings.Join(cycle, ", "))
 	}
 
 	return result, nil
+}
+
+// sortContainerNames orders names so trailing -<digits> compare numerically
+// (ownbase-w-2 before ownbase-w-10). Non-indexed names stay lexicographic.
+func sortContainerNames(names []string) {
+	sort.SliceStable(names, func(i, j int) bool {
+		return containerNameLess(names[i], names[j])
+	})
+}
+
+func containerNameLess(a, b string) bool {
+	ap, ai, aOK := splitTrailingIndex(a)
+	bp, bi, bOK := splitTrailingIndex(b)
+	if aOK && bOK && ap == bp {
+		if ai != bi {
+			return ai < bi
+		}
+	}
+	return a < b
+}
+
+// splitTrailingIndex splits "ownbase-worker-10" into ("ownbase-worker", 10, true).
+func splitTrailingIndex(s string) (prefix string, index int, ok bool) {
+	i := strings.LastIndex(s, "-")
+	if i < 0 || i == len(s)-1 {
+		return s, 0, false
+	}
+	suf := s[i+1:]
+	for _, r := range suf {
+		if r < '0' || r > '9' {
+			return s, 0, false
+		}
+	}
+	n, err := strconv.Atoi(suf)
+	if err != nil {
+		return s, 0, false
+	}
+	return s[:i], n, true
 }
 
 // ApplyDryRun walks the plan through the authorization checkpoint and prints

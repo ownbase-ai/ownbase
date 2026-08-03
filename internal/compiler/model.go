@@ -19,8 +19,20 @@ type RuntimeModel struct {
 
 // ContainerModel represents one rootless Podman container.
 type ContainerModel struct {
-	// Name is the container name, e.g. "ownbase-auth".
+	// Name is the container name, e.g. "ownbase-auth" or "ownbase-opencode-2".
 	Name string
+
+	// ServiceName is the ownbase.yaml services: key this container was
+	// compiled from (e.g. "opencode"). Empty for core packages. Distinct
+	// from Name when the service is replicated. Emitted as # Service= on
+	// replica units so the applier can find the shared secrets file.
+	ServiceName string
+
+	// ReplicaIndex is the 0-based index when the service is replicated, or
+	// -1 when the container is the single unindexed instance (replicas:
+	// absent). ReplicaCount is the service's N when replicated, else 1.
+	ReplicaIndex int
+	ReplicaCount int
 
 	// Image is the container image reference.
 	// For source-built services: "localhost/ownbase-auth:local" (built from
@@ -168,9 +180,12 @@ type VolumeModel struct {
 }
 
 // RouteModel represents one Caddy reverse-proxy route.
+// Upstreams lists every backend "container:port" for this host — one entry
+// for a single-instance service, N entries for a public replicated service
+// (Caddy load-balances across them).
 type RouteModel struct {
-	Host     string
-	Upstream string
+	Host      string
+	Upstreams []string
 }
 
 // TimerModel represents one companion systemd .timer unit that periodically

@@ -36,6 +36,11 @@ import (
 type Target struct {
 	// Service is the ownbase.yaml service key (the map key in services:).
 	Service string
+	// UnitKey is the stem ParseActualHostPorts uses for this target's
+	// applied Quadlet unit — the service name when unreplicated, or
+	// "<service>-0" when replicated (tunnel bridges replica 0 only).
+	// Must match the key in ParseActualHostPorts, not Service alone.
+	UnitKey string
 	// Port is the container's listening port — the same port the compiler
 	// would route Caddy to (see internal/compiler.RouteModel). Kept for
 	// display/informational use; the tunnel itself connects to HostPort.
@@ -95,10 +100,15 @@ func Discover(raw string) ([]Target, error) {
 		if svc.Port == 0 || len(domains) == 0 {
 			continue
 		}
+		// Replicated services tunnel to replica 0 only (developer inspection).
+		primary := schema.PrimaryContainerName(name, svc.Replicas)
+		// UnitKey matches ParseActualHostPorts: stem after "ownbase-".
+		unitKey := strings.TrimPrefix(primary, schema.ContainerNamePrefix)
 		targets = append(targets, Target{
 			Service:  name,
+			UnitKey:  unitKey,
 			Port:     svc.Port,
-			HostPort: hostPorts[name],
+			HostPort: hostPorts[primary],
 			Domains:  domains,
 		})
 	}
