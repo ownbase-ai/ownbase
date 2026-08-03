@@ -574,7 +574,9 @@ func (r ResourcesDecl) validate(service string) error {
 }
 
 // validateMemoryLimit accepts Podman-style sizes: bare bytes digits, or a
-// number with a b/k/m/g suffix (case-insensitive). No spaces.
+// number with a b/k/m/g suffix (case-insensitive). No spaces. Zero is rejected
+// because Podman treats --memory 0 as unlimited, which would silently undo the
+// cgroup cap.
 func validateMemoryLimit(s string) error {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -595,14 +597,21 @@ func validateMemoryLimit(s string) error {
 	if body == "" {
 		return fmt.Errorf("%q needs a number (e.g. 512m, 4g)", s)
 	}
+	dot := false
 	for i, c := range body {
 		if c >= '0' && c <= '9' {
 			continue
 		}
-		if c == '.' && i > 0 && i < len(body)-1 {
+		if c == '.' && !dot && i > 0 && i < len(body)-1 {
+			dot = true
 			continue
 		}
 		return fmt.Errorf("%q is not a Podman memory size (use 512m, 4g, …)", s)
+	}
+	// Reject zero / all-zeros (0, 0g, 0.0m) — same rule as CPUs.
+	trimmed := strings.TrimLeft(strings.ReplaceAll(body, ".", ""), "0")
+	if trimmed == "" {
+		return fmt.Errorf("%q must be > 0", s)
 	}
 	return nil
 }

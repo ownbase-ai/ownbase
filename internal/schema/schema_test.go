@@ -774,7 +774,7 @@ func TestValidate_Resources(t *testing.T) {
 		SchemaVersion: "v1",
 		Services: map[string]schema.ServiceDecl{
 			"web": {
-				Repo: "https://github.com/org/web.git",
+				Repo:      "https://github.com/org/web.git",
 				Resources: &schema.ResourcesDecl{Memory: "4g", CPUs: "1.5"},
 			},
 		},
@@ -783,17 +783,19 @@ func TestValidate_Resources(t *testing.T) {
 		t.Fatalf("valid resources: %v", err)
 	}
 
-	badMem := &schema.OwnbaseConfig{
-		SchemaVersion: "v1",
-		Services: map[string]schema.ServiceDecl{
-			"web": {
-				Repo:      "https://github.com/org/web.git",
-				Resources: &schema.ResourcesDecl{Memory: "four gig"},
+	for _, mem := range []string{"four gig", "0", "0g", "0.0m", "1.2.3g"} {
+		cfg := &schema.OwnbaseConfig{
+			SchemaVersion: "v1",
+			Services: map[string]schema.ServiceDecl{
+				"web": {
+					Repo:      "https://github.com/org/web.git",
+					Resources: &schema.ResourcesDecl{Memory: mem},
+				},
 			},
-		},
-	}
-	if err := badMem.Validate(); err == nil {
-		t.Fatal("expected invalid memory error")
+		}
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("expected invalid memory error for %q", mem)
+		}
 	}
 
 	badCPU := &schema.OwnbaseConfig{
