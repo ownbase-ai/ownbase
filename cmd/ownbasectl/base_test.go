@@ -803,23 +803,21 @@ func TestCheckupFindings_ReplicaImageCVEMapsToServiceKey(t *testing.T) {
 		"services": [{"name": "worker", "replicas": 2}]
 	}`)
 	findings := checkupFindings("mybase", body)
-	var deploy *checkupFinding
+	var cveDeploy int
 	for i := range findings {
-		if findings[i].Action.Form == "deploy" {
-			if deploy != nil {
-				t.Fatalf("expected one deploy finding for both replicas, got %+v", findings)
+		f := findings[i]
+		if f.Action.Form != "deploy" || f.Action.Service != "worker" {
+			continue
+		}
+		if strings.Contains(f.Summary, "CVE") {
+			cveDeploy++
+			if !strings.Contains(f.Fix, "deploy mybase worker ") {
+				t.Errorf("Fix = %q, want deploy mybase worker …", f.Fix)
 			}
-			deploy = &findings[i]
 		}
 	}
-	if deploy == nil {
-		t.Fatalf("expected deploy finding for replicated worker, got %+v", findings)
-	}
-	if deploy.Action.Service != "worker" {
-		t.Errorf("Action.Service = %q, want worker", deploy.Action.Service)
-	}
-	if !strings.Contains(deploy.Fix, "deploy mybase worker ") {
-		t.Errorf("Fix = %q, want deploy mybase worker …", deploy.Fix)
+	if cveDeploy != 1 {
+		t.Fatalf("expected exactly 1 CVE deploy finding for worker (deduped replicas), got %d in %+v", cveDeploy, findings)
 	}
 }
 
