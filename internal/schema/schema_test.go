@@ -769,6 +769,47 @@ func TestValidate_ReplicasRange(t *testing.T) {
 	}
 }
 
+func TestValidate_Resources(t *testing.T) {
+	ok := &schema.OwnbaseConfig{
+		SchemaVersion: "v1",
+		Services: map[string]schema.ServiceDecl{
+			"web": {
+				Repo: "https://github.com/org/web.git",
+				Resources: &schema.ResourcesDecl{Memory: "4g", CPUs: "1.5"},
+			},
+		},
+	}
+	if err := ok.Validate(); err != nil {
+		t.Fatalf("valid resources: %v", err)
+	}
+
+	badMem := &schema.OwnbaseConfig{
+		SchemaVersion: "v1",
+		Services: map[string]schema.ServiceDecl{
+			"web": {
+				Repo:      "https://github.com/org/web.git",
+				Resources: &schema.ResourcesDecl{Memory: "four gig"},
+			},
+		},
+	}
+	if err := badMem.Validate(); err == nil {
+		t.Fatal("expected invalid memory error")
+	}
+
+	badCPU := &schema.OwnbaseConfig{
+		SchemaVersion: "v1",
+		Services: map[string]schema.ServiceDecl{
+			"web": {
+				Repo:      "https://github.com/org/web.git",
+				Resources: &schema.ResourcesDecl{CPUs: "0"},
+			},
+		},
+	}
+	if err := badCPU.Validate(); err == nil {
+		t.Fatal("expected invalid cpus error")
+	}
+}
+
 func TestValidate_DomainUniqueness(t *testing.T) {
 	cfg := &schema.OwnbaseConfig{
 		SchemaVersion: "v1",

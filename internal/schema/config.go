@@ -264,6 +264,16 @@ type ServiceDecl struct {
 	// containers-default AppArmor profile blocks when no-new-privileges is set.
 	SecurityOpt []string `yaml:"security_opt,omitempty"`
 
+	// Resources caps the container's cgroup budget via Podman. Empty means
+	// unlimited (Podman/systemd default). Set these on agent workers and any
+	// other service that can runaway-allocate — a Base is one machine and an
+	// uncapped pool can OOM the host.
+	//
+	//	resources:
+	//	  memory: 4g
+	//	  cpus: "2"
+	Resources *ResourcesDecl `yaml:"resources,omitempty"`
+
 	// GeneratedSecrets declares secret values the agent creates for this
 	// service when they do not already exist. Nothing sensitive is written
 	// to ownbase.yaml — only the names of the keys to fill in.
@@ -534,6 +544,95 @@ type HealthProbeDecl struct {
 	// HTTP is the path to GET on localhost:Port. The probe succeeds when the
 	// server returns a 2xx status within the timeout. Example: "/-/health"
 	HTTP string `yaml:"http,omitempty"`
+}
+
+// ResourcesDecl caps a container's cgroup budget. Values are passed through
+// to Podman as --memory / --cpus (same syntax Podman accepts).
+type ResourcesDecl struct {
+	// Memory is a Podman memory limit, e.g. "512m", "4g". Empty means no limit.
+	Memory string `yaml:"memory,omitempty"`
+	// CPUs is a Podman CPU quota as a count of CPUs, e.g. "1", "2", "1.5".
+	// Empty means no limit. Quoted in YAML when it would otherwise be a float.
+	CPUs string `yaml:"cpus,omitempty"`
+}
+
+// validate checks Memory/CPUs syntax. Both may be empty; at least one non-empty
+// field is expected when the parent pointer is non-nil, but an empty block is
+// tolerated (no-op) so partial edits don't fail validate.
+func (r ResourcesDecl) validate(service string) error {
+	if r.Memory != "" {
+		if err := validateMemoryLimit(r.Memory); err != nil {
+			return fmt.Errorf("service %q: resources.memory: %w", service, err)
+		}
+	}
+	if r.CPUs != "" {
+		if err := validateCPULimit(r.CPUs); err != nil {
+			return fmt.Errorf("service %q: resources.cpus: %w", service, err)
+		}
+	}
+	return nil
+}
+
+// validateMemoryLimit accepts Podman-style sizes: bare bytes digits, or a
+// number with a b/k/m/g suffix (case-insensitive). No spaces.
+func validateMemoryLimit(s string) error {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return fmt.Errorf("empty")
+	}
+	if strings.ContainsAny(s, " \t") {
+		return fmt.Errorf("%q must not contain whitespace", s)
+	}
+	lower := strings.ToLower(s)
+	// Strip one trailing unit letter if present.
+	body := lower
+	if n := len(body); n > 0 {
+		switch body[n-1] {
+		case 'b', 'k', 'm', 'g':
+			body = body[:n-1]
+		}
+	}
+	if body == "" {
+		return fmt.Errorf("%q needs a number (e.g. 512m, 4g)", s)
+	}
+	for i, c := range body {
+		if c >= '0' && c <= '9' {
+			continue
+		}
+		if c == '.' && i > 0 && i < len(body)-1 {
+			continue
+		}
+		return fmt.Errorf("%q is not a Podman memory size (use 512m, 4g, …)", s)
+	}
+	return nil
+}
+
+// validateCPULimit accepts a positive decimal CPU count ("1", "2", "0.5", "1.5").
+func validateCPULimit(s string) error {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return fmt.Errorf("empty")
+	}
+	if strings.ContainsAny(s, " \t") {
+		return fmt.Errorf("%q must not contain whitespace", s)
+	}
+	dot := false
+	for i, c := range s {
+		if c >= '0' && c <= '9' {
+			continue
+		}
+		if c == '.' && !dot && i > 0 && i < len(s)-1 {
+			dot = true
+			continue
+		}
+		return fmt.Errorf("%q is not a CPU count (use 1, 2, 1.5, …)", s)
+	}
+	// Reject zero / all-zeros.
+	trimmed := strings.TrimLeft(strings.ReplaceAll(s, ".", ""), "0")
+	if trimmed == "" {
+		return fmt.Errorf("%q must be > 0", s)
+	}
+	return nil
 }
 
 // JobDecl is one scheduled job entry in the jobs map. The map key is the
@@ -878,6 +977,11 @@ func (s ServiceDecl) validate(name string, allServices map[string]ServiceDecl) e
 	}
 	for i, g := range s.GeneratedSecrets {
 		if err := g.validate(name, i, allServices); err != nil {
+			return err
+		}
+	}
+	if s.Resources != nil {
+		if err := s.Resources.validate(name); err != nil {
 			return err
 		}
 	}

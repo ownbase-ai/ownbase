@@ -79,6 +79,13 @@ services:
     security_opt: # --security-opt flags; each entry widens the security boundary
       - apparmor=unconfined
 
+    # Cgroup budget (Podman --memory / --cpus). Empty = unlimited.
+    # Set on agent workers and anything that can runaway-allocate — a Base is
+    # one machine and an uncapped pool can OOM the host.
+    resources:
+      memory: 4g
+      cpus: "2"
+
     # Credentials the Base creates for you, on first reconcile, if missing
     generated_secrets:
       - type: password # a random value nobody needs to choose
