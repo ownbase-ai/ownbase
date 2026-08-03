@@ -772,6 +772,57 @@ func TestCheckupFindings_ImageCVESkippedWhenUpToDate(t *testing.T) {
 	}
 }
 
+func TestCheckupFindings_ReplicaImageCVEMapsToServiceKey(t *testing.T) {
+	// Vulnscan labels by container name ownbase-worker-0; deploy must use
+	// the services: key "worker", not "worker-0".
+	fresh := time.Now().UTC().Format(time.RFC3339)
+	body := []byte(`{
+		"config": {"repo_url": "git@example.com/x.git"},
+		"security": {
+			"backup_restorable": true,
+			"vulns": {
+				"available": true,
+				"trivy_installed": true,
+				"scanned_at": "` + fresh + `",
+				"host": {"critical": 0, "high": 0},
+				"images": [
+					{
+						"service": "ownbase-worker-0",
+						"image": "localhost/ownbase-worker:local",
+						"summary": {"critical": 0, "high": 2, "fixable_critical": 0, "fixable_high": 2}
+					},
+					{
+						"service": "ownbase-worker-1",
+						"image": "localhost/ownbase-worker:local",
+						"summary": {"critical": 0, "high": 2, "fixable_critical": 0, "fixable_high": 2}
+					}
+				]
+			}
+		},
+		"updates": {"drift": [{"service": "worker", "ref": "aaa", "branch": "main", "commits_behind": 3, "up_to_date": false}]},
+		"services": [{"name": "worker", "replicas": 2}]
+	}`)
+	findings := checkupFindings("mybase", body)
+	var deploy *checkupFinding
+	for i := range findings {
+		if findings[i].Action.Form == "deploy" {
+			if deploy != nil {
+				t.Fatalf("expected one deploy finding for both replicas, got %+v", findings)
+			}
+			deploy = &findings[i]
+		}
+	}
+	if deploy == nil {
+		t.Fatalf("expected deploy finding for replicated worker, got %+v", findings)
+	}
+	if deploy.Action.Service != "worker" {
+		t.Errorf("Action.Service = %q, want worker", deploy.Action.Service)
+	}
+	if !strings.Contains(deploy.Fix, "deploy mybase worker ") {
+		t.Errorf("Fix = %q, want deploy mybase worker …", deploy.Fix)
+	}
+}
+
 func TestSuggestedDeployRef_PrefersBranchWhenBehind(t *testing.T) {
 	// SHA pins that are commits_behind must catch up via the branch tip —
 	// newest_tag often points at an older commit and would roll back.
