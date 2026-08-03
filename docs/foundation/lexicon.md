@@ -12,7 +12,7 @@
 
 **`ownbasectl`** : The command-line tool that creates, connects to, and operates a Base from your machine — over an SSH tunnel to the daemon's API. See [cli.md](../cli.md).
 
-**Service** : A piece of software declared under `services:` in `ownbase.yaml` and run on a Base — whether it's a default OwnBase capability provider (auth, jobs, a database) or software the user built themselves. There is no separate "app" concept: everything running on a Base is a service, declared and built the same way, and every service obeys [service-constitution.md](service-constitution.md). A service can depend on other services' capabilities via `requires:`.
+**Service** : A piece of software declared under `services:` in `ownbase.yaml` and run on a Base — whether it's a default OwnBase capability provider (auth, jobs, a database) or software the user built themselves. There is no separate "app" concept: everything running on a Base is a service, declared and built the same way, and every service obeys [service-constitution.md](service-constitution.md). A service can depend on other services' capabilities via `requires:`. A service may set `replicas: N` to run N indexed containers of itself (concurrency on one machine, not high availability); that is still one service and one capability name, not a separate pool type — see [ownbase-yaml.md](../ownbase-yaml.md#replicas-replicas).
 
 **Capability** : An abstract function a service can depend on — `auth`, `jobs`, `storage`. A capability is satisfied by a *provider*, and providers are swappable. Services reference the capability, never the implementation.
 

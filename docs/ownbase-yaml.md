@@ -144,14 +144,67 @@ What OwnBase does:
 
 What OwnBase does **not** do: session affinity, leasing, load-based placement, or autoscaling. Those belong in the application that talks to the workers (e.g. a harness with Postgres). See `docs/decisions.md`.
 
-Rules of thumb:
+### Reaching replicas from another service
+
+Podman DNS resolves **container names**, not service keys. A harness that `requires: [opencode]` joins the opencode capability network and should call:
+
+```text
+http://ownbase-opencode-0:4096
+http://ownbase-opencode-1:4096
+…
+```
+
+Discover *N* from config (`replicas:`) or from status (`replicas` / `running_replicas` on that service). Do not assume a single `ownbase-opencode` hostname when `replicas:` is set — that name only exists when the field is absent.
+
+Each replica also receives:
+
+| Env | Meaning |
+|---|---|
+| `OWNBASE_REPLICA_INDEX` | `0` … `N-1` for this container |
+| `OWNBASE_REPLICA_COUNT` | `N` |
+
+Use these in the worker image entrypoint when a URL must include the index (static `env:` cannot expand another variable):
+
+```bash
+export REDIS_URL="redis://ownbase-redis-${OWNBASE_REPLICA_INDEX}:6379"
+exec opencode serve --hostname 0.0.0.0 --port 4096
+```
+
+### Companion services (cache, queue, “sidecar”)
+
+There is no pod/sidecar type. A companion is another `services:` entry plus `requires:`.
+
+**Shared (usual for Redis / cache / queue):** one companion, no `replicas:`; every worker uses the same hostname.
+
+```yaml
+services:
+  redis:
+    repo: git@github.com:me/redis.git
+    ref: <sha>
+    port: 6379
+    volumes:
+      - name: data
+        mount: /data
+        backup: ["."]
+  opencode:
+    replicas: 4
+    requires: [redis]
+    # workers use redis://ownbase-redis:6379
+```
+
+**Per-worker companion:** give the companion the **same** `replicas: N` and address by index in the worker entrypoint (`ownbase-redis-$OWNBASE_REPLICA_INDEX`). OwnBase does not enforce that pairing — keep *N* in sync yourself. Prefer shared unless you need isolation.
+
+Cross-service volume mounts are still forbidden; companions talk over the network only.
+
+### Rules of thumb
 
 - **Absent `replicas:`** — single unindexed container `ownbase-<name>` (byte-identical to configs that predate the field).
 - **`replicas: 1`** — still indexed (`ownbase-<name>-0`) so scaling 1→N never renames containers or orphans volumes.
 - **Range** — 1..64 when set.
-- **Name collision** — a service named `web-0` cannot coexist with `web` at `replicas: 2` (both would claim `ownbase-web-0`).
+- **Name collision** — a service named `web-0` cannot coexist with `web` at `replicas: 2` (both would claim `ownbase-web-0`). Volume names are checked the same way: per-replica `state` index 0 collides with a shared volume named `state-0`.
 - **Do not replicate database providers** in v1; `DATABASE_URL` and pgBackRest target the primary container only.
 - **Jobs** are never multiplied by `replicas:`; they reuse the service image once.
+- **Internal workers** — use `internal: true` plus a domain for tunnel inspection; put a public harness in front rather than exposing every replica on Caddy.
 
 CLI: `ownbasectl service add … --replicas 4` and `ownbasectl service update … --replicas 4` (pass `--replicas 0` on update to clear the field).
 
