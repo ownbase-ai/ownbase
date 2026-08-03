@@ -142,6 +142,29 @@ func TestTopoSort_CycleDetected(t *testing.T) {
 	}
 }
 
+func TestSortContainerNames_NumericReplicaOrder(t *testing.T) {
+	names := []string{
+		"ownbase-worker-10",
+		"ownbase-worker-2",
+		"ownbase-worker-0",
+		"ownbase-alpha",
+		"ownbase-worker-1",
+	}
+	sortContainerNames(names)
+	want := []string{
+		"ownbase-alpha",
+		"ownbase-worker-0",
+		"ownbase-worker-1",
+		"ownbase-worker-2",
+		"ownbase-worker-10",
+	}
+	for i := range want {
+		if names[i] != want[i] {
+			t.Fatalf("sortContainerNames = %v, want %v", names, want)
+		}
+	}
+}
+
 func TestTopoSort_ReplicatedProvider(t *testing.T) {
 	// consumer requires provider; provider has two replica containers.
 	// Both provider replicas must start before the consumer.

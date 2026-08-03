@@ -729,6 +729,33 @@ func TestValidate_ReplicaNameCollision(t *testing.T) {
 	}
 }
 
+func TestValidate_VolumeReplicaNameCollision(t *testing.T) {
+	// per-replica "state" index 0 → ownbase-w-state-0; shared "state-0" → same.
+	n := 2
+	cfg := &schema.OwnbaseConfig{
+		SchemaVersion: "v1",
+		Services: map[string]schema.ServiceDecl{
+			"w": {
+				Repo:     "https://github.com/org/w.git",
+				Replicas: &n,
+				Volumes: []schema.VolumeDecl{
+					{Name: "state", Mount: "/state"},
+					{Name: "state-0", Mount: "/other", PerReplica: boolPtr(false)},
+				},
+			},
+		},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected volume collision error")
+	}
+	if !strings.Contains(err.Error(), "volume name") {
+		t.Errorf("error = %v, want volume name collision", err)
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }
+
 func TestValidate_ReplicasRange(t *testing.T) {
 	zero := 0
 	cfg := &schema.OwnbaseConfig{

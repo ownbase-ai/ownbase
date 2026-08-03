@@ -884,10 +884,14 @@ func (s ServiceDecl) validate(name string, allServices map[string]ServiceDecl) e
 // validateReplicaNameCollisions rejects configs where a generated replica
 // container name would collide with another service's container name — e.g.
 // service "web" with replicas: 2 and a service literally named "web-0" both
-// compile to "ownbase-web-0".
+// compile to "ownbase-web-0". Also rejects Podman volume name collisions
+// within or across services (per-replica "state" index 0 is the same string
+// as a shared volume named "state-0").
 func validateReplicaNameCollisions(services map[string]ServiceDecl) error {
 	// claimed[containerName] = service key that owns it
 	claimed := make(map[string]string)
+	// volClaimed[volumeName] = "service/volDecl" that owns it
+	volClaimed := make(map[string]string)
 	var names []string
 	for name := range services {
 		names = append(names, name)
@@ -901,8 +905,41 @@ func validateReplicaNameCollisions(services map[string]ServiceDecl) error {
 			}
 			claimed[cname] = name
 		}
+		for _, volName := range expandedVolumeNames(name, svc) {
+			if other, ok := volClaimed[volName]; ok {
+				return fmt.Errorf("service %q: volume name %q collides with %s (rename a volumes: entry or adjust per_replica/replicas)", name, volName, other)
+			}
+			volClaimed[volName] = name
+		}
 	}
 	return nil
+}
+
+// expandedVolumeNames returns every Podman volume name a service will create
+// (shared and per-replica instances), matching the compiler/backup naming.
+func expandedVolumeNames(service string, svc ServiceDecl) []string {
+	var out []string
+	if len(svc.Volumes) > 0 {
+		for _, v := range svc.Volumes {
+			if svc.VolumeIsPerReplica(v) {
+				for i := 0; i < svc.ReplicaCount(); i++ {
+					out = append(out, VolumeName(service, v.Name, svc.Replicas, i, true))
+				}
+			} else {
+				out = append(out, VolumeName(service, v.Name, svc.Replicas, 0, false))
+			}
+		}
+		return out
+	}
+	// data_path shorthand
+	if svc.DataPathIsPerReplica() {
+		for i := 0; i < svc.ReplicaCount(); i++ {
+			out = append(out, DataVolumeName(service, svc.Replicas, i, true))
+		}
+	} else {
+		out = append(out, DataVolumeName(service, svc.Replicas, 0, false))
+	}
+	return out
 }
 
 func (g GeneratedSecretDecl) validate(svcName string, idx int, allServices map[string]ServiceDecl) error {
