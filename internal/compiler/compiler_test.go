@@ -1219,6 +1219,32 @@ func TestCompile_Replicas_OneStillIndexed(t *testing.T) {
 	}
 }
 
+func TestCompile_Resources_PodmanArgs(t *testing.T) {
+	in := compiler.Input{
+		Config: &schema.OwnbaseConfig{
+			SchemaVersion: "v1",
+			Services: map[string]schema.ServiceDecl{
+				"worker": {
+					Repo: "https://github.com/example/worker.git",
+					Port: 4096,
+					Resources: &schema.ResourcesDecl{
+						Memory: "4g",
+						CPUs:   "2",
+					},
+				},
+			},
+		},
+	}
+	out := compiler.Compile(in)
+	unit := out.QuadletUnits["ownbase-worker.container"]
+	if !strings.Contains(unit, "PodmanArgs=--memory 4g\n") {
+		t.Errorf("unit missing memory args:\n%s", unit)
+	}
+	if !strings.Contains(unit, "PodmanArgs=--cpus 2\n") {
+		t.Errorf("unit missing cpus args:\n%s", unit)
+	}
+}
+
 func containsStr(ss []string, s string) bool {
 	for _, x := range ss {
 		if x == s {

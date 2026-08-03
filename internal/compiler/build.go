@@ -288,6 +288,10 @@ func buildContainer(name string, svc schema.ServiceDecl, index int) ContainerMod
 		c.SecurityOpts = make([]string, len(svc.SecurityOpt))
 		copy(c.SecurityOpts, svc.SecurityOpt)
 	}
+	if svc.Resources != nil {
+		c.MemoryLimit = svc.Resources.Memory
+		c.CPULimit = svc.Resources.CPUs
+	}
 
 	return c
 }

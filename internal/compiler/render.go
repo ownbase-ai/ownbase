@@ -166,6 +166,12 @@ func renderContainer(c ContainerModel) string {
 	for _, opt := range c.SecurityOpts {
 		fmt.Fprintf(&b, "PodmanArgs=--security-opt %s\n", opt)
 	}
+	if c.MemoryLimit != "" {
+		fmt.Fprintf(&b, "PodmanArgs=--memory %s\n", c.MemoryLimit)
+	}
+	if c.CPULimit != "" {
+		fmt.Fprintf(&b, "PodmanArgs=--cpus %s\n", c.CPULimit)
+	}
 
 	b.WriteString("\n[Service]\n")
 	if c.IsJob {

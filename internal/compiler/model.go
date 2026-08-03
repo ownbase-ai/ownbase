@@ -133,6 +133,11 @@ type ContainerModel struct {
 	// signaling between its child daemons (checkpointer, bgwriter, etc.).
 	SecurityOpts []string
 
+	// MemoryLimit is a Podman --memory value (e.g. "4g"). Empty = unlimited.
+	MemoryLimit string
+	// CPULimit is a Podman --cpus value (e.g. "2"). Empty = unlimited.
+	CPULimit string
+
 	// IsJob marks a container compiled from a jobs: entry rather than a
 	// services: entry. Job containers render with [Service] Type=oneshot,
 	// Restart=no, no PublishPort, no health probe, and no [Install] section
