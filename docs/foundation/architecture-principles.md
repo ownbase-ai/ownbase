@@ -13,7 +13,7 @@ The mental model for the whole system:
 
 ### 1. Git is the source of truth
 
-The desired state of a Base lives in a Git repository the user owns — an external repo on their own git host, which the operator commits to client-side and the Base clones read-only. The server reconciles itself toward that repo. Nothing important exists only in a vendor database. If OwnBase disappeared, the repo plus the machine is a complete, working system.
+The desired state of a Base lives in a Git repository the user owns — an external repo on their own git host. Operators commit to the tracked ref client-side; agents may push proposal branches (`ownbase/agent/*`) via the daemon. The Base applies only the tracked ref (read-only checkout + reconcile). Branch protection on the forge is the merge gate. Nothing important exists only in a vendor database. If OwnBase disappeared, the repo plus the machine is a complete, working system.
 
 More precisely: the **ownership invariant** is `reconstructable = (repo, secrets, backups)` — own these three and you can reconstruct anything. The **operational model** is `reconcile(compile(repo, secrets), current)`, where for a rebuild `current` begins as `restore(backups)` rather than the running state. This is what makes install, update, recover, and rebuild the same `reconcile` call from different starting conditions. See [reconstruction-model.md](reconstruction-model.md).
 
@@ -82,7 +82,7 @@ The human or AI never edits the generated units — they edit `ownbase.yaml` (pr
 
 The user (or their AI) updates a service by moving `ref:` in `ownbase.yaml`. No service changes without a commit they authored. The daemon never opens unsolicited update PRs.
 
-**Resolution happens client-side, never on the Base.** `ownbasectl deploy` resolves the requested branch, tag, or SHA to a concrete commit with `git ls-remote`, commits *that SHA* to the config repo, and then asks the Base to reconcile. The committed `ref:` is therefore always a concrete commit, so what will build is never ambiguous. A branch-named ref does not silently redeploy when the branch moves, and the daemon never writes a ref back into the repo — it only ever has read access.
+**Resolution happens client-side for operator deploys.** `ownbasectl deploy` resolves the requested branch, tag, or SHA to a concrete commit with `git ls-remote`, commits *that SHA* to the config repo, and then asks the Base to reconcile. The committed `ref:` is therefore always a concrete commit, so what will build is never ambiguous. A branch-named ref does not silently redeploy when the branch moves. Agents may propose full `ownbase.yaml` documents via `POST /config` (branch-only); they do not push the protected default branch.
 
 The daemon's one job here is to **report drift**: on its update interval it computes how far behind each pinned ref is from its source and surfaces that in `ownbasectl updates`. It informs; it does not act.
 
