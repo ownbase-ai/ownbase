@@ -116,6 +116,17 @@ func (c *GrantCheckpoint) Authorize(action schema.Action) error {
 	return nil
 }
 
+// ScopeStatusRead is the grant scope for GET /status (and similar read-only
+// observability). Not a taxonomy ActionType — checked directly by the HTTP
+// layer via ScopeAllowed.
+const ScopeStatusRead = "status:read"
+
+// ScopeConfigRead is the grant scope for GET /config.
+const ScopeConfigRead = "config:read"
+
+// ScopeReconcile is the grant scope for POST /reconcile.
+const ScopeReconcile = "reconcile"
+
 // scopeForAction maps a taxonomy action to a grant scope string. Returns ""
 // when the action is not exposable to services at all.
 func scopeForAction(action schema.Action) string {
@@ -152,6 +163,29 @@ func scopeForAction(action schema.Action) string {
 	}
 }
 
+// ScopeAllowed reports whether want is covered by granted scopes.
+// Exported so the HTTP layer can check non-taxonomy scopes (status:read).
+func ScopeAllowed(granted []string, want string) bool {
+	return scopeAllowed(granted, want)
+}
+
+// ScopesFor reports the scopes granted to service, or nil if none.
+func (c *GrantCheckpoint) ScopesFor(service string) []string {
+	if c == nil {
+		return nil
+	}
+	return c.ByService[service]
+}
+
+// HasGrant reports whether service has any grant entry (even empty scopes).
+func (c *GrantCheckpoint) HasGrant(service string) bool {
+	if c == nil {
+		return false
+	}
+	_, ok := c.ByService[service]
+	return ok
+}
+
 func scopeAllowed(granted []string, want string) bool {
 	for _, g := range granted {
 		if g == want || g == "*" {
@@ -166,4 +200,47 @@ func scopeAllowed(granted []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// GrantsFromConfig builds grant entries from ownbase_access declarations.
+func GrantsFromConfig(cfg *schema.OwnbaseConfig) []Grant {
+	if cfg == nil {
+		return nil
+	}
+	var out []Grant
+	for name, svc := range cfg.Services {
+		if len(svc.OwnbaseAccess) == 0 {
+			continue
+		}
+		scopes := append([]string(nil), svc.OwnbaseAccess...)
+		out = append(out, Grant{Service: name, Scopes: scopes})
+	}
+	return out
+}
+
+// CompositeCheckpoint routes owner principals to OwnerCheckpoint and service
+// principals to GrantCheckpoint.
+type CompositeCheckpoint struct {
+	Owner  Checkpoint
+	Grants *GrantCheckpoint
+}
+
+// NewCompositeCheckpoint returns a checkpoint that dispatches by principal.
+func NewCompositeCheckpoint(grants *GrantCheckpoint) Checkpoint {
+	if grants == nil {
+		grants = NewGrantCheckpoint(nil)
+	}
+	return &CompositeCheckpoint{
+		Owner:  NewOwnerCheckpoint(),
+		Grants: grants,
+	}
+}
+
+// Authorize dispatches on principal kind.
+func (c *CompositeCheckpoint) Authorize(action schema.Action) error {
+	p := action.EffectivePrincipal()
+	if p.IsOwner() {
+		return c.Owner.Authorize(action)
+	}
+	return c.Grants.Authorize(action)
 }

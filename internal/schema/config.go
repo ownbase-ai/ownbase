@@ -296,6 +296,16 @@ type ServiceDecl struct {
 	//
 	// Allowed range when set: 1..MaxReplicas.
 	Replicas *int `yaml:"replicas,omitempty"`
+
+	// OwnbaseAccess lists grant scopes this service may exercise against the
+	// daemon API over a private unix socket. Empty/absent means no access —
+	// the service cannot reach ownbased. Non-empty causes the daemon to
+	// listen on /run/ownbase/svc/<name>.sock and the compiler to bind-mount
+	// that socket into the container at /run/ownbase.sock.
+	//
+	// Scope strings match authz grant rules, e.g.:
+	//   status:read, service:web:deploy, secrets:myapp:write, backup:run, *
+	OwnbaseAccess []string `yaml:"ownbase_access,omitempty"`
 }
 
 // GeneratedSecretType is the kind of value a GeneratedSecretDecl produces.
@@ -994,7 +1004,55 @@ func (s ServiceDecl) validate(name string, allServices map[string]ServiceDecl) e
 			return err
 		}
 	}
+	if err := validateOwnbaseAccess(name, s.OwnbaseAccess); err != nil {
+		return err
+	}
 	return s.validateDatabase(name, allServices)
+}
+
+// validateOwnbaseAccess checks declared grant scopes. Patterns must be
+// non-empty and use only safe characters; closed-set matching happens at
+// authorize time against authz.scopeForAction.
+func validateOwnbaseAccess(service string, scopes []string) error {
+	seen := make(map[string]bool, len(scopes))
+	for i, raw := range scopes {
+		s := strings.TrimSpace(raw)
+		if s == "" {
+			return fmt.Errorf("service %q: ownbase_access[%d]: scope is empty", service, i)
+		}
+		if seen[s] {
+			return fmt.Errorf("service %q: ownbase_access: duplicate scope %q", service, s)
+		}
+		seen[s] = true
+		if !isValidAccessScope(s) {
+			return fmt.Errorf("service %q: ownbase_access: invalid scope %q (use e.g. status:read, service:web:deploy, secrets:myapp:write, *)", service, s)
+		}
+	}
+	return nil
+}
+
+func isValidAccessScope(s string) bool {
+	if s == "*" {
+		return true
+	}
+	// Allow trailing wildcard: service:web:*
+	if strings.HasSuffix(s, ":*") {
+		s = strings.TrimSuffix(s, ":*")
+		if s == "" {
+			return false
+		}
+	} else if strings.HasSuffix(s, "*") && !strings.HasSuffix(s, ":*") {
+		// bare prefix* without colon — only allow full "*"
+		return false
+	}
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == ':' || r == '_' || r == '-' || r == '.' {
+			continue
+		}
+		return false
+	}
+	return strings.Contains(s, ":") || s == "deploy" // bare "deploy" is a valid short form
 }
 
 // validateReplicaNameCollisions rejects configs where a generated replica

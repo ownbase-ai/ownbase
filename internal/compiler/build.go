@@ -233,6 +233,15 @@ func buildContainer(name string, svc schema.ServiceDecl, index int) ContainerMod
 		c.VolumeMounts = []VolumeMount{{VolumeName: volName, MountPath: dataPath}}
 	}
 
+	// Private daemon API socket for services with ownbase_access. One socket
+	// per service name (shared by all replicas); identity is the socket path.
+	if len(svc.OwnbaseAccess) > 0 {
+		c.VolumeMounts = append(c.VolumeMounts, VolumeMount{
+			HostPath:  OwnbaseAPISocketHost(name),
+			MountPath: OwnbaseAPISocketContainer,
+		})
+	}
+
 	// Replica identity — only when replicas: is set, so non-replicated units
 	// stay byte-identical to configs that predate the field.
 	if svc.IsReplicated() {

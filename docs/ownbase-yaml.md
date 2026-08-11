@@ -96,6 +96,18 @@ services:
         private_key: other-service:SSH_KEY_B64
         private_encoding: base64 # or "raw" (default) for PEM as-is
 
+    # Optional: let this service call the daemon API over a private unix socket.
+    # Empty/absent = no access (default). When set, the daemon listens on
+    # /run/ownbase/svc/<name>.sock and the container gets it at /run/ownbase.sock.
+    # Identity is the socket (filesystem ACL); scopes gate what it may do.
+    # ownbase_access:
+    #   - status:read              # GET /status
+    #   - config:read              # GET /config
+    #   - service:web:deploy       # start/restart that service
+    #   - secrets:myapp:write      # write secrets for myapp
+    #   - backup:run
+    #   - "*"                      # everything grantable (still not tier-approve)
+
 jobs:
   <name>:
     service: <services-key> # required; reuses that service's image, networks, secrets

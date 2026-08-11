@@ -375,6 +375,10 @@ func run(cfg agentConfig) error {
 	// closure forwards so wiring can happen before the main-loop locals exist.
 	var notifyReboot func(secwatch.RebootResult)
 
+	// accessSockets is set when the status API is enabled; synced after each
+	// reconcile to match ownbase_access declarations.
+	var accessSockets *explain.SocketManager
+
 	if cfg.statusAddr != "" {
 		mux := http.NewServeMux()
 		// Mount status routes (exact paths so the webhook route below takes priority).
@@ -634,6 +638,11 @@ func run(cfg agentConfig) error {
 				fmt.Fprintf(os.Stderr, "ownbased: status server: %v\n", err)
 			}
 		}()
+
+		// Per-service unix sockets for ownbase_access. Same mux as TCP; principal
+		// is injected from the socket that accepted the connection.
+		accessSockets = explain.NewSocketManager(explain.DefaultSocketDir, mux, authz.NewGrantCheckpoint(nil))
+		defer accessSockets.Close()
 	}
 
 	// Build the hardened Caddy image in the background once the API is up.
@@ -712,6 +721,23 @@ func run(cfg agentConfig) error {
 	// status server.
 	afterReconcile := func(state reconcileState) {
 		ctx := context.Background()
+
+		// Keep per-service API sockets aligned with ownbase_access grants.
+		if accessSockets != nil {
+			grants := authz.NewGrantCheckpoint(authz.GrantsFromConfig(state.Config))
+			accessSockets.SetGrants(grants)
+			want := map[string][]string{}
+			if state.Config != nil {
+				for name, svc := range state.Config.Services {
+					if len(svc.OwnbaseAccess) > 0 {
+						want[name] = append([]string(nil), svc.OwnbaseAccess...)
+					}
+				}
+			}
+			if err := accessSockets.Sync(want); err != nil {
+				fmt.Fprintf(os.Stderr, "ownbased: access sockets: %v\n", err)
+			}
+		}
 
 		// Reboot marker is two file stats — cheap enough to re-read on every
 		// status push, so a security-fix → rescan path cannot clobber a

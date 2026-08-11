@@ -398,7 +398,7 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 			if cfg.AuditLog == nil {
 				return
 			}
-			action, err := auditAction(schema.ActionHostPatch, "host OS packages")
+			action, err := auditAction(schema.ActionHostPatch, "host OS packages", schema.Owner())
 			if err != nil {
 				return
 			}
@@ -531,7 +531,7 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 			if cfg.AuditLog == nil {
 				return
 			}
-			action, err := auditAction(schema.ActionHostReboot, "host")
+			action, err := auditAction(schema.ActionHostReboot, "host", schema.Owner())
 			if err != nil {
 				return
 			}
@@ -832,7 +832,7 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 		if st.Err != nil {
 			fmt.Fprintf(fw, "ERROR: %v\n", st.Err)
 			if cfg.AuditLog != nil {
-				if a, err := auditAction(schema.ActionHostInstallScanner, "trivy"); err == nil {
+				if a, err := auditAction(schema.ActionHostInstallScanner, "trivy", schema.Owner()); err == nil {
 					_ = cfg.AuditLog.Record(a, authz.OutcomeError, st.Err.Error())
 				}
 			}
@@ -844,7 +844,7 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 			fmt.Fprintf(fw, "==> Installed: %s\n", st.Detail)
 		}
 		if cfg.AuditLog != nil {
-			if a, err := auditAction(schema.ActionHostInstallScanner, "trivy"); err == nil {
+			if a, err := auditAction(schema.ActionHostInstallScanner, "trivy", schema.Owner()); err == nil {
 				_ = cfg.AuditLog.Record(a, authz.OutcomeApplied, "")
 			}
 		}
@@ -911,14 +911,14 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 		if err != nil {
 			fmt.Fprintf(fw, "ERROR: %v\n", err)
 			if cfg.AuditLog != nil {
-				if a, e := auditAction(schema.ActionHostSelfUpdate, body.Version); e == nil {
+				if a, e := auditAction(schema.ActionHostSelfUpdate, body.Version, schema.Owner()); e == nil {
 					_ = cfg.AuditLog.Record(a, authz.OutcomeError, err.Error())
 				}
 			}
 			return
 		}
 		if cfg.AuditLog != nil {
-			if a, e := auditAction(schema.ActionHostSelfUpdate, body.Version); e == nil {
+			if a, e := auditAction(schema.ActionHostSelfUpdate, body.Version, schema.Owner()); e == nil {
 				_ = cfg.AuditLog.Record(a, authz.OutcomeApplied, "")
 			}
 		}
@@ -1149,29 +1149,35 @@ func mergeSecrets(custody secrets.FileKeyCustody, secretsFile string, updates ma
 // authRequired checks the Bearer token from the StatusServer. Returns false
 // and writes 401 when the token is empty, invalid, or missing. An empty
 // configured token is fail-closed — the management API never runs open.
+// Requests that already carry a service principal (unix socket) skip Bearer.
 func authRequired(w http.ResponseWriter, r *http.Request, srv *StatusServer) bool {
 	_, ok := authorize(w, r, srv)
 	return ok
 }
 
 // authorize authenticates the request and returns the acting principal.
-// Today every successful bearer-token call is the owner. P5 will return a
-// service principal when the request arrives on a per-service unix socket.
+// A service principal injected on the request context (unix socket accept)
+// is trusted without Bearer. Otherwise Bearer auth yields the owner.
 func authorize(w http.ResponseWriter, r *http.Request, srv *StatusServer) (schema.Principal, bool) {
+	if p, ok := PrincipalFromContext(r.Context()); ok {
+		return p, true
+	}
 	if !authorizeBearer(w, r, srv.currentToken()) {
 		return schema.Principal{}, false
 	}
 	return schema.Owner(), true
 }
 
-// auditAction builds a taxonomy action tagged with the owner principal for
-// HTTP handlers that record to the audit log.
-func auditAction(t schema.ActionType, target string) (schema.Action, error) {
+// auditAction builds a taxonomy action tagged with the given principal.
+func auditAction(t schema.ActionType, target string, p schema.Principal) (schema.Action, error) {
 	a, err := schema.NewAction(t, target)
 	if err != nil {
 		return schema.Action{}, err
 	}
-	return a.WithPrincipal(schema.Owner()), nil
+	if p.Kind == "" {
+		p = schema.Owner()
+	}
+	return a.WithPrincipal(p), nil
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

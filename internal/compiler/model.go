@@ -162,10 +162,24 @@ type ContainerModel struct {
 // VolumeMount binds a named Podman volume to a path inside a container.
 type VolumeMount struct {
 	// VolumeName is the Podman named volume (e.g. "ownbase-core-caddy-data").
+	// When HostPath is set, VolumeName is ignored.
 	VolumeName string
 	// MountPath is the path inside the container (e.g. "/data").
 	MountPath string
+	// HostPath, when non-empty, is an absolute host path bind-mounted at
+	// MountPath. Used only for ownbase-generated paths (API sockets); never
+	// user-declarable from ownbase.yaml.
+	HostPath string
 }
+
+// OwnbaseAPISocketHost is the host path of the per-service daemon API socket.
+func OwnbaseAPISocketHost(service string) string {
+	return "/run/ownbase/svc/" + service + ".sock"
+}
+
+// OwnbaseAPISocketContainer is where the API socket is mounted inside a
+// container that has ownbase_access.
+const OwnbaseAPISocketContainer = "/run/ownbase.sock"
 
 // HealthProbeModel is the compiled form of a health probe declaration.
 type HealthProbeModel struct {
