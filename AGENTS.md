@@ -30,7 +30,7 @@ Three things to get right:
 
 - **The vault comes first, and it is the user's step.** `ownbasectl vault init` asks for a file location and a master password. Both are the user's to choose and the password must never pass through you — tell them to run it themselves, or to use the OwnBase app. Nothing else works until a vault exists, because that is where the keys go.
 - **Creating the machine is the user's step too.** Providers need a human with a credit card. Give them the key, the OS version, and the size ([sizing](README.md#how-big-a-machine)); ask for the IP.
-- **The owner key and the deploy key are different things.** `keygen` makes the key *you* use to reach the Base, stored in the vault. `ssh-key add` makes the key the *Base* uses to clone git repos read-only. Both are in [INSTALL.md](INSTALL.md#two-different-ssh-keys).
+- **The owner key and the deploy key are different things.** `keygen` makes the key *you* use to reach the Base, stored in the vault. `ssh-key add` makes the key the *Base* uses to reach git hosts — read-only on service repos; write on the config repo only if agents propose config. Both are in [INSTALL.md](INSTALL.md#two-different-ssh-keys).
 
 | Need | Doc |
 |---|---|
@@ -43,11 +43,14 @@ Three things to get right:
 
 You have CLI access to a running Base and are asked to change what is deployed, diagnose a problem, or check health.
 
-**Start with [docs/operating.md](docs/operating.md)** for the order of operations. The rule that matters most: `ownbase.yaml` lives in an **external Git repo the user owns**, and the Base only ever reads it. Every change is committed client-side by `ownbasectl` and the Base is then told to reconcile. Never hand-edit anything on the Base, and never write to `runtime/`.
+**Start with [docs/operating.md](docs/operating.md)** for the order of operations. The rule that matters most: `ownbase.yaml` lives in an **external Git repo the user owns**. Operators commit to the tracked ref client-side; agents may push proposal branches via `POST /config`. Never hand-edit anything on the Base, and never write to `runtime/`.
 
 | Need | Doc |
 |---|---|
 | What's deployed on *this* Base | `ownbase.yaml` in its config repo; `ownbasectl status` for live state |
+| Let a service call the daemon API | [docs/api.md](docs/api.md#service-access-over-unix-sockets-ownbase_access); `ownbase_access` in yaml |
+| Propose a config change from the Base | [docs/operating.md](docs/operating.md) agent loop; `POST /config` |
+| Principals, scopes, owner-only routes | [docs/foundation/identity-and-authority.md](docs/foundation/identity-and-authority.md) |
 | `ownbase.yaml` schema, `ref:` updates, secrets | [docs/ownbase-yaml.md](docs/ownbase-yaml.md) |
 | CLI command reference | [docs/cli.md](docs/cli.md) |
 | Daemon HTTP API | [docs/api.md](docs/api.md) |

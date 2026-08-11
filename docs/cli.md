@@ -21,7 +21,7 @@ Every credential — the host, the SSH owner key, the daemon API token, the conf
 
 Commands that talk to a Base open an SSH tunnel to the host in its vault profile and call the daemon's HTTP API through it ([api.md](api.md)). The API port is never exposed to the network. Host keys are verified against `~/.ownbase/known_hosts`, trust-on-first-use, like the `ssh` CLI.
 
-Mutating config commands additionally clone and push the external config repo directly from your machine with your own git credentials. The Base only ever reads that repo.
+Mutating config commands additionally clone and push the external config repo's **tracked ref** directly from your machine with your own git credentials. Agents on the Base may push proposal branches (`ownbase/agent/*`) via `POST /config` when granted `config:write` and a write deploy key on the config repo — see [api.md](api.md#post-config--push-a-proposal-branch).
 
 ## Exit codes
 
@@ -204,6 +204,8 @@ ownbasectl restore mybase --repo s3:… --password <pw>        # flags override
 ```
 
 Repo URL and credentials default to the copy `backup setup` stored in your vault. Flags override; they remain the escape hatch if the vault is unavailable.
+
+After provision, restore **waits for the daemon**, then re-asserts the vault's config-source pin (`POST /config/source`) **before** any success banner or JSON. Failure is fatal: a restored `config-source.yaml` from a compromised snapshot must not become rebuild truth. The wait uses the same readiness path as `create --wait` (default 10 minutes).
 
 Takes every provisioning flag of `create` plus the credential flags of `backup setup`, plus:
 
@@ -389,13 +391,13 @@ ownbasectl upgrade mybase --apply     # pull and restart, streaming progress
 
 ## Config repo, deploy, and services
 
-`ownbase.yaml` lives in an **external git repo you own**. Mutating commands (`config set`, `service *`, `deploy`, `backup setup`) run client-side: `ownbasectl` clones the repo, edits, commits, and pushes with **your** credentials, then asks the Base to pull and reconcile. The Base needs only **read** access.
+`ownbase.yaml` lives in an **external git repo you own**. Operator mutating commands (`config set`, `service *`, `deploy`, `backup setup`) run client-side: `ownbasectl` clones the repo, edits, commits, and pushes the **tracked ref** with **your** credentials, then asks the Base to pull and reconcile. Service repos need only **read** access. The config repo needs **write** only if agents will call `POST /config` (keep branch protection on `main`).
 
 ### `ssh-key add|list <base>`
 
-Provision the Base's read-only git deploy identity — the key the *Base* uses to clone your repos, as distinct from the [`keygen`](#keygen-name) key you use to reach the Base.
+Provision the Base's git deploy identity — the key the *Base* uses to reach your git host, as distinct from the [`keygen`](#keygen-name) key you use to reach the Base.
 
-`add` generates an ed25519 key under `/opt/ownbase/ssh` if none exists, records the given host's SSH host keys, and prints the public key. Register it as a **read-only deploy key** on the config repo and every service repo.
+`add` generates an ed25519 key under `/opt/ownbase/ssh` if none exists, records the given host's SSH host keys, and prints the public key. Register it **read-only** on every service repo; on the config repo use **write** only if agents should propose config. An optional `/opt/ownbase/ssh/config` file is **not** honored and is deleted at daemon start (Host-alias hijack vector).
 
 ```bash
 ownbasectl ssh-key add mybase --host github.com
@@ -406,7 +408,7 @@ Both accept `--json`, which emits `{"public_key": "..."}`.
 
 ### `config setup <name> --repo <url> [--ref <branch>] [--init]`
 
-Point the Base at its config repo. Persists the URL and ref to the local profile, then tells the Base to clone read-only and reconcile. `--ref` defaults to `main`.
+Point the Base at its config repo. Persists the URL and ref to the **vault profile** (the operator's pin) and tells the Base to clone and reconcile. `--ref` defaults to `main`. If `status`/`checkup` later warn that the Base reports a different URL than the vault pins, that is a security signal — re-run `config setup` only for an intentional repoint.
 
 ```bash
 ownbasectl config setup mybase --repo git@github.com:org/mybase-config.git --init
