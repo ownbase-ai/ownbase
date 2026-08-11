@@ -25,7 +25,7 @@
 | Authoritative repo | **External** git repo (e.g. GitHub) holding `ownbase.yaml`; the daemon keeps a checkout at `/opt/ownbase/checkout` (see `internal/configsource`) + one bare clone per service under `/opt/ownbase/repos/` | GitHub is the single source of truth; the tracked ref is applied read-only on the Base |
 | Config authority | Operators commit on the tracked ref **client-side** with `ownbasectl` (their git creds), then `POST /reconcile`. Agents may `POST /config` to push a validated proposal branch under `ownbase/agent/*` only — never the tracked ref. Branch protection on the forge is the merge gate | The Base cannot rewrite the operator's config **history on the default branch**. A write deploy key on the config repo (not service repos) is accepted so agents can propose without borrowing the owner key; the forge, not OwnBase, enforces that proposals stay off `main` until merged |
 | Sync model | Explicit: every mutating `ownbasectl` command triggers `POST /reconcile`, which fetches the config repo and reconciles. A periodic timer backstop runs as a safety net | No post-receive hook, no SIGUSR1, no webhook, no second git host — reconciles happen when the operator asks, deterministically |
-| Service source repos | Every service declares an external `repo:` URL; the daemon keeps a `git clone --bare --mirror` of it under `/opt/ownbase/repos/<service-name>`, refreshed on demand when a new `ref:` is pinned (see `internal/repos`) | The Base is self-contained — the external git host is only consulted when a genuinely new ref appears, never on every reconcile; there is no push-to-Base source path |
+| Service source repos | Every service declares an external `repo:` URL; the daemon keeps a `git clone --bare --mirror` of it under `/opt/ownbase/repos/<service-name>`. Full commit SHAs short-circuit the fetch when already local; **branch and tag refs are always refetched** on reconcile (see `internal/repos`) | A poisoned bare mirror or an upstream force-push must not stick forever. Only immutable full SHAs are safe to skip |
 | SSH identity | The Base's git read credentials are an ownbase-managed ed25519 key under `/opt/ownbase/ssh` (provisioned by `ownbasectl ssh-key`, injected via `GIT_SSH_COMMAND`, backed up by restic) | Survives a rebuild and works for private repos as read-only deploy keys, without relying on an ambient `/root/.ssh` that a fresh VM wouldn't have |
 | Repo ownership | Every bare clone is created by the daemon (root) and then chowned to the admin SSH user recorded at install time (`/opt/ownbase/admin-user`, see `internal/fsowner`) | The daemon runs as root, so a repo it creates is unwritable by any other account by default; chowning keeps file ownership consistent with the admin account |
 
@@ -38,7 +38,7 @@
 | No-registry rule | `image:`/`digest:` do not exist on `ServiceDecl` | Enforced at the schema level, not just convention |
 | Core packages | Caddy is installed by the installer, configured via the `core:` block, upgraded via `ownbasectl upgrade` — never declared as an `ownbase.yaml` service | Decouples infrastructure lifecycle from user service lifecycle; `core:` configures, never sets versions |
 | `repo:` mechanics | `repo: <url>` → daemon creates a local bare clone at `/opt/ownbase/repos/<service-name>` (keyed by service name, collision-free) and builds from it | Declarative external repos, backed up locally like every other repo |
-| Update model | `ownbasectl deploy` resolves the requested ref to a concrete commit SHA (client-side, `git ls-remote`) and commits that SHA to the config repo. Branch-named refs never auto-redeploy; there is no server-side branch-tip pinning, no blank-ref auto-resolution, and no agent-opened PR flow | Every deploy is explicit and deterministic — the committed `ref:` is always a concrete SHA, so what will build is unambiguous |
+| Update model | `ownbasectl deploy` resolves the requested ref to a concrete commit SHA (client-side, `git ls-remote`) and commits that SHA to the config repo. Branch-named refs never auto-redeploy; there is no server-side branch-tip pinning and no blank-ref auto-resolution. Agents may push full-document proposal branches via `POST /config` (`ownbase/agent/*`); they do not auto-merge or bump `ref:` themselves | Every deploy to the tracked ref is explicit and deterministic — the committed `ref:` is always a concrete SHA |
 | `mode:` field | Parsed but has no effect (deprecated no-op); a warning is emitted when present | Removing it outright would break existing files that reject unknown fields |
 | Service image build | `localhost/ownbase-<name>:local`, built by the daemon from the repo at `ref:` | No external registry references; deterministic per ref |
 | Compiler output | Deterministic, byte-identical for the same input | Golden-testable, diff-readable, no compiler state |
@@ -134,7 +134,7 @@
 
 | Decision | Choice | Why |
 |---|---|---|
-| Source-ref detection | Local git CLI against the service's bare repo (`git rev-parse`, `git rev-list --count`, `git tag --sort=-v:refname`) — never reaches upstream | The local bare repo is always current for anything already fetched; only a genuinely new ref triggers a fetch (see `internal/repos`) |
+| Source-ref detection | Local git CLI against the service's bare repo for *reading* current state; fetch always runs for non-SHA refs before that | Branches and tags move; the bare mirror is not trusted as final for mutable names |
 | Commit-SHA refs | Skipped in drift comparison | A 40-char hex ref is already maximally pinned |
 | Moving a ref | `ownbasectl deploy` only — resolves the ref to a SHA client-side and commits it. There is no autonomous in-place ref mutation | Explicit-only: the daemon never changes what's running on its own initiative |
 
@@ -142,7 +142,7 @@
 
 | Decision | Choice | Why |
 |---|---|---|
-| Status API | Served by the daemon at `--status-addr` (default `127.0.0.1:7070`), bearer-token auth via `--api-token` | Daemon already runs as one process; loopback-only by default |
+| Status API | Served by the daemon at `--status-addr` (default `127.0.0.1:7070`) with bearer-token owner auth, **and** on per-service unix sockets when `ownbase_access` is declared (socket path = service principal; scopes gate routes) | Same mux, two credentials; loopback TCP stays off the network |
 | Operating guide | A static README.md seeded into the config repo at bootstrap (replaces the auto-init stub; never overwrites user edits). There is no generated `OWNBASE.md` — that mechanism was tried and removed | The repo holds *intent*; observed state (running/healthy, CVE counts) belongs to the status API, not to git — committing it would bury the user's history in noise commits |
 | Status contract version | `schema_version` field (currently v3) guards against breaking changes | Consumers check the version before parsing |
 
@@ -159,7 +159,7 @@
 | Decision | Choice | Why |
 |---|---|---|
 | Action model | Closed enum (`ActionType` in `internal/schema/taxonomy.go`), enforced by `NewAction` | An action type that isn't in the taxonomy cannot execute; the audit log is exhaustive |
-| Default tiers | Every action currently classified as `autonomous` in effect (there is no external approval device yet) | Tightening the policy later is additive, not a rewrite — see [foundation/architecture-principles.md](foundation/architecture-principles.md), principle 14 |
+| Default tiers | Taxonomy still assigns autonomous / notify / approve. Service principals: `TierApprove` is refused; notify actions (e.g. `config.write`, `config.source`) run and are audited. Owner path has no external approval device yet | Tiers already constrain agents; owner-side approve remains additive later — see [foundation/architecture-principles.md](foundation/architecture-principles.md), principle 14 |
 | Audit log format | Newline-delimited JSON, `0600` | Appendable, grep-able, not group-readable |
 
 ## Remote access (`ownbasectl`)

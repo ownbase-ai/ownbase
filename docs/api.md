@@ -4,30 +4,45 @@
 
 ## Reaching the API
 
-The daemon listens on `--status-addr` (default `127.0.0.1:7070`) — **loopback only**. It is never exposed to the network. Clients reach it through an SSH tunnel; `ownbasectl` opens one automatically from the server profile. Manually:
+The daemon serves the same HTTP mux on two paths:
 
-```bash
-ssh -N -L 7070:127.0.0.1:7070 root@<base-host> &
-curl -H "Authorization: Bearer $(ssh root@<base-host> cat /opt/ownbase/api-token)" \
-  http://127.0.0.1:7070/status
-```
+1. **TCP loopback** — `--status-addr` (default `127.0.0.1:7070`). Never exposed to the network. Clients reach it through an SSH tunnel; `ownbasectl` opens one automatically. Manually:
 
-## Authentication
+   ```bash
+   ssh -N -L 7070:127.0.0.1:7070 root@<base-host> &
+   curl -H "Authorization: Bearer $(ssh root@<base-host> cat /opt/ownbase/api-token)" \
+     http://127.0.0.1:7070/status
+   ```
 
-All endpoints except `GET /health` require a Bearer token:
+2. **Per-service unix sockets** — when a service declares `ownbase_access:`, the daemon listens on `/run/ownbase/svc/<service>/api.sock` and the container bind-mounts that directory at `/run/ownbase/` (socket at `/run/ownbase/api.sock`). Full scope table and lifecycle: [Service access over unix sockets](#service-access-over-unix-sockets-ownbase_access) (documented fully in a follow-up; the auth model is below).
+
+## Authentication and authorization
+
+There are two ways to authenticate, corresponding to the two paths above.
+
+### Owner (Bearer over TCP)
+
+All TCP endpoints except `GET /health` require a Bearer token:
 
 ```
 Authorization: Bearer <token>
 ```
 
-The token is generated at install time and stored at `/opt/ownbase/api-token` (root, 0600) on the Base. A missing, wrong, or empty configured token returns `401 unauthorized` on every endpoint except `GET /health`. Auth never fails open: an empty or missing token leaves the management API unreachable rather than unauthenticated.
+The token is generated at install time and stored at `/opt/ownbase/api-token` (root, 0600) on the Base. A missing, wrong, or empty configured token returns `401 unauthorized` on the TCP path. Auth never fails open: an empty or missing token leaves the management API unreachable rather than unauthenticated. Successful Bearer auth is the **owner** principal.
+
+### Service (unix socket)
+
+Requests that arrive on a per-service unix socket carry a **service principal** derived from the socket path — the socket *is* the credential; no Bearer token is checked. Scopes declared in that service's `ownbase_access:` gate every route (**default-deny**). A missing or insufficient scope returns **`403 forbidden`**, not 401. Owner-only routes (e.g. `/config/source`, `/token/reset`, `/self-update`) refuse every service principal, including those granted `*`.
 
 Common status codes across endpoints:
 
 | Code | Meaning |
 |---|---|
-| `401` | Missing/invalid Bearer token |
+| `400` | Bad request body or invalid config content |
+| `401` | Missing/invalid Bearer token (TCP path only) |
+| `403` | Authenticated but not permitted (socket scope refusal, or owner-only route) |
 | `405` | Wrong HTTP method for the endpoint |
+| `500` | Handler error (git/network failure, etc.) |
 | `501` | The daemon was started without the capability this endpoint needs (e.g. non-Linux platform, callback not wired) |
 
 ---
