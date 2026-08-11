@@ -241,6 +241,12 @@ func runVaultInitRemote(f vaultInitFlags) error {
 
 	password := passwordFromCreds
 	if password == "" {
+		if f.credsStdin {
+			// stdin is already consumed; --password-stdin is rejected above.
+			// Point at the JSON field, not a flag that cannot work here.
+			return withExitCode(exitUsage, errors.New(
+				`master password missing from --creds-stdin JSON — include "password":"…"`))
+		}
 		password, err = readVaultInitPassword(f.passwordStdin, adopting)
 		if err != nil {
 			return err
@@ -285,9 +291,10 @@ func runVaultInitRemote(f vaultInitFlags) error {
 	// Empty path → agent uses ResolveStore (the locator we just wrote).
 	st, err := c.Unlock("", password, agentd.DefaultIdleTimeout)
 	if err != nil {
+		// Recovery is printed once by the fallback; do not embed it again in
+		// the returned error (avoids duplicating the secret on stderr).
 		printRecoveryFallback(f.jsonOut, recovery, err)
-		return fmt.Errorf("vault is in place at %s but unlock failed: %w\n  Recovery string (save this):\n  %s",
-			loc.Location(), err, recovery)
+		return fmt.Errorf("vault is in place at %s but unlock failed: %w", loc.Location(), err)
 	}
 
 	return printVaultInitResult(f.jsonOut, loc.Location(), !adopting, recovery, st)
