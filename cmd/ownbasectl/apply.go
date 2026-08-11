@@ -76,7 +76,7 @@ func runApply(repoDir string, dryRun bool, fakeCurrent, auditLogPath string) err
 		return nil
 	}
 
-	checkpoint := authz.NewTrivialCheckpoint()
+	checkpoint := authz.NewOwnerCheckpoint()
 
 	if dryRun {
 		fmt.Printf("apply --dry-run: %d action(s) (no side effects)\n", len(plan.Actions))

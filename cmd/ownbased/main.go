@@ -321,7 +321,7 @@ func run(cfg agentConfig) error {
 		auditLog = al
 	}
 
-	checkpoint := authz.NewTrivialCheckpoint()
+	checkpoint := authz.NewOwnerCheckpoint()
 
 	// Populate cfg.apiToken from the installer-written file when no flag
 	// was provided. The file is written by install.sh with mode 0600.

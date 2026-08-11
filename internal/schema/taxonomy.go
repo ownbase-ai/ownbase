@@ -131,11 +131,19 @@ type Action struct {
 	// Target is a human-readable description of what the action acts on
 	// (e.g. service name, file path).
 	Target string
+	// Principal is who requested the action. Set via WithPrincipal before
+	// the checkpoint and audit log see it. Empty means "unspecified" and is
+	// treated as owner for backward compatibility on internal reconcile paths.
+	Principal Principal
+	// SessionID optionally correlates the action with an SSH session or HTTP
+	// request for multi-agent forensics. Empty when not applicable.
+	SessionID string
 }
 
 // NewAction constructs an Action, returning an error if actionType is not in
 // the taxonomy. This is the enforcement point: an action that does not appear
-// in the taxonomy cannot be executed.
+// in the taxonomy cannot be executed. Principal defaults to empty (owner
+// semantics); call WithPrincipal before Authorize/Record when known.
 func NewAction(actionType ActionType, target string) (Action, error) {
 	tier, ok := defaultTiers[actionType]
 	if !ok {
@@ -146,6 +154,27 @@ func NewAction(actionType ActionType, target string) (Action, error) {
 		DefaultTier: tier,
 		Target:      target,
 	}, nil
+}
+
+// WithPrincipal returns a copy of a with Principal set.
+func (a Action) WithPrincipal(p Principal) Action {
+	a.Principal = p
+	return a
+}
+
+// WithSessionID returns a copy of a with SessionID set.
+func (a Action) WithSessionID(id string) Action {
+	a.SessionID = id
+	return a
+}
+
+// EffectivePrincipal returns a.Principal, or Owner when unset so legacy call
+// sites that never set a principal keep owner semantics.
+func (a Action) EffectivePrincipal() Principal {
+	if a.Principal.Kind == "" {
+		return Owner()
+	}
+	return a.Principal
 }
 
 // MustNewAction is NewAction that panics on an unknown type. Use only in
