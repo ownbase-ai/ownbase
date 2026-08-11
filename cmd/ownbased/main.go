@@ -1180,7 +1180,8 @@ func reconcileLoop(
 
 	// 2-pre. Open per-service API socket dirs before any container apply so
 	// directory bind-mounts have a host source on first deploy and reboot.
-	if agentCfg.prepareAccess != nil {
+	// Skip on dry-run — Sync creates listeners and may close live sockets.
+	if !dryRun && agentCfg.prepareAccess != nil {
 		agentCfg.prepareAccess(cfg)
 	}
 
