@@ -57,6 +57,7 @@ const (
 	OpLock           = "lock"
 	OpList           = "list"
 	OpGet            = "get"
+	OpGetBackup      = "get-backup"
 	OpPut            = "put"
 	OpDelete         = "delete"
 	OpChangePassword = "change-password"
@@ -99,9 +100,10 @@ type Response struct {
 	// Everything else is a plain message.
 	Code string `json:"code,omitempty"`
 
-	Status  *Status        `json:"status,omitempty"`
-	Names   []string       `json:"names,omitempty"`
-	Profile *vault.Profile `json:"profile,omitempty"`
+	Status  *Status                  `json:"status,omitempty"`
+	Names   []string                 `json:"names,omitempty"`
+	Profile *vault.Profile           `json:"profile,omitempty"`
+	Backup  *vault.BackupCredentials `json:"backup,omitempty"`
 }
 
 // Error codes carried in Response.Code.

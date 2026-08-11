@@ -226,18 +226,13 @@ func (s *Server) dispatch(req Request, shutdown func()) Response {
 			return Response{Error: "put requires a profile"}
 		}
 		return s.withVault(func(v *vault.Vault) Response {
-			// A put that omits the private key must not wipe the one on
-			// record: every caller reads profiles redacted, so a
-			// read-modify-write of an existing Base always arrives without
-			// it. Only an explicit key in the request replaces it.
+			// A put that omits secrets must not wipe the ones on record:
+			// every caller reads profiles redacted, so a read-modify-write
+			// of an existing Base always arrives without them. Only an
+			// explicit value in the request replaces a secret.
 			p := *req.Profile
-			if p.PrivateKey == "" {
-				if existing, err := v.Get(req.Base); err == nil {
-					p.PrivateKey = existing.PrivateKey
-					if p.PublicKey == "" {
-						p.PublicKey = existing.PublicKey
-					}
-				}
+			if existing, err := v.Get(req.Base); err == nil {
+				p.MergeSecretsFrom(existing)
 			}
 			v.Put(req.Base, p)
 			if err := v.Save(); err != nil {
@@ -245,6 +240,19 @@ func (s *Server) dispatch(req Request, shutdown func()) Response {
 			}
 			s.reloadKeyringLocked(v)
 			return Response{OK: true}
+		})
+	case OpGetBackup:
+		return s.withVault(func(v *vault.Vault) Response {
+			p, err := v.Get(req.Base)
+			if err != nil {
+				code := ""
+				if errors.Is(err, vault.ErrNotFound) {
+					code = CodeNotFound
+				}
+				return Response{Error: err.Error(), Code: code}
+			}
+			creds := p.BackupCredentials()
+			return Response{OK: true, Backup: &creds}
 		})
 	case OpDelete:
 		return s.withVault(func(v *vault.Vault) Response {

@@ -140,25 +140,46 @@ func runSecretsGet(base, service, key string) error {
 }
 
 func newSecretsSetCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "set <name> <service> KEY=VALUE...",
+	var stdin bool
+	cmd := &cobra.Command{
+		Use:   "set <name> <service> [KEY=VALUE...]",
 		Short: "Set one or more secrets for a service",
-		Args:  cobra.MinimumNArgs(3),
+		Long: `Set secrets for a service. Values on the command line are visible in
+ps and shell history — prefer --stdin for anything sensitive:
+
+  echo '{"DB_PASSWORD":"…"}' | ownbasectl secrets set mybase myapp --stdin
+
+KEY=VALUE arguments and --stdin JSON may be combined; argv wins on conflict.`,
+		Args: cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSecretsSet(args[0], args[1], args[2:])
+			return runSecretsSet(args[0], args[1], args[2:], stdin)
 		},
 	}
+	cmd.Flags().BoolVar(&stdin, "stdin", false, "read a JSON object of secrets from stdin (avoids secrets in argv)")
+	return cmd
 }
 
 // runSecretsSet sets one or more secret key=value pairs for a service.
-func runSecretsSet(base, service string, kvArgs []string) error {
-	updates := make(map[string]string, len(kvArgs))
+func runSecretsSet(base, service string, kvArgs []string, fromStdin bool) error {
+	updates := make(map[string]string)
+	if fromStdin {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return fmt.Errorf("read --stdin: %w", err)
+		}
+		if err := json.Unmarshal(data, &updates); err != nil {
+			return fmt.Errorf("parse --stdin JSON object: %w", err)
+		}
+	}
 	for _, kv := range kvArgs {
 		idx := strings.IndexByte(kv, '=')
 		if idx < 1 {
 			return fmt.Errorf("invalid KEY=VALUE argument: %q (must contain '=')", kv)
 		}
 		updates[kv[:idx]] = kv[idx+1:]
+	}
+	if len(updates) == 0 {
+		return fmt.Errorf("no secrets to set — pass KEY=VALUE arguments and/or --stdin JSON")
 	}
 
 	conn, err := connectToServer(base)

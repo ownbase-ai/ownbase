@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ownbase/ownbase/internal/backup"
+	"github.com/ownbase/ownbase/internal/vault"
 )
 
 func newBackupCmd() *cobra.Command {
@@ -139,7 +140,7 @@ func runBackupSetup(base, repo string, credFlags backupCredFlags, interval, veri
 		return fmt.Errorf("--repo is required, e.g. --repo s3:s3.amazonaws.com/mybucket/ownbase")
 	}
 	if !dryRun && credFlags.password == "" {
-		return fmt.Errorf("--password is required (the restic repository encryption password — save it somewhere safe, it is never recoverable from OwnBase); or pass --creds-stdin")
+		return fmt.Errorf("--password is required (the restic repository encryption password); or pass --creds-stdin. After setup it is also stored in your vault for restore")
 	}
 
 	edit := func(current string) (string, string, error) {
@@ -195,6 +196,28 @@ func runBackupSetup(base, repo string, credFlags backupCredFlags, interval, veri
 	credsPayload, _ := json.Marshal(creds)
 	if _, err := apiCall(conn, http.MethodPost, "/secrets/backup", credsPayload); err != nil {
 		return fmt.Errorf("store backup credentials: %w", err)
+	}
+
+	// Also escrow a client-side copy in the vault so restore does not need the
+	// password re-typed (and so a destroyed Base is not a circular recovery
+	// problem). Flags remain the source of truth for this invocation.
+	if err := saveProfile(base, func(p *vault.Profile) {
+		p.BackupRepo = repo
+		p.ResticPassword = credFlags.password
+		if credFlags.awsAccessKey != "" {
+			p.AWSAccessKeyID = credFlags.awsAccessKey
+		}
+		if credFlags.awsSecretKey != "" {
+			p.AWSSecretAccessKey = credFlags.awsSecretKey
+		}
+		if credFlags.b2AccountID != "" {
+			p.B2AccountID = credFlags.b2AccountID
+		}
+		if credFlags.b2AccountKey != "" {
+			p.B2AccountKey = credFlags.b2AccountKey
+		}
+	}); err != nil {
+		return fmt.Errorf("store backup credentials in vault: %w", err)
 	}
 
 	fmt.Printf("==> Configuring backup repo %s ...\n", repo)

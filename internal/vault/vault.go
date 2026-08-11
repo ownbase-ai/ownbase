@@ -56,18 +56,24 @@ const (
 // fields so a Base entry is legible in any KDBX client; the rest are custom
 // string fields.
 const (
-	fieldTitle         = "Title"
-	fieldUserName      = "UserName"
-	fieldPassword      = "Password"
-	fieldURL           = "URL"
-	fieldNotes         = "Notes"
-	fieldPrivateKey    = "PrivateKey"
-	fieldPublicKey     = "PublicKey"
-	fieldSSHPort       = "SSHPort"
-	fieldAPIPort       = "APIPort"
-	fieldConfigRepoURL = "ConfigRepoURL"
-	fieldConfigRef     = "ConfigRef"
-	fieldLocalVM       = "LocalVM"
+	fieldTitle              = "Title"
+	fieldUserName           = "UserName"
+	fieldPassword           = "Password"
+	fieldURL                = "URL"
+	fieldNotes              = "Notes"
+	fieldPrivateKey         = "PrivateKey"
+	fieldPublicKey          = "PublicKey"
+	fieldSSHPort            = "SSHPort"
+	fieldAPIPort            = "APIPort"
+	fieldConfigRepoURL      = "ConfigRepoURL"
+	fieldConfigRef          = "ConfigRef"
+	fieldLocalVM            = "LocalVM"
+	fieldBackupRepo         = "BackupRepo"
+	fieldResticPassword     = "ResticPassword"
+	fieldAWSAccessKeyID     = "AWSAccessKeyID"
+	fieldAWSSecretAccessKey = "AWSSecretAccessKey"
+	fieldB2AccountID        = "B2AccountID"
+	fieldB2AccountKey       = "B2AccountKey"
 )
 
 // entryNotes explains the entry to anyone who opens the vault in a KDBX
@@ -122,6 +128,20 @@ type Profile struct {
 	PrivateKey string `json:"private_key,omitempty"`
 	// PublicKey is the matching authorized_keys line.
 	PublicKey string `json:"public_key,omitempty"`
+
+	// BackupRepo is the restic repository URL configured for this Base
+	// (e.g. s3:s3.amazonaws.com/bucket/ownbase). Non-secret; also in
+	// ownbase.yaml. Stored here so restore can find it without flags.
+	BackupRepo string `json:"backup_repo,omitempty"`
+	// ResticPassword is the restic repository encryption password.
+	// KDBX-protected. The only client-side copy after backup setup.
+	ResticPassword string `json:"restic_password,omitempty"`
+	// AWSAccessKeyID / AWSSecretAccessKey are optional S3 destination creds.
+	AWSAccessKeyID     string `json:"aws_access_key_id,omitempty"`
+	AWSSecretAccessKey string `json:"aws_secret_access_key,omitempty"`
+	// B2AccountID / B2AccountKey are optional Backblaze B2 destination creds.
+	B2AccountID  string `json:"b2_account_id,omitempty"`
+	B2AccountKey string `json:"b2_account_key,omitempty"`
 }
 
 // KnownLocalVM reports whether the Base is definitely a local Multipass VM.
@@ -189,12 +209,78 @@ func (p Profile) PublicKeyLine() string {
 	return strings.TrimSpace(p.PublicKey)
 }
 
-// Redacted returns the profile with the private key removed. This is what
-// leaves the credential agent: a caller gets everything it needs to address a
-// Base, and asks the agent's ssh-agent socket to sign for it.
+// Redacted returns a copy safe to hand to ordinary callers over the agent
+// control socket. Signing material and backup secrets are stripped; the
+// caller asks the ssh-agent socket to sign, and uses GetBackup for restore
+// credentials. Token stays: the CLI needs it for every daemon API call, and
+// the control socket is already mode 0600 same-user.
 func (p Profile) Redacted() Profile {
 	p.PrivateKey = ""
+	p.ResticPassword = ""
+	p.AWSSecretAccessKey = ""
+	p.B2AccountKey = ""
 	return p
+}
+
+// BackupCredentials is the restic restore material for one Base. Returned by
+// the agent only via the dedicated get-backup op — never embedded in a
+// redacted Profile.
+type BackupCredentials struct {
+	Repo               string `json:"repo,omitempty"`
+	Password           string `json:"password,omitempty"`
+	AWSAccessKeyID     string `json:"aws_access_key_id,omitempty"`
+	AWSSecretAccessKey string `json:"aws_secret_access_key,omitempty"`
+	B2AccountID        string `json:"b2_account_id,omitempty"`
+	B2AccountKey       string `json:"b2_account_key,omitempty"`
+}
+
+// BackupCredentials returns the restic material stored on this profile.
+func (p Profile) BackupCredentials() BackupCredentials {
+	return BackupCredentials{
+		Repo:               p.BackupRepo,
+		Password:           p.ResticPassword,
+		AWSAccessKeyID:     p.AWSAccessKeyID,
+		AWSSecretAccessKey: p.AWSSecretAccessKey,
+		B2AccountID:        p.B2AccountID,
+		B2AccountKey:       p.B2AccountKey,
+	}
+}
+
+// HasBackupCredentials reports whether enough is stored to attempt a restore
+// without CLI flags (repo URL + restic password).
+func (p Profile) HasBackupCredentials() bool {
+	return strings.TrimSpace(p.BackupRepo) != "" && strings.TrimSpace(p.ResticPassword) != ""
+}
+
+// MergeSecretsFrom copies any empty sensitive field on p from existing. Used
+// by the agent on put so a redacted read-modify-write cannot wipe secrets.
+func (p *Profile) MergeSecretsFrom(existing Profile) {
+	if p.PrivateKey == "" {
+		p.PrivateKey = existing.PrivateKey
+		if p.PublicKey == "" {
+			p.PublicKey = existing.PublicKey
+		}
+	}
+	if p.ResticPassword == "" {
+		p.ResticPassword = existing.ResticPassword
+	}
+	if p.AWSSecretAccessKey == "" {
+		p.AWSSecretAccessKey = existing.AWSSecretAccessKey
+	}
+	if p.B2AccountKey == "" {
+		p.B2AccountKey = existing.B2AccountKey
+	}
+	// Non-secret backup fields: preserve when the put omitted them so a
+	// partial update (e.g. adopt refreshing the host) does not clear the repo.
+	if p.BackupRepo == "" {
+		p.BackupRepo = existing.BackupRepo
+	}
+	if p.AWSAccessKeyID == "" {
+		p.AWSAccessKeyID = existing.AWSAccessKeyID
+	}
+	if p.B2AccountID == "" {
+		p.B2AccountID = existing.B2AccountID
+	}
 }
 
 // Vault is an open (decrypted) vault. It is not safe for concurrent use;
@@ -667,6 +753,12 @@ func entryFromProfile(name string, p Profile) gokeepasslib.Entry {
 	if p.LocalVM != nil {
 		set(fieldLocalVM, strconv.FormatBool(*p.LocalVM))
 	}
+	set(fieldBackupRepo, p.BackupRepo)
+	setProtected(fieldResticPassword, p.ResticPassword)
+	set(fieldAWSAccessKeyID, p.AWSAccessKeyID)
+	setProtected(fieldAWSSecretAccessKey, p.AWSSecretAccessKey)
+	set(fieldB2AccountID, p.B2AccountID)
+	setProtected(fieldB2AccountKey, p.B2AccountKey)
 	set(fieldNotes, entryNotes)
 	return e
 }
@@ -680,13 +772,19 @@ func value_(key, content string, protected bool) gokeepasslib.ValueData {
 
 func profileFromEntry(e gokeepasslib.Entry) Profile {
 	p := Profile{
-		Host:          e.GetContent(fieldURL),
-		SSHUser:       e.GetContent(fieldUserName),
-		Token:         e.GetPassword(),
-		ConfigRepoURL: e.GetContent(fieldConfigRepoURL),
-		ConfigRef:     e.GetContent(fieldConfigRef),
-		PrivateKey:    e.GetContent(fieldPrivateKey),
-		PublicKey:     e.GetContent(fieldPublicKey),
+		Host:               e.GetContent(fieldURL),
+		SSHUser:            e.GetContent(fieldUserName),
+		Token:              e.GetPassword(),
+		ConfigRepoURL:      e.GetContent(fieldConfigRepoURL),
+		ConfigRef:          e.GetContent(fieldConfigRef),
+		PrivateKey:         e.GetContent(fieldPrivateKey),
+		PublicKey:          e.GetContent(fieldPublicKey),
+		BackupRepo:         e.GetContent(fieldBackupRepo),
+		ResticPassword:     e.GetContent(fieldResticPassword),
+		AWSAccessKeyID:     e.GetContent(fieldAWSAccessKeyID),
+		AWSSecretAccessKey: e.GetContent(fieldAWSSecretAccessKey),
+		B2AccountID:        e.GetContent(fieldB2AccountID),
+		B2AccountKey:       e.GetContent(fieldB2AccountKey),
 	}
 	if n, err := strconv.Atoi(e.GetContent(fieldSSHPort)); err == nil {
 		p.SSHPort = n

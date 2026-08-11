@@ -104,6 +104,19 @@ func (c *Client) Unlock(vaultPath, password string, idleTimeout time.Duration) (
 	return resp.Status, nil
 }
 
+// GetBackup returns the restic restore credentials stored for base. Empty
+// fields mean backup setup has not been run (or only partially configured).
+func (c *Client) GetBackup(base string) (vault.BackupCredentials, error) {
+	resp, err := c.call(Request{Op: OpGetBackup, Base: base})
+	if err != nil {
+		return vault.BackupCredentials{}, err
+	}
+	if resp.Backup == nil {
+		return vault.BackupCredentials{}, nil
+	}
+	return *resp.Backup, nil
+}
+
 // Lock closes the vault, dropping the master password and every key from
 // memory.
 func (c *Client) Lock() error {

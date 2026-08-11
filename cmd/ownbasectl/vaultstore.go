@@ -76,14 +76,27 @@ func loadProfile(base string) (vault.Profile, error) {
 // failure.
 func isMissingBase(err error) bool { return errors.Is(err, vault.ErrNotFound) }
 
-// putProfile stores a Base's profile. An empty PrivateKey leaves whatever key
-// the vault already holds for this Base in place.
+// putProfile stores a Base's profile. Empty secret fields leave whatever the
+// vault already holds for this Base in place (see Profile.MergeSecretsFrom).
 func putProfile(base string, p vault.Profile) error {
 	c, err := agentClient()
 	if err != nil {
 		return err
 	}
 	return vaultError(c.Put(base, p))
+}
+
+// loadBackupCreds returns the restic restore material stored for base.
+func loadBackupCreds(base string) (vault.BackupCredentials, error) {
+	c, err := agentClient()
+	if err != nil {
+		return vault.BackupCredentials{}, err
+	}
+	creds, err := c.GetBackup(base)
+	if err != nil {
+		return vault.BackupCredentials{}, vaultError(err)
+	}
+	return creds, nil
 }
 
 // saveProfile applies mutate to an existing Base's profile and persists it.
