@@ -1,16 +1,19 @@
 // Package configsource manages the external git repository that holds this
-// Base's ownbase.yaml, and keeps the local read-only checkout in sync with it.
+// Base's ownbase.yaml, and keeps the local checkout in sync with it.
 //
-// The daemon never writes to the config repo: the operator commits changes
-// client-side via ownbasectl (deploy / config set / service *), pushing with
-// their own git credentials. The Base needs only READ access, provided by the
-// managed SSH identity (see internal/gitssh).
+// The tracked ref (usually main) is applied read-only via EnsureCheckout.
+// Operators still commit directly with ownbasectl. Agents and other
+// principals may propose changes via PushBranch, which pushes only to
+// ownbase/agent/* branches — never the tracked ref. Branch protection on
+// the forge is the merge gate; after merge, POST /reconcile applies it.
+//
+// The managed SSH identity (internal/gitssh) needs read access for fetch and
+// write access on the config repo only for PushBranch.
 //
 // The config source (repo URL + ref) is recorded in a small state file at
 // /opt/ownbase/config-source.yaml, written by `ownbasectl config setup`. On
 // every reconcile the daemon fetches the configured ref and hard-resets the
-// checkout to it, so the checkout is always a faithful mirror of the remote —
-// any local edit is discarded (there is no local source of truth).
+// checkout to it — any local edit is discarded.
 package configsource
 
 import (

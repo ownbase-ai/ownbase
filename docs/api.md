@@ -174,15 +174,43 @@ Behind `ownbasectl self-update`. Body: `{"version":"latest"}` (or a release tag)
 
 ## Config
 
-The config repo is **external** (e.g. on GitHub). The daemon has read-only access and never writes to it — all mutations are committed client-side by `ownbasectl` (which pushes with the operator's git credentials) and applied on the Base via `POST /reconcile`. There is no `POST /config` write endpoint.
+The config repo is **external** (e.g. on GitHub). The tracked ref is applied read-only via checkout + reconcile. Operators still push the tracked ref with `ownbasectl` and their own git credentials. Agents may propose changes with `POST /config`, which pushes only `ownbase/agent/*` branches — never the tracked ref. Enable write on the **config repo** deploy key only; keep branch protection on `main`.
 
 ### `GET /config` — read the current ownbase.yaml
 
-Behind `ownbasectl config get`. Returns the raw YAML document from the read-only checkout as `text/x-yaml`, not JSON. `POST /config` returns `405` (write path removed).
+Behind `ownbasectl config get`. Returns the raw YAML document from the checkout as `text/x-yaml`, not JSON.
+
+### `POST /config` — push a proposal branch
+
+Validates `content` as `ownbase.yaml`, commits as `ownbased` in a temp clone, and pushes `HEAD:refs/heads/<branch>` where `branch` must start with `ownbase/agent/` (auto-generated when omitted). Does **not** update the tracked ref and does **not** reconcile — merge on the forge, then `POST /reconcile`.
+
+Request:
+
+```json
+{
+  "content": "schema_version: v1\nservices:\n  web:\n    repo: https://github.com/example/web.git\n    port: 8080\n",
+  "message": "optional commit message",
+  "branch": "ownbase/agent/optional-name"
+}
+```
+
+Response:
+
+```json
+{
+  "status": "pushed",
+  "branch": "ownbase/agent/20260810T120000Z",
+  "sha": "…",
+  "repo_url": "git@github.com:org/ownbase-config.git",
+  "message": "…"
+}
+```
+
+Returns `400` for invalid YAML / no change / bad branch name, `501` when write is not wired, `500` on git/network failure. Audits `config.write`.
 
 ### `POST /reconcile` — pull the config repo and reconcile
 
-Behind every client-side mutation (`config set`, `service *`, `deploy`, `backup setup`). Fetches the external config repo into `/opt/ownbase/checkout` (hard-reset to the tracked ref) and wakes the reconcile loop immediately.
+Behind every client-side mutation (`config set`, `service *`, `deploy`, `backup setup`) and after a proposal branch is merged. Fetches the external config repo into `/opt/ownbase/checkout` (hard-reset to the tracked ref) and wakes the reconcile loop immediately.
 
 Response: `{"status": "reconciling"}`. Returns `500` if the fetch fails, `501` if the daemon has no reconcile capability wired.
 
