@@ -223,6 +223,15 @@ present locally (see internal/repos).`,
 
 func runServiceUpdate(cmd *cobra.Command, base, name string, f serviceFieldFlags, jsonOut bool) error {
 	changed := cmd.Flags().Changed
+	// Validate scopes before mutateConfig clones the config repo.
+	var access []string
+	if changed("ownbase-access") {
+		var err error
+		access, err = normalizeOwnbaseAccess(name, f.ownbaseAccess)
+		if err != nil {
+			return err
+		}
+	}
 	err := mutateConfig(base, func(current string) (string, string, error) {
 		cfg, err := schema.ParseConfig(strings.NewReader(current))
 		if err != nil {
@@ -269,10 +278,6 @@ func runServiceUpdate(cmd *cobra.Command, base, name string, f serviceFieldFlags
 			decl.AddCapabilities = f.addCapabilities
 		}
 		if changed("ownbase-access") {
-			access, err := normalizeOwnbaseAccess(name, f.ownbaseAccess)
-			if err != nil {
-				return "", "", err
-			}
 			decl.OwnbaseAccess = access
 		}
 		if changed("env") {
