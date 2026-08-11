@@ -110,9 +110,13 @@ func PushBranch(ctx context.Context, src Source, content, message, branch string
 	}
 	sha := strings.TrimSpace(string(shaOut))
 
-	// Branch-only push. Never HEAD:main / tracked ref.
-	refspec := "HEAD:refs/heads/" + branch
-	if out, err := runGit(ctx, gitEnv, workdir, "push", "origin", refspec); err != nil {
+	// Branch-only push. Never HEAD:main / tracked ref. Force-with-lease so a
+	// named ownbase/agent/* proposal can be updated/retried; lease refuses if
+	// someone else moved the branch tip since our clone (we always base on
+	// tracked tip, so lease is against whatever was there if the branch
+	// existed — plain + fails on non-ff).
+	refspec := "+HEAD:refs/heads/" + branch
+	if out, err := runGit(ctx, gitEnv, workdir, "push", "--force-with-lease", "origin", refspec); err != nil {
 		return zero, fmt.Errorf("git push %s: %w\n%s", refspec, err, out)
 	}
 

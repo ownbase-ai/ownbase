@@ -111,3 +111,37 @@ func TestNormalizeBranch(t *testing.T) {
 		t.Fatal("expected prefix required")
 	}
 }
+
+func TestPushBranch_UpdatesNamedBranch(t *testing.T) {
+	bare := newRemote(t, validYAML)
+	src := Source{RepoURL: bare, Ref: "main"}
+	const name = "ownbase/agent/named"
+	if _, err := PushBranch(context.Background(), src, validYAML2, "first", name, nil); err != nil {
+		t.Fatalf("first push: %v", err)
+	}
+	// Second push with different content must replace the proposal tip.
+	third := `schema_version: v1
+services:
+  web:
+    repo: https://github.com/example/web.git
+    port: 9090
+`
+	res, err := PushBranch(context.Background(), src, third, "second", name, nil)
+	if err != nil {
+		t.Fatalf("second push: %v", err)
+	}
+	work := filepath.Join(t.TempDir(), "check")
+	gitRun(t, filepath.Dir(work), "clone", bare, work)
+	gitRun(t, work, "fetch", "origin", name)
+	gitRun(t, work, "checkout", name)
+	got, err := os.ReadFile(filepath.Join(work, "ownbase.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != third {
+		t.Errorf("branch content = %q", got)
+	}
+	if res.Branch != name {
+		t.Errorf("branch = %q", res.Branch)
+	}
+}
