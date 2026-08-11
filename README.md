@@ -118,15 +118,22 @@ A fresh Base exposes nothing but SSH, so there is nothing to secure yet and no r
 
 ### 6. Point the Base at a config repo
 
-`ownbase.yaml` is the single source of truth for what runs on the Base. It lives in a **Git repo you own** (on GitHub or anywhere else). The Base only ever reads it; every change is committed from your machine with your credentials.
+`ownbase.yaml` is the single source of truth for what runs on the Base. It lives in a **Git repo you own** (on GitHub or anywhere else). Operators commit to the tracked ref from your machine with your credentials; agents may push proposal branches (`ownbase/agent/*`) via the daemon after you grant write on the config repo.
 
-The Base needs read access, so give it a deploy key first:
+Give the Base a deploy key first:
 
 ```bash
 ownbasectl ssh-key add mybase --host github.com
 ```
 
-Add the printed key as a **read-only deploy key** on the config repo, and on each service repo the Base will build from. (This is a human step too — it needs access to the repo's settings.) Then:
+Register the printed key:
+
+| Repo | Permission | Why |
+|---|---|---|
+| Each **service** repo the Base builds from | **Read-only** deploy key | Clone and build only |
+| The **config** repo | **Read-only** by default; **write** only if agents should call `POST /config` | Tracked ref stays protected by branch protection on `main` |
+
+(This is a human step — it needs access to the repo's settings.) Then:
 
 ```bash
 ownbasectl config setup mybase --repo git@github.com:you/mybase-config.git --init

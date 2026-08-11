@@ -147,16 +147,16 @@ Without `--wait`, `create` returns after step 4 and the daemon keeps working in 
 | 6 | Refused — valid command, but it would have discarded another Base's API token. Nothing was changed |
 | 7 | The vault is locked, or there is no vault yet. Run `ownbasectl vault unlock`. Nothing was changed |
 
-### Two different SSH keys
+### Two different SSH keys (and two permission scopes)
 
 Easy to conflate, so worth stating plainly:
 
-| | Direction | Created by | Private half lives |
-|---|---|---|---|
-| **Owner key** | your machine → the Base | `ownbasectl keygen <name>` | in your vault, never as a file |
-| **Deploy key** | the Base → GitHub | `ownbasectl ssh-key add <name>` | on the Base, never leaves it |
+| | Direction | Created by | Private half lives | Permission on git host |
+|---|---|---|---|---|
+| **Owner key** | your machine → the Base | `ownbasectl keygen <name>` | in your vault, never as a file | n/a (SSH into the server) |
+| **Deploy key** | the Base → git host | `ownbasectl ssh-key add <name>` | on the Base, never leaves it | **Read-only** on every **service** repo; on the **config** repo: read-only by default, **write** only if agents should propose config via `POST /config` |
 
-The owner key must exist before the server does, because the provider authorizes it at creation time. The deploy key is created afterward and registered read-only on your repos.
+The owner key must exist before the server does, because the provider authorizes it at creation time. The deploy key is created afterward. If you grant write on the config repo, keep **branch protection on the default branch** — that is the merge gate; the Base only ever pushes `ownbase/agent/*` proposal branches, never `main`.
 
 Neither one is ever a plaintext file you have to look after. The owner key is in the vault and signed for by the credential agent; if you want plain `ssh` or `git` to use it, point `SSH_AUTH_SOCK` at that agent rather than exporting the key:
 
@@ -182,7 +182,7 @@ ownbasectl restore mybase \
   --password <the-restic-password>
 ```
 
-This provisions the target (add `--remote <host>` for a server), runs the installer in rebuild mode, restores the latest verified snapshot — the age key, secrets, and service data included — and lets the daemon's normal reconcile bring every service back.
+This provisions the target (add `--remote <host>` for a server), runs the installer in rebuild mode, restores the latest verified snapshot — the age key, secrets, and service data included — waits for the daemon to become healthy, then **re-asserts the config-source pin from your vault** (`POST /config/source`) before printing success. That step is fatal if it fails: a restored `config-source.yaml` from a compromised snapshot must not become rebuild truth. The vault pin wins. Then the daemon's normal reconcile brings every service back.
 
 Restore is also how you move to a bigger machine: it expects to point the Base's name at a new host, so no `--replace` is needed.
 

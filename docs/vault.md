@@ -11,7 +11,7 @@ A **vault** is a single [KDBX 4](https://keepass.info/help/kb/kdbx.html) file �
 | Host, SSH user, SSH port | how to reach the machine |
 | Owner SSH private key | the credential that gets you in. **This is the only copy** |
 | Daemon API token | the Bearer token for the Base's HTTP API |
-| Config repo URL and branch | where that Base's `ownbase.yaml` lives |
+| Config repo URL and branch | where that Base's `ownbase.yaml` lives — the operator's **trust anchor** (see below), not a cache |
 | Backup repo URL + restic password (+ cloud keys) | so `restore` does not need flags after `backup setup` |
 
 There is no other client-side state that matters. `~/.ownbase/` alongside it holds only non-secrets: a text file pointing at the vault, `known_hosts`, the agent's log, and your session recordings.
@@ -151,6 +151,17 @@ OwnBase/
 Standard KeePass fields are used where they fit — `Title`, `URL`, `UserName`, `Password` — so the entry is legible in any client rather than being a bag of custom attributes.
 
 You can keep your own passwords in the same file. OwnBase only ever replaces the `OwnBase` group when it writes, and it re-reads the file first if something else changed it, so your entries survive. It is still a shared mutable file: avoid saving from KeePassXC and `ownbasectl` at the same instant, the same way you would with any document in a synced folder.
+
+## Config repo pin is a trust anchor
+
+`ConfigRepoURL` / `ConfigRef` in the vault are not a mirror of whatever the Base last reported. They are the operator's pin of which config repo this Base should track:
+
+- `status` / `checkup` may **backfill** an empty pin from the Base (older profiles).
+- They **never overwrite** a non-empty pin when the Base reports a different URL — they warn instead. A rooted Base can rewrite `/opt/ownbase/config-source.yaml`; the vault must not follow it blindly.
+- **Intentional repoint:** `ownbasectl config setup <base> --repo <url>`.
+- **Rebuild:** `ownbasectl restore` re-asserts the vault pin onto the Base after the daemon is healthy and before success is reported. Losing the vault means losing that anchor for the next rebuild.
+
+See [identity-and-authority.md](foundation/identity-and-authority.md) and [troubleshooting.md](troubleshooting.md).
 
 ## Backing it up
 
