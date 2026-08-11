@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -59,6 +60,62 @@ func TestFileStore_CreateConflictsWhenExists(t *testing.T) {
 	}
 	if _, err := s.Put(ctx, []byte("b"), vault.VersionNone); !errors.Is(err, vault.ErrConflict) {
 		t.Fatalf("second create: %v, want ErrConflict", err)
+	}
+	// Winner must be intact — the losing create must not have truncated it.
+	got, _, err := s.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, []byte("a")) {
+		t.Errorf("data after failed create = %q, want %q", got, "a")
+	}
+}
+
+// TestFileStore_ConcurrentCreates keeps the winner's bytes. Two creators
+// racing used to share path+".new"; the loser's O_TRUNC could wipe the
+// winner after a hard-link publish. Unique temps + flock close that.
+func TestFileStore_ConcurrentCreates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vault.kdbx")
+	s := vault.NewFileStore(path)
+	ctx := context.Background()
+
+	const n = 8
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		i := i
+		go func() {
+			payload := []byte(fmt.Sprintf("creator-%d-xxxxxxxx", i))
+			_, err := s.Put(ctx, payload, vault.VersionNone)
+			errs <- err
+		}()
+	}
+
+	var wins, conflicts int
+	for i := 0; i < n; i++ {
+		err := <-errs
+		switch {
+		case err == nil:
+			wins++
+		case errors.Is(err, vault.ErrConflict):
+			conflicts++
+		default:
+			t.Errorf("Put: unexpected error: %v", err)
+		}
+	}
+	if wins != 1 {
+		t.Errorf("wins = %d, want exactly 1", wins)
+	}
+	if conflicts != n-1 {
+		t.Errorf("conflicts = %d, want %d", conflicts, n-1)
+	}
+
+	got, _, err := s.Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Whatever won must be a full creator-N payload, not truncated/empty.
+	if !bytes.Contains(got, []byte("creator-")) || !bytes.Contains(got, []byte("-xxxxxxxx")) {
+		t.Errorf("winner payload corrupt: %q", got)
 	}
 }
 

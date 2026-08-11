@@ -6,23 +6,28 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"golang.org/x/sys/unix"
 )
 
-// FileStore persists the vault as a single local file. Writes go to a sibling
-// temp file, are fsynced, and published into place so an interrupted save
-// cannot leave a half-written vault where the only copy of an owner key used
-// to be.
+// FileStore persists the vault as a single local file.
 //
-// Publish differs by mode:
-//   - create (VersionNone): hard-link the temp onto the final path. Link fails
-//     with ErrExist if the destination already appeared, which is the
-//     create-if-absent property Rename lacks on Unix (Rename replaces).
-//   - update (CAS): rename after re-checking the version stamp.
+// Writes:
+//  1. Take an exclusive flock on <path>.lock so concurrent Puts (two
+//     CreateStore races, or Create vs KeePassXC) cannot interleave.
+//  2. Write ciphertext to a unique temp in the same directory.
+//  3. fsync the temp.
+//  4. Re-check the CAS condition under the lock.
+//  5. os.Rename the temp onto the final path.
 //
-// Version is "mtime_ns/size", matching the previous in-process stamp format so
-// behavior is unchanged for local vaults. Get stats the open file descriptor
-// (not the path) so the Version always describes the bytes just read, even if
-// a concurrent rename replaced the path underneath.
+// The lock is what makes create-if-absent safe: Rename replaces on Unix, so
+// without serialization a late creator would clobber the winner. A fixed
+// sibling name like path+".new" is deliberately avoided — publishing via
+// hard-link while that name still pointed at the live inode let a concurrent
+// OpenFile(..., O_TRUNC) wipe the winner's vault.
+//
+// Version is "mtime_ns/size". Get stats the open file descriptor (not the
+// path) so the Version always describes the bytes just read.
 type FileStore struct {
 	path string
 }
@@ -61,87 +66,58 @@ func (s *FileStore) Get(_ context.Context) ([]byte, Version, error) {
 
 // Put writes data under the CAS condition described by ifVersion.
 func (s *FileStore) Put(_ context.Context, data []byte, ifVersion Version) (Version, error) {
-	current, statErr := fileVersion(s.path)
-	exists := statErr == nil
-	if statErr != nil && !os.IsNotExist(statErr) {
-		return VersionNone, statErr
-	}
-
-	switch {
-	case ifVersion == VersionNone:
-		if exists {
-			return VersionNone, fmt.Errorf("%w: %s already exists", ErrConflict, s.path)
-		}
-	default:
-		if !exists {
-			return VersionNone, fmt.Errorf("%w: %s no longer exists", ErrConflict, s.path)
-		}
-		if current != ifVersion {
-			return VersionNone, fmt.Errorf("%w: %s", ErrConflict, s.path)
-		}
-	}
-
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return VersionNone, fmt.Errorf("create %s: %w", filepath.Dir(s.path), err)
 	}
 
-	tmp := s.path + ".new"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	unlock, err := s.acquireLock()
 	if err != nil {
-		return VersionNone, fmt.Errorf("write vault %s: %w", tmp, err)
+		return VersionNone, err
 	}
-	// Ensure the temp name is gone on every path. For create (Link) the temp
-	// is a second name for the published inode and must be unlinked; for
-	// update (Rename) the temp is consumed and must not be removed.
-	removeTemp := true
-	defer func() {
-		if removeTemp {
-			_ = os.Remove(tmp)
-		}
-	}()
+	defer unlock()
 
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		return VersionNone, fmt.Errorf("write vault %s: %w", tmp, err)
+	if err := s.checkCAS(ifVersion); err != nil {
+		return VersionNone, err
 	}
-	// fsync before publish: without it a crash can leave a zero-length or
+
+	tmp, err := os.CreateTemp(filepath.Dir(s.path), "."+filepath.Base(s.path)+".tmp.*")
+	if err != nil {
+		return VersionNone, fmt.Errorf("create temp vault: %w", err)
+	}
+	tmpPath := tmp.Name()
+	// Unique temp: safe to remove on every path. Rename consumes the name on
+	// success, so Remove after a successful Rename is a no-op (ENOENT).
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	// CreateTemp uses 0600; re-chmod so a looser umask cannot widen it if the
+	// runtime ever changes, and so the mode matches what we document.
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return VersionNone, fmt.Errorf("chmod temp vault: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return VersionNone, fmt.Errorf("write vault %s: %w", tmpPath, err)
+	}
+	// fsync before rename: without it a crash can leave a zero-length or
 	// stale file at the final path on filesystems that reorder metadata.
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		return VersionNone, fmt.Errorf("sync vault %s: %w", tmp, err)
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return VersionNone, fmt.Errorf("sync vault %s: %w", tmpPath, err)
 	}
-	if err := f.Close(); err != nil {
-		return VersionNone, fmt.Errorf("write vault %s: %w", tmp, err)
+	if err := tmp.Close(); err != nil {
+		return VersionNone, fmt.Errorf("write vault %s: %w", tmpPath, err)
 	}
 
-	if ifVersion == VersionNone {
-		// Hard-link is atomic create-if-absent: it fails if s.path already
-		// exists. os.Rename would replace a concurrent creator and still
-		// report success, destroying their vault.
-		if err := os.Link(tmp, s.path); err != nil {
-			if os.IsExist(err) {
-				return VersionNone, fmt.Errorf("%w: %s already exists", ErrConflict, s.path)
-			}
-			return VersionNone, fmt.Errorf("create vault %s: %w", s.path, err)
-		}
-		// removeTemp stays true — drop the extra directory entry.
-	} else {
-		// Re-check CAS immediately before rename. Between the earlier stat
-		// and now another writer may have landed.
-		now, err := fileVersion(s.path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return VersionNone, fmt.Errorf("%w: %s no longer exists", ErrConflict, s.path)
-			}
-			return VersionNone, err
-		}
-		if now != ifVersion {
-			return VersionNone, fmt.Errorf("%w: %s", ErrConflict, s.path)
-		}
-		if err := os.Rename(tmp, s.path); err != nil {
-			return VersionNone, fmt.Errorf("replace vault %s: %w", s.path, err)
-		}
-		removeTemp = false
+	// Re-check under the lock immediately before rename. Another writer is
+	// excluded by the flock, but we still verify the stamp so a Put that
+	// raced its own Get (before the lock) cannot apply a stale update.
+	if err := s.checkCAS(ifVersion); err != nil {
+		return VersionNone, err
+	}
+
+	if err := os.Rename(tmpPath, s.path); err != nil {
+		return VersionNone, fmt.Errorf("replace vault %s: %w", s.path, err)
 	}
 
 	ver, err := fileVersion(s.path)
@@ -149,6 +125,54 @@ func (s *FileStore) Put(_ context.Context, data []byte, ifVersion Version) (Vers
 		return VersionNone, err
 	}
 	return ver, nil
+}
+
+// checkCAS evaluates the create/update condition against the live path.
+// Caller must hold the file lock.
+func (s *FileStore) checkCAS(ifVersion Version) error {
+	current, statErr := fileVersion(s.path)
+	exists := statErr == nil
+	if statErr != nil && !os.IsNotExist(statErr) {
+		return statErr
+	}
+	switch {
+	case ifVersion == VersionNone:
+		if exists {
+			return fmt.Errorf("%w: %s already exists", ErrConflict, s.path)
+		}
+	default:
+		if !exists {
+			return fmt.Errorf("%w: %s no longer exists", ErrConflict, s.path)
+		}
+		if current != ifVersion {
+			return fmt.Errorf("%w: %s", ErrConflict, s.path)
+		}
+	}
+	return nil
+}
+
+// acquireLock takes an exclusive flock on <path>.lock for the duration of a
+// Put. Mirrors internal/agentd's serve lock: the lock file is the mutex; its
+// contents are irrelevant.
+func (s *FileStore) acquireLock() (unlock func(), err error) {
+	lockPath := s.path + ".lock"
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open vault lock %s: %w", lockPath, err)
+	}
+	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("lock vault %s: %w", lockPath, err)
+	}
+	var done bool
+	return func() {
+		if done {
+			return
+		}
+		done = true
+		_ = unix.Flock(int(f.Fd()), unix.LOCK_UN)
+		_ = f.Close()
+	}, nil
 }
 
 // fileVersion returns the mtime_ns/size stamp for path.
