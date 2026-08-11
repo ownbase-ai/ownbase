@@ -14,7 +14,7 @@ The daemon serves the same HTTP mux on two paths:
      http://127.0.0.1:7070/status
    ```
 
-2. **Per-service unix sockets** — when a service declares `ownbase_access:`, the daemon listens on `/run/ownbase/svc/<service>/api.sock` and the container bind-mounts that directory at `/run/ownbase/` (socket at `/run/ownbase/api.sock`). Full scope table and lifecycle: [Service access over unix sockets](#service-access-over-unix-sockets-ownbase_access) (documented fully in a follow-up; the auth model is below).
+2. **Per-service unix sockets** — when a service declares `ownbase_access:`, the daemon listens on `/run/ownbase/svc/<service>/api.sock` and the container bind-mounts that directory at `/run/ownbase/` (socket at `/run/ownbase/api.sock`). See [Service access over unix sockets](#service-access-over-unix-sockets-ownbase_access).
 
 ## Authentication and authorization
 
@@ -44,6 +44,84 @@ Common status codes across endpoints:
 | `405` | Wrong HTTP method for the endpoint |
 | `500` | Handler error (git/network failure, etc.) |
 | `501` | The daemon was started without the capability this endpoint needs (e.g. non-Linux platform, callback not wired) |
+
+---
+
+## Service access over unix sockets (`ownbase_access`)
+
+A service that needs to call the daemon API (read status, propose config, run a backup, …) declares scopes under `ownbase_access:` in `ownbase.yaml`. Empty or absent means **no access** — the default.
+
+### Paths and mount
+
+| Side | Path |
+|---|---|
+| Host socket file | `/run/ownbase/svc/<service>/api.sock` |
+| Host directory (bind source) | `/run/ownbase/svc/<service>/` |
+| Container mount | `/run/ownbase/` → directory bind |
+| Container socket | `/run/ownbase/api.sock` |
+
+The mount is the **directory**, not the socket file. Replacing the socket inode on daemon restart would leave a file bind pointing at a stale inode; a directory bind stays valid while the socket appears and vanishes inside it. Socket directories are created **before** containers are applied on each reconcile so the bind source always exists on first deploy and reboot. Sync is skipped under `--dry-run` (dry-runs must not open or close live listeners).
+
+Socket mode is `0666` so non-root containers can connect. The ACL is structural: only services that declare `ownbase_access` get a socket, and scopes gate every route.
+
+### The socket is the credential
+
+Whoever can `connect()` to a service's socket is that **service principal**. No Bearer token is checked on the socket path. Scopes are default-deny: a route with no matching grant returns `403 forbidden`.
+
+From inside the container:
+
+```bash
+curl --unix-socket /run/ownbase/api.sock http://localhost/status
+curl --unix-socket /run/ownbase/api.sock http://localhost/health
+curl --unix-socket /run/ownbase/api.sock \
+  -X POST http://localhost/config \
+  -H 'content-type: application/json' \
+  -d '{"content":"schema_version: v1\nservices: {}\n"}'
+```
+
+(`services: {}` is illustrative — real content must pass schema validation.)
+
+### Scope → route table (normative)
+
+| Scope | Methods and paths |
+|---|---|
+| *(any grant)* | `GET /health` (always OK when the service has a non-empty grant entry) |
+| `status:read` | `GET /status`, `/version`, `/core/status`, `/db/status` |
+| `config:read` | `GET /config` |
+| `config:write` | `POST /config` (proposal branch only — see below) |
+| `reconcile` | `POST /reconcile` |
+| `backup:run` | `POST /backup/run` |
+| `backup:verify` | `POST /backup/verify` |
+| `sshkey:read` | `GET /ssh-key` |
+| `secrets:<svc>:read` | `GET /secrets/<svc>`, `GET /secrets/<svc>/<key>` |
+| `secrets:<svc>:write` | `POST /secrets/<svc>`, `DELETE /secrets/<svc>/<key>` |
+| `*` | Every grantable scope above (still not owner-only routes) |
+
+Prefix wildcards like `secrets:myapp:*` match `secrets:myapp:read` and `secrets:myapp:write`.
+
+Some grant strings exist for the taxonomy checkpoint (`service:<name>:deploy`, `service:<name>:stop`, bare `deploy`) but have **no HTTP route** today — declaring them does nothing on the socket until a route is added.
+
+### Owner-only routes (refuse services, including `*`)
+
+| Path | Why |
+|---|---|
+| `POST /config/source` | Repoints the Base at a different config repo |
+| `POST /self-update`, `POST /upgrade` | Replace the daemon / core package |
+| `POST /token/reset` | Rotate the owner Bearer token |
+| `POST /security/*` | Host patch, reboot, scanner install, scan |
+| `POST /db/restore` | Point-in-time database restore |
+| `POST /ssh-key` | Create/rotate the deploy identity |
+| `GET /secrets/` (list all services) | Cross-service secret enumeration without a target |
+| Anything unmapped | Default-deny |
+
+### Lifecycle
+
+1. Config is parsed; for each service with `ownbase_access`, the host directory and socket are created/updated (`prepareAccess`, before container apply).
+2. Containers start with the directory bind when the unit is written.
+3. After each reconcile, grants and listeners are re-synced to match live config (services that lost `ownbase_access` lose their socket).
+4. On daemon shutdown, socket files are removed; directories may remain until containers stop.
+
+Declaration syntax and validation: [ownbase-yaml.md — Daemon API access](ownbase-yaml.md#daemon-api-access-ownbase_access).
 
 ---
 
@@ -193,11 +271,13 @@ The config repo is **external** (e.g. on GitHub). The tracked ref is applied rea
 
 ### `GET /config` — read the current ownbase.yaml
 
-Behind `ownbasectl config get`. Returns the raw YAML document from the checkout as `text/x-yaml`, not JSON.
+Behind `ownbasectl config get`. Returns the raw YAML document from the checkout as `application/x-yaml; charset=utf-8`, not JSON. Scope: `config:read`.
 
 ### `POST /config` — push a proposal branch
 
-Validates `content` as `ownbase.yaml`, commits as `ownbased` in a temp clone, and pushes `HEAD:refs/heads/<branch>` where `branch` must start with `ownbase/agent/` (auto-generated when omitted). Does **not** update the tracked ref and does **not** reconcile — merge on the forge, then `POST /reconcile`.
+Validates `content` as `ownbase.yaml`, commits as `ownbased` in a temp clone (never dirties the live checkout), and pushes with `--force-with-lease` to `refs/heads/<branch>` where `branch` must start with `ownbase/agent/` (auto-generated when omitted). Named proposal branches can be updated; the tracked ref / `main` / `master` are refused. Does **not** update the tracked ref and does **not** reconcile — merge on the forge, then `POST /reconcile`.
+
+Requires the Base's managed SSH key to have **write** access on the config repo. Scope: `config:write` (or owner Bearer). Audits `config.write` with the acting principal.
 
 Request:
 
@@ -221,17 +301,17 @@ Response:
 }
 ```
 
-Returns `400` for invalid YAML / no change / bad branch name, `501` when write is not wired, `500` on git/network failure. Audits `config.write`.
+Returns `400` for invalid YAML / no change / bad branch name, `501` when write is not wired, `500` on git/network failure (including deploy key lacking write, or branch protection rejecting the push).
 
 ### `POST /reconcile` — pull the config repo and reconcile
 
-Behind every client-side mutation (`config set`, `service *`, `deploy`, `backup setup`) and after a proposal branch is merged. Fetches the external config repo into `/opt/ownbase/checkout` (hard-reset to the tracked ref) and wakes the reconcile loop immediately.
+Behind every client-side mutation (`config set`, `service *`, `deploy`, `backup setup`) and after a proposal branch is merged. Fetches the external config repo into `/opt/ownbase/checkout` (hard-reset to the tracked ref) and wakes the reconcile loop immediately. Scope: `reconcile`.
 
 Response: `{"status": "reconciling"}`. Returns `500` if the fetch fails, `501` if the daemon has no reconcile capability wired.
 
 ### `POST /config/source` — point the Base at its config repo
 
-Behind `ownbasectl config setup`. Records the external config repo (`repo_url` + optional `ref`) in `/opt/ownbase/config-source.yaml`, (re)clones it read-only, and reconciles.
+Behind `ownbasectl config setup`. Records the external config repo (`repo_url` + optional `ref`) in `/opt/ownbase/config-source.yaml`, (re)clones it, and reconciles. **Owner-only** (socket callers always get 403). Audits `config.source`.
 
 Request:
 
@@ -243,7 +323,7 @@ Request:
 
 ### `GET /ssh-key` / `POST /ssh-key` — manage the Base's git deploy identity
 
-Behind `ownbasectl ssh-key`. `GET` returns the Base's managed SSH public key (`{"public_key": "…"}`, empty when none exists). `POST` ensures the managed ed25519 key exists under `/opt/ownbase/ssh`, optionally records a host's SSH host keys, and returns the public key to register as a read-only deploy key.
+Behind `ownbasectl ssh-key`. `GET` returns the Base's managed SSH public key (`{"public_key": "…"}`, empty when none exists); scope `sshkey:read`. `POST` ensures the managed ed25519 key exists under `/opt/ownbase/ssh`, optionally records a host's SSH host keys, and returns the public key — **owner-only**. Register it read-only on service repos; register it with **write** on the config repo only if agents should call `POST /config`. Keep branch protection on the tracked ref.
 
 Request (POST, body optional):
 
@@ -341,13 +421,15 @@ Streams plain text with the same two trailers as `POST /backup/verify`. `---RESU
 
 Secrets are age-encrypted YAML files at `/opt/ownbase/secrets/<service>.yaml.age`. The API decrypts/re-encrypts on the Base; plaintext exists only in memory on the Base and inside the SSH tunnel.
 
-| Method + path | Behavior | Response |
-|---|---|---|
-| `GET /secrets/` | List services that have secrets | `{"services": ["backup", "myapp"]}` |
-| `GET /secrets/{service}` | List key names (never values) | `{"service": "myapp", "keys": ["DB_URL"]}` |
-| `GET /secrets/{service}/{key}` | Read one decrypted value | `{"key": "DB_URL", "value": "postgres://…"}` |
-| `POST /secrets/{service}` | Merge key-value pairs (body: `{"KEY": "value", …}`); creates the file if absent | `{"service": "myapp", "updated": 2}` |
-| `DELETE /secrets/{service}/{key}` | Remove one key | `{"service": "myapp", "deleted": "DB_URL"}` |
+On the socket path, per-service routes require `secrets:<svc>:read` or `secrets:<svc>:write`. **`GET /secrets/` (list all services) is owner-only** even when `*` is granted.
+
+| Method + path | Behavior | Response | Socket scope |
+|---|---|---|---|
+| `GET /secrets/` | List services that have secrets | `{"services": ["backup", "myapp"]}` | owner only |
+| `GET /secrets/{service}` | List key names (never values) | `{"service": "myapp", "keys": ["DB_URL"]}` | `secrets:<svc>:read` |
+| `GET /secrets/{service}/{key}` | Read one decrypted value | `{"key": "DB_URL", "value": "postgres://…"}` | `secrets:<svc>:read` |
+| `POST /secrets/{service}` | Merge key-value pairs (body: `{"KEY": "value", …}`); creates the file if absent | `{"service": "myapp", "updated": 2}` | `secrets:<svc>:write` |
+| `DELETE /secrets/{service}/{key}` | Remove one key | `{"service": "myapp", "deleted": "DB_URL"}` | `secrets:<svc>:write` |
 
 `404` when a key does not exist.
 
