@@ -8,9 +8,14 @@ package main
 // as flags/env only for this one process — never written to disk on the host.
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/ownbase/ownbase/internal/vault"
 )
 
 func newRestoreCmd() *cobra.Command {
@@ -50,6 +55,11 @@ the vault is unavailable.`,
 	// host, so the guard that stops `create` from silently repointing a name
 	// does not apply here.
 	target.repointOK = true
+	// Re-assert vault config pin inside finishCreate (after daemon ready,
+	// before success banner) so a failure cannot report success first.
+	target.afterReady = func(base string) error {
+		return reassertConfigSource(base, target.jsonOut)
+	}
 	return cmd
 }
 
@@ -119,11 +129,49 @@ func runBaseRestore(name, backupRepo string, creds backupCredFlags, forceRebuild
 		return fmt.Errorf("restore failed: %w", err)
 	}
 
+	// afterReady (reassertConfigSource) already ran inside finishCreate before
+	// any success banner. Additional human notes only.
 	if !target.jsonOut {
 		fmt.Println()
 		fmt.Println("Restore complete. The daemon is now reconciling from the restored")
 		fmt.Println("bare repo + secrets — give it a minute, then check:")
 		fmt.Printf("  ownbasectl checkup %s\n", name)
+	}
+	return nil
+}
+
+// reassertConfigSource POSTs the vault profile's config repo so a rebuild
+// cannot keep a compromised config-source.yaml. Called from finishCreate
+// after the daemon is healthy and before success output. No-op when the
+// vault has no config URL. Failure is fatal for restore.
+func reassertConfigSource(name string, quiet bool) error {
+	p, err := loadProfile(name)
+	if err != nil {
+		return err
+	}
+	url := strings.TrimSpace(p.ConfigRepoURL)
+	if url == "" {
+		return nil
+	}
+	ref := strings.TrimSpace(p.ConfigRef)
+	if ref == "" {
+		ref = vault.DefaultConfigRef
+	}
+
+	if !quiet {
+		progress("==> Re-asserting config source from vault")
+	}
+	conn, err := connectToServer(name)
+	if err != nil {
+		return err
+	}
+	defer conn.close()
+	payload, _ := json.Marshal(map[string]string{"repo_url": url, "ref": ref})
+	if _, err := apiCall(conn, http.MethodPost, "/config/source", payload); err != nil {
+		return fmt.Errorf("POST /config/source: %w", err)
+	}
+	if !quiet {
+		fmt.Printf("Re-asserted config source from vault: %s (%s)\n", url, ref)
 	}
 	return nil
 }

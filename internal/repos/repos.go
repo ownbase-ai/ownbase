@@ -184,7 +184,11 @@ func ensureRepoAtWithOwner(repoPath, externalURL, adminUser string) error {
 }
 
 func fetchRefAt(repoPath, externalURL, ref string) error {
-	if hasRefAt(repoPath, ref) {
+	// Full commit SHAs are immutable: if the object is already local, skip
+	// the network round-trip. Branches and tags move, so always refresh them
+	// — otherwise a poisoned bare mirror (or a force-push upstream) would
+	// stick forever because hasRefAt short-circuits on the stale name.
+	if isFullCommitSHA(ref) && hasRefAt(repoPath, ref) {
 		return nil
 	}
 	cmd := exec.Command("git", "-C", repoPath, "fetch", externalURL, "+refs/*:refs/*", "--prune")
@@ -194,4 +198,21 @@ func fetchRefAt(repoPath, externalURL, ref string) error {
 		return fmt.Errorf("git fetch %s: %w\n%s", externalURL, err, out)
 	}
 	return nil
+}
+
+// isFullCommitSHA reports whether ref looks like a full git object id
+// (40-char SHA-1 or 64-char SHA-256 hex). Abbreviated SHAs and branch/tag
+// names return false.
+func isFullCommitSHA(ref string) bool {
+	n := len(ref)
+	if n != 40 && n != 64 {
+		return false
+	}
+	for i := 0; i < n; i++ {
+		c := ref[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+			return false
+		}
+	}
+	return true
 }

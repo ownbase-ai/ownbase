@@ -252,6 +252,12 @@ func run(cfg agentConfig) error {
 		if err := githost.TrustAllRepos(); err != nil {
 			fmt.Fprintf(os.Stderr, "ownbased: trust local repos (non-fatal): %v\n", err)
 		}
+		// A restored or planted ssh config can redirect every git fetch via
+		// Host aliases while status still shows the correct URL. Remove it
+		// before any git operation; Command never honors it either.
+		if err := gitssh.RejectConfig(gitssh.DefaultDir); err != nil {
+			fmt.Fprintf(os.Stderr, "ownbased: reject ssh config (non-fatal): %v\n", err)
+		}
 		src, err := configsource.Load(configsource.DefaultStatePath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "ownbased: load config source (non-fatal): %v\n", err)

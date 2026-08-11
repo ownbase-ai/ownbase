@@ -46,9 +46,10 @@ func TestCommand_SingleKey(t *testing.T) {
 	}
 }
 
-func TestCommand_ConfigTakesPrecedence(t *testing.T) {
+func TestCommand_IgnoresConfigFile(t *testing.T) {
 	dir := t.TempDir()
-	// Both a key and a config file exist; config wins.
+	// Both a key and a config file exist; key path must win (config is a
+	// hijack vector via Host aliases after restore).
 	if err := os.WriteFile(filepath.Join(dir, KeyName), []byte("PRIVATE"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -57,8 +58,29 @@ func TestCommand_ConfigTakesPrecedence(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := Command(dir)
-	if !strings.Contains(got, "-F "+cfgPath) {
-		t.Errorf("Command = %q, want it to use ssh -F <config>", got)
+	if strings.Contains(got, "-F ") {
+		t.Errorf("Command = %q, must not use ssh -F <config>", got)
+	}
+	if !strings.Contains(got, "-i "+filepath.Join(dir, KeyName)) {
+		t.Errorf("Command = %q, want managed key", got)
+	}
+}
+
+func TestRejectConfig_RemovesFile(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config")
+	if err := os.WriteFile(cfgPath, []byte("Host evil\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RejectConfig(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(cfgPath); !os.IsNotExist(err) {
+		t.Fatalf("config still present: %v", err)
+	}
+	// Idempotent when absent.
+	if err := RejectConfig(dir); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -1,14 +1,16 @@
 package main
 
-// config_sync.go keeps the vault profile's ConfigRepoURL in step with what
-// the Base is actually tracking. The profile can lag — adopt used to skip
-// it, or config setup ran on another laptop — and then the app shows "not
-// set up yet" while services are clearly running from a real ownbase.yaml.
+// config_sync.go keeps the vault profile's ConfigRepoURL aligned with a
+// legitimate Base, without letting a compromised Base rewrite the vault.
 //
-// adopt reads config-source.yaml over SSH before saving the profile.
-// status/checkup run ensureConfigKnown so a later connect still repairs an
-// older profile and, for daemons that do not yet emit status.config, injects
-// the source into the JSON the UI already reads.
+// The vault is the operator's pin of which config repo this Base should
+// track. status/checkup may *backfill* an empty profile from the Base (older
+// installs, adopt on another laptop), but never overwrite a non-empty vault
+// URL when the Base reports something different — that mismatch is a signal,
+// not a sync opportunity (a rooted Base can rewrite config-source.yaml).
+//
+// adopt still reads config-source.yaml over SSH before first save.
+// status/checkup also inject status.config for older daemons that omit it.
 
 import (
 	"encoding/json"
@@ -23,14 +25,12 @@ import (
 	"github.com/ownbase/ownbase/internal/vault"
 )
 
-// ensureConfigKnown makes sure body carries a config section when the Base
-// has one, and that the vault profile matches. Never fails the caller: a
-// missing source or a vault write error is non-fatal for status display.
+// ensureConfigKnown makes sure body carries a config section when known, and
+// may backfill an *empty* vault profile from the Base. Never fails the caller:
+// a missing source or a vault write error is non-fatal for status display.
 //
-// Order: status JSON (new daemons) → vault profile (already backfilled) →
-// SSH read of config-source.yaml (older daemons / first repair only). The
-// profile check avoids an extra SSH round-trip on every status after adopt
-// or a previous backfill.
+// Order: status JSON (new daemons) → vault profile → SSH read of
+// config-source.yaml (older daemons / first backfill only).
 //
 // Vault access here is best-effort against an already-running agent — never
 // EnsureRunning. status/checkup only reach this after connectToServer, so the
@@ -136,7 +136,9 @@ func parseConfigSourceYAML(data []byte) (url, ref string) {
 	return strings.TrimSpace(src.RepoURL), strings.TrimSpace(src.Ref)
 }
 
-// applyConfigSource sets profile config fields from a Base-reported source.
+// applyConfigSource sets profile config fields from a trusted source
+// (config setup, adopt, or empty-profile backfill). Callers that must not
+// overwrite a pin use syncProfileConfig instead.
 func applyConfigSource(p *vault.Profile, url, ref string) {
 	if url == "" {
 		return
@@ -163,12 +165,39 @@ func tryLoadProfile(base string) (vault.Profile, bool) {
 	return p, true
 }
 
+// syncProfileConfig backfills the vault when the profile has no config URL
+// yet. If the vault already pins a different URL than the Base reports, it
+// warns and leaves the vault unchanged — a compromised Base must not rewrite
+// the operator's pin.
 func syncProfileConfig(base, url, ref string) {
+	if url == "" {
+		return
+	}
 	p, ok := tryLoadProfile(base)
 	if !ok {
 		return
 	}
-	if p.ConfigRepoURL == url && (ref == "" || p.ConfigRef == ref || (p.ConfigRef == "" && ref == vault.DefaultConfigRef)) {
+	pinned := strings.TrimSpace(p.ConfigRepoURL)
+	if pinned != "" {
+		if pinned == url {
+			// Same repo; optionally fill a missing ref.
+			if ref != "" && p.ConfigRef == "" {
+				p.ConfigRef = ref
+				c, err := agentd.NewClient()
+				if err != nil {
+					return
+				}
+				if err := c.Put(base, p); err != nil {
+					fmt.Fprintf(os.Stderr, "ownbasectl: warning: could not save config ref to the vault: %v\n", err)
+				}
+			}
+			return
+		}
+		fmt.Fprintf(os.Stderr,
+			"ownbasectl: warning: Base %q reports config repo %s but the vault pins %s — leaving the vault unchanged\n"+
+				"  If you intended to repoint this Base, run: ownbasectl config setup %s --repo <url>\n"+
+				"  If you did not, investigate the Base (config-source.yaml may have been rewritten)\n",
+			base, url, pinned, base)
 		return
 	}
 	applyConfigSource(&p, url, ref)
