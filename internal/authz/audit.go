@@ -28,12 +28,14 @@ const (
 // one record per line (JSON Lines / NDJSON). The format is stable and
 // exportable with standard tools (jq, grep, etc.).
 type AuditRecord struct {
-	Time    time.Time `json:"time"`
-	Action  string    `json:"action"`
-	Target  string    `json:"target"`
-	Tier    string    `json:"tier"`
-	Outcome string    `json:"outcome"`
-	Error   string    `json:"error,omitempty"`
+	Time      time.Time `json:"time"`
+	Action    string    `json:"action"`
+	Target    string    `json:"target"`
+	Tier      string    `json:"tier"`
+	Outcome   string    `json:"outcome"`
+	Principal string    `json:"principal,omitempty"`
+	SessionID string    `json:"session_id,omitempty"`
+	Error     string    `json:"error,omitempty"`
 }
 
 // AuditLogger records every agent action and its outcome. The interface exists
@@ -71,12 +73,14 @@ func NewAuditLog(path string) (*AuditLog, error) {
 // Record appends one audit entry to the file.
 func (l *AuditLog) Record(action schema.Action, outcome, errMsg string) error {
 	r := AuditRecord{
-		Time:    time.Now().UTC(),
-		Action:  string(action.Type),
-		Target:  action.Target,
-		Tier:    string(action.DefaultTier),
-		Outcome: outcome,
-		Error:   errMsg,
+		Time:      time.Now().UTC(),
+		Action:    string(action.Type),
+		Target:    action.Target,
+		Tier:      string(action.DefaultTier),
+		Outcome:   outcome,
+		Principal: action.EffectivePrincipal().String(),
+		SessionID: action.SessionID,
+		Error:     errMsg,
 	}
 	data, err := json.Marshal(r)
 	if err != nil {
@@ -120,12 +124,14 @@ type MemAuditLog struct {
 // Record appends the entry to the in-memory slice.
 func (m *MemAuditLog) Record(action schema.Action, outcome, errMsg string) error {
 	m.Records = append(m.Records, AuditRecord{
-		Time:    time.Now().UTC(),
-		Action:  string(action.Type),
-		Target:  action.Target,
-		Tier:    string(action.DefaultTier),
-		Outcome: outcome,
-		Error:   errMsg,
+		Time:      time.Now().UTC(),
+		Action:    string(action.Type),
+		Target:    action.Target,
+		Tier:      string(action.DefaultTier),
+		Outcome:   outcome,
+		Principal: action.EffectivePrincipal().String(),
+		SessionID: action.SessionID,
+		Error:     errMsg,
 	})
 	return nil
 }
