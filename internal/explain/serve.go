@@ -158,8 +158,12 @@ func (s *StatusServer) Handler(token string) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
-		if !authorizeBearer(w, r, s.currentToken()) {
-			return
+		// Service principals arrive via unix socket with principal already in
+		// context (scope checked by SocketManager). Owner path needs Bearer.
+		if _, ok := PrincipalFromContext(r.Context()); !ok {
+			if !authorizeBearer(w, r, s.currentToken()) {
+				return
+			}
 		}
 		st := s.Get()
 		w.Header().Set("Content-Type", "application/json")

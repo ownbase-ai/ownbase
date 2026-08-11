@@ -67,8 +67,13 @@ func renderContainer(c ContainerModel) string {
 		fmt.Fprintf(&b, "Network=%s.network\n", net)
 	}
 
-	// Named volume mounts.
+	// Volume mounts: named Podman volumes, or absolute host-path binds
+	// (ownbase API sockets only — see VolumeMount.HostPath).
 	for _, vm := range c.VolumeMounts {
+		if vm.HostPath != "" {
+			fmt.Fprintf(&b, "Volume=%s:%s\n", vm.HostPath, vm.MountPath)
+			continue
+		}
 		fmt.Fprintf(&b, "Volume=%s:%s\n", vm.VolumeName, vm.MountPath)
 	}
 

@@ -6,6 +6,8 @@ package authz
 
 import (
 	"fmt"
+	"net/http"
+	"strings"
 
 	"github.com/ownbase/ownbase/internal/schema"
 )
@@ -116,6 +118,119 @@ func (c *GrantCheckpoint) Authorize(action schema.Action) error {
 	return nil
 }
 
+// ScopeStatusRead is the grant scope for GET /status (and similar read-only
+// observability). Not a taxonomy ActionType — checked directly by the HTTP
+// layer via ScopeAllowed.
+const ScopeStatusRead = "status:read"
+
+// ScopeConfigRead is the grant scope for GET /config.
+const ScopeConfigRead = "config:read"
+
+// ScopeReconcile is the grant scope for POST /reconcile.
+const ScopeReconcile = "reconcile"
+
+// ScopeBackupRun is the grant scope for POST /backup/run.
+const ScopeBackupRun = "backup:run"
+
+// ScopeBackupVerify is the grant scope for POST /backup/verify.
+const ScopeBackupVerify = "backup:verify"
+
+// ScopeSSHKeyRead is the grant scope for GET /ssh-key.
+const ScopeSSHKeyRead = "sshkey:read"
+
+// ScopeSecretsRead returns the grant scope for reading secrets of a service.
+func ScopeSecretsRead(service string) string { return "secrets:" + service + ":read" }
+
+// ScopeSecretsWrite returns the grant scope for writing secrets of a service.
+func ScopeSecretsWrite(service string) string { return "secrets:" + service + ":write" }
+
+// HTTPAccess describes what a service principal needs to call an HTTP route.
+// Owner-only routes refuse every service principal, even those granted "*".
+type HTTPAccess struct {
+	// Scope is the grant string required (e.g. "status:read"). Empty when
+	// OwnerOnly is true, or when the route is always allowed (health).
+	Scope string
+	// OwnerOnly means only the owner principal may call this route.
+	OwnerOnly bool
+	// AlwaysOK means any service with a non-empty grant entry may call
+	// (used for /health liveness only).
+	AlwaysOK bool
+}
+
+// RouteAccess maps an HTTP method+path to the access rule for service
+// principals. Unknown routes and host-mutating routes are owner-only.
+// Default-deny: a missing mapping is OwnerOnly, never open.
+func RouteAccess(method, path string) HTTPAccess {
+	path = strings.TrimSuffix(path, "/")
+	if path == "" {
+		path = "/"
+	}
+	method = strings.ToUpper(method)
+
+	if path == "/health" {
+		return HTTPAccess{AlwaysOK: true}
+	}
+
+	switch path {
+	case "/status", "/version", "/core/status", "/db/status":
+		if method == http.MethodGet {
+			return HTTPAccess{Scope: ScopeStatusRead}
+		}
+	case "/config":
+		if method == http.MethodGet {
+			return HTTPAccess{Scope: ScopeConfigRead}
+		}
+	case "/reconcile":
+		if method == http.MethodPost {
+			return HTTPAccess{Scope: ScopeReconcile}
+		}
+	case "/backup/run":
+		if method == http.MethodPost {
+			return HTTPAccess{Scope: ScopeBackupRun}
+		}
+	case "/backup/verify":
+		if method == http.MethodPost {
+			return HTTPAccess{Scope: ScopeBackupVerify}
+		}
+	case "/ssh-key":
+		if method == http.MethodGet {
+			return HTTPAccess{Scope: ScopeSSHKeyRead}
+		}
+		// POST creates/rotates the deploy key — owner only.
+		return HTTPAccess{OwnerOnly: true}
+	}
+
+	if strings.HasPrefix(path, "/secrets/") || path == "/secrets" {
+		return secretsRouteAccess(method, path)
+	}
+
+	// /config/source, /self-update, /upgrade, /token/reset, /security/*,
+	// /db/restore, and anything else — owner only.
+	return HTTPAccess{OwnerOnly: true}
+}
+
+func secretsRouteAccess(method, path string) HTTPAccess {
+	// /secrets/ or /secrets → list all services (no single target) — owner only.
+	rest := strings.TrimPrefix(path, "/secrets")
+	rest = strings.TrimPrefix(rest, "/")
+	if rest == "" {
+		return HTTPAccess{OwnerOnly: true}
+	}
+	parts := strings.SplitN(rest, "/", 2)
+	service := parts[0]
+	if service == "" {
+		return HTTPAccess{OwnerOnly: true}
+	}
+	switch method {
+	case http.MethodGet:
+		return HTTPAccess{Scope: ScopeSecretsRead(service)}
+	case http.MethodPost, http.MethodDelete:
+		return HTTPAccess{Scope: ScopeSecretsWrite(service)}
+	default:
+		return HTTPAccess{OwnerOnly: true}
+	}
+}
+
 // scopeForAction maps a taxonomy action to a grant scope string. Returns ""
 // when the action is not exposable to services at all.
 func scopeForAction(action schema.Action) string {
@@ -152,6 +267,29 @@ func scopeForAction(action schema.Action) string {
 	}
 }
 
+// ScopeAllowed reports whether want is covered by granted scopes.
+// Exported so the HTTP layer can check non-taxonomy scopes (status:read).
+func ScopeAllowed(granted []string, want string) bool {
+	return scopeAllowed(granted, want)
+}
+
+// ScopesFor reports the scopes granted to service, or nil if none.
+func (c *GrantCheckpoint) ScopesFor(service string) []string {
+	if c == nil {
+		return nil
+	}
+	return c.ByService[service]
+}
+
+// HasGrant reports whether service has any grant entry (even empty scopes).
+func (c *GrantCheckpoint) HasGrant(service string) bool {
+	if c == nil {
+		return false
+	}
+	_, ok := c.ByService[service]
+	return ok
+}
+
 func scopeAllowed(granted []string, want string) bool {
 	for _, g := range granted {
 		if g == want || g == "*" {
@@ -166,4 +304,47 @@ func scopeAllowed(granted []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// GrantsFromConfig builds grant entries from ownbase_access declarations.
+func GrantsFromConfig(cfg *schema.OwnbaseConfig) []Grant {
+	if cfg == nil {
+		return nil
+	}
+	var out []Grant
+	for name, svc := range cfg.Services {
+		if len(svc.OwnbaseAccess) == 0 {
+			continue
+		}
+		scopes := append([]string(nil), svc.OwnbaseAccess...)
+		out = append(out, Grant{Service: name, Scopes: scopes})
+	}
+	return out
+}
+
+// CompositeCheckpoint routes owner principals to OwnerCheckpoint and service
+// principals to GrantCheckpoint.
+type CompositeCheckpoint struct {
+	Owner  Checkpoint
+	Grants *GrantCheckpoint
+}
+
+// NewCompositeCheckpoint returns a checkpoint that dispatches by principal.
+func NewCompositeCheckpoint(grants *GrantCheckpoint) Checkpoint {
+	if grants == nil {
+		grants = NewGrantCheckpoint(nil)
+	}
+	return &CompositeCheckpoint{
+		Owner:  NewOwnerCheckpoint(),
+		Grants: grants,
+	}
+}
+
+// Authorize dispatches on principal kind.
+func (c *CompositeCheckpoint) Authorize(action schema.Action) error {
+	p := action.EffectivePrincipal()
+	if p.IsOwner() {
+		return c.Owner.Authorize(action)
+	}
+	return c.Grants.Authorize(action)
 }
