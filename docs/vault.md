@@ -12,6 +12,7 @@ A **vault** is a single [KDBX 4](https://keepass.info/help/kb/kdbx.html) file â€
 | Owner SSH private key | the credential that gets you in. **This is the only copy** |
 | Daemon API token | the Bearer token for the Base's HTTP API |
 | Config repo URL and branch | where that Base's `ownbase.yaml` lives |
+| Backup repo URL + restic password (+ cloud keys) | so `restore` does not need flags after `backup setup` |
 
 There is no other client-side state that matters. `~/.ownbase/` alongside it holds only non-secrets: a text file pointing at the vault, `known_hosts`, the agent's log, and your session recordings.
 

@@ -194,21 +194,22 @@ ownbasectl delete mybase --yes        # skip the confirmation
 
 `delete` never destroys a remote server. For a profile known to be remote it removes only the local profile.
 
-### `restore <name> --repo <restic-url> --password <pw>`
+### `restore <name> [--repo <restic-url>] [--password <pw>]`
 
 Reconstruct a Base from backups onto a fresh VM or server — the disaster-recovery drill as one command.
 
 ```bash
-ownbasectl restore mybase \
-  --repo s3:s3.amazonaws.com/my-bucket/ownbase \
-  --password <the-restic-password>
+ownbasectl restore mybase                                    # repo + password from vault
+ownbasectl restore mybase --repo s3:… --password <pw>        # flags override
 ```
+
+Repo URL and credentials default to the copy `backup setup` stored in your vault. Flags override; they remain the escape hatch if the vault is unavailable.
 
 Takes every provisioning flag of `create` plus the credential flags of `backup setup`, plus:
 
 | Flag | Meaning |
 |---|---|
-| `--repo` | restic repository URL to restore from (required) |
+| `--repo` | restic repository URL (default: from vault) |
 | `--force` | restore even if the latest snapshot was never verified restorable |
 
 Restore expects to point the Base's name at a new machine, so `--replace` is not needed. This is also how you move to a bigger server.
@@ -252,13 +253,13 @@ ownbasectl backup status mybase    # last snapshot, restorable?, last verify dri
 | Flag (setup) | Meaning |
 |---|---|
 | `--repo` | restic repository URL — `s3:`, `b2:`, or `sftp:` (required) |
-| `--password` | repository encryption password (required; **save it — it is never recoverable from OwnBase**) |
+| `--password` | repository encryption password (required on setup; also stored in your vault for restore) |
 | `--aws-access-key-id` / `--aws-secret-access-key` | credentials for `s3:` repos |
 | `--b2-account-id` / `--b2-account-key` | credentials for `b2:` repos |
 | `--interval` | snapshot cadence (default `1h`) |
 | `--verify-interval` | verified-restore drill cadence (default `24h`) |
 
-Credentials are stored age-encrypted on the Base; the repo URL and cadence are committed to `ownbase.yaml` client-side and applied by a reconcile, with no daemon restart.
+Credentials are stored age-encrypted on the Base **and** escrowed in your vault (so `restore` does not need them re-typed). The repo URL and cadence are committed to `ownbase.yaml` client-side and applied by a reconcile, with no daemon restart. Still choose a strong restic password — the vault is the client-side copy, not a recovery service.
 
 `backup status --json` prints the **full** `/status` payload, not just the backup section.
 
@@ -526,6 +527,7 @@ ownbasectl secrets list mybase                  # services that have secrets
 ownbasectl secrets list mybase myapp            # key names for one service
 ownbasectl secrets get  mybase myapp DB_URL     # value; no trailing newline when piped
 ownbasectl secrets set  mybase myapp DB_URL=postgres://... API_KEY=abc
+echo '{"API_KEY":"…"}' | ownbasectl secrets set mybase myapp --stdin
 ownbasectl secrets delete mybase myapp DB_URL
 ```
 

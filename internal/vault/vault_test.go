@@ -303,6 +303,67 @@ func findForeignEntry(t *testing.T, path, password, title string) (string, strin
 	return walk(db.Content.Root.Groups)
 }
 
+func TestBackupCredentialsRoundTrip(t *testing.T) {
+	v, path := newTestVault(t, "pw")
+	v.Put("mybase", vault.Profile{
+		Host:               "h",
+		BackupRepo:         "s3:s3.amazonaws.com/bucket/ownbase",
+		ResticPassword:     "restic-secret",
+		AWSAccessKeyID:     "AKIAEXAMPLE",
+		AWSSecretAccessKey: "aws-secret",
+		B2AccountID:        "b2id",
+		B2AccountKey:       "b2-secret",
+	})
+	if err := v.Save(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := vault.Open(path, "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := reopened.Get("mybase")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.BackupRepo != "s3:s3.amazonaws.com/bucket/ownbase" ||
+		p.ResticPassword != "restic-secret" ||
+		p.AWSSecretAccessKey != "aws-secret" ||
+		p.B2AccountKey != "b2-secret" {
+		t.Errorf("backup fields did not round-trip: %+v", p)
+	}
+	if !p.HasBackupCredentials() {
+		t.Error("HasBackupCredentials = false")
+	}
+	r := p.Redacted()
+	if r.ResticPassword != "" || r.AWSSecretAccessKey != "" || r.B2AccountKey != "" || r.PrivateKey != "" {
+		t.Errorf("Redacted leaked secrets: %+v", r)
+	}
+	if r.BackupRepo == "" || r.AWSAccessKeyID == "" {
+		t.Errorf("Redacted stripped non-secrets: %+v", r)
+	}
+}
+
+func TestMergeSecretsFrom(t *testing.T) {
+	existing := vault.Profile{
+		PrivateKey:         "priv",
+		PublicKey:          "pub",
+		ResticPassword:     "rpw",
+		AWSSecretAccessKey: "asec",
+		BackupRepo:         "repo",
+	}
+	p := vault.Profile{Host: "new-host", BackupRepo: ""}
+	p.MergeSecretsFrom(existing)
+	if p.PrivateKey != "priv" || p.ResticPassword != "rpw" || p.BackupRepo != "repo" {
+		t.Errorf("merge incomplete: %+v", p)
+	}
+	// Explicit values win.
+	p2 := vault.Profile{ResticPassword: "new"}
+	p2.MergeSecretsFrom(existing)
+	if p2.ResticPassword != "new" {
+		t.Errorf("explicit secret overwritten: %q", p2.ResticPassword)
+	}
+}
+
 func TestProfileDefaults(t *testing.T) {
 	p := vault.Profile{}
 	if p.EffectiveSSHUser() != vault.DefaultSSHUser {
