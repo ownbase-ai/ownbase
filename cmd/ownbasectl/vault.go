@@ -241,14 +241,17 @@ func runVaultInitRemote(f vaultInitFlags) error {
 
 	password := passwordFromCreds
 	if password == "" {
-		if f.credsStdin {
-			// stdin is already consumed; --password-stdin is rejected above.
-			// Point at the JSON field, not a flag that cannot work here.
-			return withExitCode(exitUsage, errors.New(
-				`master password missing from --creds-stdin JSON — include "password":"…"`))
-		}
+		// Still accept $OWNBASE_VAULT_PASSWORD or an interactive prompt.
+		// --password-stdin is rejected with --creds-stdin above (stdin is
+		// already spent), so if readVaultInitPassword fails, point at the
+		// JSON field / env / TTY — not at --password-stdin.
 		password, err = readVaultInitPassword(f.passwordStdin, adopting)
 		if err != nil {
+			if f.credsStdin {
+				return withExitCode(exitUsage, fmt.Errorf(
+					`master password required — include "password" in the --creds-stdin JSON, set %s, or run interactively`,
+					PasswordEnv))
+			}
 			return err
 		}
 	} else if !adopting {
