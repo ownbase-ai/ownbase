@@ -106,7 +106,8 @@ services:
     # ownbase_access:
     #   - status:read              # GET /status, /version, /core/status, /db/status
     #   - config:read              # GET /config
-    #   - reconcile                # POST /reconcile
+    #   - config:write             # POST /config → ownbase/agent/* proposal branch only
+    #   - reconcile                # POST /reconcile (after a branch is merged)
     #   - secrets:myapp:read       # GET secrets for myapp
     #   - secrets:myapp:write      # POST/DELETE secrets for myapp
     #   - backup:run               # POST /backup/run
