@@ -98,7 +98,7 @@ secrets (enc)--+--> compile() --> runtime/   (generated; never hand-edited)
 
 The ownership promise collapses if the authoritative repository is something only the platform can read or write. So the authoritative copy of `ownbase.yaml` lives in an **external git repo the user controls** (e.g. their own GitHub org). Operators commit to the tracked ref with their own git credentials via `ownbasectl`; agents may open proposal branches via `POST /config`. The Base holds a checkout at `/opt/ownbase/checkout` and reconciles only the **tracked ref** — never an unmerged proposal. Branch protection on the default branch keeps history an independent witness. A commit (or a merged PR) is still the one event that drives the loop.
 
-- **The external repo is the irreducible truth, and it is portable.** Because the user owns the repo and its credentials, the Base is fully reconstructable from it plus secrets: point a fresh daemon at the same config repo (`ownbasectl config setup`) and it clones and reconciles. The Base needs only *read* access (a deploy key), so a compromised or destroyed Base can never rewrite history.
+- **The external repo is the irreducible truth, and it is portable.** Because the user owns the repo and its credentials, the Base is fully reconstructable from it plus secrets: point a fresh daemon at the same config repo (`ownbasectl config setup`) and it clones and reconciles. The Base applies only the tracked ref. A compromised Base may push proposal branches (`ownbase/agent/*`) when given a write deploy key on the config repo, but **branch protection on the default branch** — enforced by the forge, not by OwnBase — is what keeps history an independent witness. Without that protection, write access would let a rooted Base rewrite the one artifact that would reveal it.
 - **Service code is external too, and pinned.** Each service declares a `repo:` git URL; the Base clones it into a local bare clone under `/opt/ownbase/repos/` and builds from the exact `ref:` (a concrete SHA written by `ownbasectl deploy`). Reproducibility *is* recoverability: `repo @ ref` → same Dockerfile → same build → same image, from anywhere.
 
 This is the deepest expression of [architecture-principles.md](architecture-principles.md), principles 1 and 2: not just "Git is the source of truth," but *the source of truth is an artifact the user owns and can move.*
@@ -109,7 +109,7 @@ Secrets are the third input to the pure function, so they must be reconstructabl
 
 - **Encrypted at rest**, decryptable only by a key held on the Base. See [ownbase-yaml.md](../ownbase-yaml.md), "Secrets".
 - **Injected at start, never written as plaintext to disk.** The daemon decrypts and injects at container start.
-- **Scoped at issue time.** Each service receives only the secrets it declares; no service can enumerate another's.
+- **Scoped at issue time.** Each service receives only the secrets it declares **by injection** (the age file for that service alone). A service granted an explicit `secrets:<other>:read` (or `*`) scope via `ownbase_access` can read another's secrets over the daemon API — that is a deliberate owner grant, not the default.
 
 ## Verified recovery is the spine, not a feature
 

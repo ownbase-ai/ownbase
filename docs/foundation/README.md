@@ -24,7 +24,7 @@ Key claims are deliberately repeated across documents so each is self-contained 
 | The five service rules (removable, forkable, replaceable, data accessible, standalone) | [service-constitution.md](service-constitution.md) | integration-contract, lexicon, MISSION.md |
 | No-registry rule + core-package exception | [ownbase-yaml.md](../ownbase-yaml.md) "The no-registry rule" | integration-contract, decisions, architecture-principles §6 |
 | Isolation / blast-radius model | [architecture-principles.md](architecture-principles.md) §13 | integration-contract |
-| Action taxonomy + risk tiers, all autonomous today | [architecture-principles.md](architecture-principles.md) §14 | decisions, lexicon |
+| Action taxonomy + risk tiers (service principals constrained; owner approve device still post-V1) | [architecture-principles.md](architecture-principles.md) §14 | decisions, lexicon |
 | Operating rules (read the config repo first; mutate only via `ownbase.yaml` + commit) | [operating.md](../operating.md) | AGENTS.md, README "Operating a Base", the seeded config-repo README |
 | Tier-1 / Tier-2 test workflow | [development.md](../development.md) | INSTALL.md "Contributors" |
 | Setup flow (keygen → user creates server → create --remote) | [README.md](../../README.md#setting-up-a-base) | INSTALL.md, AGENTS.md job 1, base-lifecycle §1 |
