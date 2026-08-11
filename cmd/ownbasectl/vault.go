@@ -133,7 +133,8 @@ already exists just records the location (how a second machine joins).`,
 	cmd.Flags().StringVar(&f.accessKeyID, "access-key-id", "", "bucket access key id")
 	cmd.Flags().StringVar(&f.secretAccessKey, "secret-access-key", "", "bucket secret access key")
 	cmd.Flags().BoolVar(&f.pathStyle, "path-style", false, "use path-style S3 URLs (MinIO)")
-	cmd.Flags().BoolVar(&f.credsStdin, "creds-stdin", false, "read bucket credentials as JSON from stdin")
+	cmd.Flags().BoolVar(&f.credsStdin, "creds-stdin", false,
+		"read bucket credentials as JSON from stdin (optional \"password\" field; cannot combine with --password-stdin)")
 	return cmd
 }
 
@@ -192,8 +193,18 @@ func runVaultInitLocal(f vaultInitFlags) error {
 }
 
 func runVaultInitRemote(f vaultInitFlags) error {
+	// --creds-stdin consumes stdin entirely, so it cannot be combined with
+	// --password-stdin. Put "password" in the creds JSON instead.
+	if f.credsStdin && f.passwordStdin {
+		return withExitCode(exitUsage, errors.New(
+			"cannot combine --creds-stdin and --password-stdin (stdin can only be read once); include \"password\" in the creds JSON"))
+	}
+
+	var passwordFromCreds string
 	if f.credsStdin {
-		if err := readVaultInitCredsStdin(&f); err != nil {
+		var err error
+		passwordFromCreds, err = readVaultInitCredsStdin(&f)
+		if err != nil {
 			return err
 		}
 	}
@@ -228,42 +239,88 @@ func runVaultInitRemote(f vaultInitFlags) error {
 		adopting = true
 	}
 
-	password, err := readVaultInitPassword(f.passwordStdin, adopting)
-	if err != nil {
-		return err
+	password := passwordFromCreds
+	if password == "" {
+		password, err = readVaultInitPassword(f.passwordStdin, adopting)
+		if err != nil {
+			return err
+		}
+	} else if !adopting {
+		// Password came from creds JSON on a create — still enforce the floor.
+		if err := validateMasterPassword(password); err != nil {
+			return err
+		}
 	}
-	if !adopting {
+
+	// Prove the password works BEFORE writing ~/.ownbase/locator. A wrong
+	// password on adopt must not displace a prior working locator.
+	if adopting {
+		if _, err := vault.OpenStore(store, password); err != nil {
+			return err
+		}
+	} else {
 		if _, err := vault.CreateStore(store, password); err != nil {
 			return err
 		}
 	}
 
-	// Persist locator before unlock so the agent resolves the remote store.
+	// Encode recovery as soon as the vault exists so a later unlock failure
+	// cannot swallow the one portable secret the user must save.
+	recovery, err := vault.EncodeRecovery(loc)
+	if err != nil {
+		return err
+	}
+
 	if err := vault.SaveLocator(loc); err != nil {
+		// Vault is in the bucket; still print recovery so it is not lost.
+		printRecoveryFallback(f.jsonOut, recovery, err)
 		return err
 	}
 
 	c, err := agentClient()
 	if err != nil {
+		printRecoveryFallback(f.jsonOut, recovery, err)
 		return err
 	}
 	// Empty path → agent uses ResolveStore (the locator we just wrote).
 	st, err := c.Unlock("", password, agentd.DefaultIdleTimeout)
 	if err != nil {
-		return err
+		printRecoveryFallback(f.jsonOut, recovery, err)
+		return fmt.Errorf("vault is in place at %s but unlock failed: %w\n  Recovery string (save this):\n  %s",
+			loc.Location(), err, recovery)
 	}
 
-	recovery, rerr := vault.EncodeRecovery(loc)
-	if rerr != nil {
-		return rerr
-	}
 	return printVaultInitResult(f.jsonOut, loc.Location(), !adopting, recovery, st)
 }
 
-func readVaultInitCredsStdin(f *vaultInitFlags) error {
+// printRecoveryFallback surfaces the recovery string when init cannot finish
+// cleanly after the vault object already exists.
+func printRecoveryFallback(jsonOut bool, recovery string, cause error) {
+	if recovery == "" {
+		return
+	}
+	if jsonOut {
+		// Best-effort JSON line on stderr so scripted callers can scrape it
+		// without confusing stdout success parsing.
+		_ = json.NewEncoder(os.Stderr).Encode(map[string]string{
+			"recovery_string": recovery,
+			"error":           cause.Error(),
+		})
+		return
+	}
+	fmt.Fprintln(os.Stderr, "Vault object exists, but setup did not finish cleanly.")
+	fmt.Fprintln(os.Stderr, "Save this recovery string — it will not be shown again unless the locator was written:")
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, recovery)
+	fmt.Fprintln(os.Stderr)
+}
+
+// readVaultInitCredsStdin reads bucket credentials (and optional master
+// password) as one JSON object from stdin. Returns the password when present.
+func readVaultInitCredsStdin(f *vaultInitFlags) (password string, err error) {
 	data, err := io.ReadAll(os.Stdin)
 	if err != nil {
-		return fmt.Errorf("read creds from stdin: %w", err)
+		return "", fmt.Errorf("read creds from stdin: %w", err)
 	}
 	var in struct {
 		AccessKeyID     string `json:"access_key_id"`
@@ -272,9 +329,10 @@ func readVaultInitCredsStdin(f *vaultInitFlags) error {
 		Region          string `json:"region"`
 		Endpoint        string `json:"endpoint"`
 		Key             string `json:"key"`
+		Password        string `json:"password"`
 	}
 	if err := json.Unmarshal(data, &in); err != nil {
-		return fmt.Errorf("parse creds JSON: %w", err)
+		return "", fmt.Errorf("parse creds JSON: %w", err)
 	}
 	if in.AccessKeyID != "" {
 		f.accessKeyID = in.AccessKeyID
@@ -294,7 +352,7 @@ func readVaultInitCredsStdin(f *vaultInitFlags) error {
 	if in.Key != "" {
 		f.key = in.Key
 	}
-	return nil
+	return in.Password, nil
 }
 
 func printVaultInitResult(jsonOut bool, location string, created bool, recovery string, st *agentd.Status) error {
