@@ -243,11 +243,11 @@ func runVaultInitRemote(f vaultInitFlags) error {
 	if password == "" {
 		// Still accept $OWNBASE_VAULT_PASSWORD or an interactive prompt.
 		// --password-stdin is rejected with --creds-stdin above (stdin is
-		// already spent), so if readVaultInitPassword fails, point at the
-		// JSON field / env / TTY — not at --password-stdin.
+		// already spent). Only rewrite the "no password source" error so we
+		// do not mask real failures (too-short password, mismatched confirm).
 		password, err = readVaultInitPassword(f.passwordStdin, adopting)
 		if err != nil {
-			if f.credsStdin {
+			if f.credsStdin && isNoPasswordSource(err) {
 				return withExitCode(exitUsage, fmt.Errorf(
 					`master password required — include "password" in the --creds-stdin JSON, set %s, or run interactively`,
 					PasswordEnv))
@@ -871,6 +871,18 @@ func validateMasterPassword(pw string) error {
 		return fmt.Errorf("master password must be at least %d characters (this vault holds every key that reaches your Bases)", MinMasterPasswordLen)
 	}
 	return nil
+}
+
+// isNoPasswordSource reports the readPassword failure when neither a TTY nor
+// $OWNBASE_VAULT_PASSWORD nor --password-stdin supplied a password. Other
+// failures (length floor, confirm mismatch) must pass through unchanged.
+func isNoPasswordSource(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "password-stdin") ||
+		strings.Contains(msg, "no terminal to prompt")
 }
 
 // interactive reports whether stdin is a terminal we may prompt on.
