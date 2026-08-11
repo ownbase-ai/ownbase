@@ -31,11 +31,11 @@
 package vault
 
 import (
+	"bytes"
+	"context"
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
@@ -197,41 +197,62 @@ func (p Profile) Redacted() Profile {
 	return p
 }
 
-// Vault is an open (decrypted) vault file. It is not safe for concurrent use;
+// Vault is an open (decrypted) vault. It is not safe for concurrent use;
 // internal/agentd serializes access.
 type Vault struct {
-	path     string
+	store    Store
 	password string
 	profiles map[string]Profile
 
 	// db is the decoded KDBX database, kept so a save does not have to pay
-	// the Argon2 cost of reading the file back. Everything in it is in
+	// the Argon2 cost of reading the store back. Everything in it is in
 	// plaintext (unlocked) form between saves.
 	db *gokeepasslib.Database
-	// stamp identifies the file contents db was decoded from, so a save can
-	// tell whether someone else (KeePassXC, a sync client) has written the
-	// file since and it needs to re-read before merging.
-	stamp string
+	// version identifies the store contents db was decoded from (or
+	// VersionNone before the first write). A save compares this against the
+	// live store and re-reads when they differ, so a concurrent KeePassXC
+	// edit or a second machine's write is merged rather than clobbered.
+	// Three states, deliberately:
+	//   - VersionNone after Create, before the first Put lands
+	//   - a concrete Version after Open or a successful Save
+	//   - never "unknown": a failed Head/Get is an error, not a skip-merge
+	version Version
 }
+
+// saveMaxAttempts bounds the Get/merge/Put retry loop on ErrConflict.
+const saveMaxAttempts = 3
 
 // Create writes a new, empty vault to path, encrypted with password. It
 // refuses to overwrite an existing file: a vault is the only copy of the keys
 // that reach a Base, so clobbering one can lock the user out permanently.
 func Create(path, password string) (*Vault, error) {
+	return CreateStore(NewFileStore(path), password)
+}
+
+// CreateStore writes a new, empty vault into store, encrypted with password.
+// Refuses to overwrite an existing object.
+func CreateStore(store Store, password string) (*Vault, error) {
 	if password == "" {
 		return nil, errors.New("a master password is required")
 	}
-	if _, err := os.Stat(path); err == nil {
-		return nil, fmt.Errorf("a vault already exists at %s — refusing to overwrite it", path)
+	if store == nil {
+		return nil, errors.New("a vault store is required")
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, fmt.Errorf("create %s: %w", filepath.Dir(path), err)
+	_, _, err := store.Get(context.Background())
+	switch {
+	case err == nil:
+		return nil, fmt.Errorf("a vault already exists at %s — refusing to overwrite it", store.Location())
+	case errors.Is(err, ErrNotExist):
+		// ok
+	default:
+		return nil, err
 	}
 	v := &Vault{
-		path:     path,
+		store:    store,
 		password: password,
 		profiles: map[string]Profile{},
 		db:       newDatabase(password),
+		version:  VersionNone,
 	}
 	if err := v.Save(); err != nil {
 		return nil, err
@@ -241,16 +262,31 @@ func Create(path, password string) (*Vault, error) {
 
 // Open decrypts the vault at path with password.
 func Open(path, password string) (*Vault, error) {
-	db, err := decode(path, password)
+	return OpenStore(NewFileStore(path), password)
+}
+
+// OpenStore decrypts the vault in store with password.
+func OpenStore(store Store, password string) (*Vault, error) {
+	if store == nil {
+		return nil, errors.New("a vault store is required")
+	}
+	data, ver, err := store.Get(context.Background())
+	if err != nil {
+		if errors.Is(err, ErrNotExist) {
+			return nil, fmt.Errorf("no vault at %s — run: ownbasectl vault init: %w", store.Location(), err)
+		}
+		return nil, err
+	}
+	db, err := decodeBytes(data, password)
 	if err != nil {
 		return nil, err
 	}
 	v := &Vault{
-		path:     path,
+		store:    store,
 		password: password,
 		profiles: map[string]Profile{},
 		db:       db,
-		stamp:    fileStamp(path),
+		version:  ver,
 	}
 	for _, e := range basesGroup(db).Entries {
 		name := e.GetTitle()
@@ -262,8 +298,13 @@ func Open(path, password string) (*Vault, error) {
 	return v, nil
 }
 
-// Path returns the file this vault was opened from.
-func (v *Vault) Path() string { return v.path }
+// Path returns the store location this vault was opened from (a filesystem
+// path today; a URL once remote stores land).
+func (v *Vault) Path() string { return v.store.Location() }
+
+// Store returns the persistence backend. Intended for tests and for callers
+// that need to distinguish store kinds; most code should use Path().
+func (v *Vault) Store() Store { return v.store }
 
 // Names returns the configured Base names, sorted.
 func (v *Vault) Names() []string {
@@ -317,39 +358,113 @@ func (v *Vault) ChangePassword(newPassword string) error {
 	return nil
 }
 
-// Save re-encrypts the vault to disk.
+// Save re-encrypts the vault into its Store.
 //
 // Only the OwnBase group is replaced, so anything else the user keeps in this
 // vault — their own passwords, notes, a key they added in KeePassXC — survives
-// an ownbasectl write. If the file changed underneath us since we read it (the
-// user edited it in another KDBX client, or a sync client pulled a newer
+// an ownbasectl write. If the store changed underneath us since we read it
+// (the user edited it in another KDBX client, or a sync client pulled a newer
 // copy), it is re-read first so those edits are not clobbered.
 //
-// The write goes to a temp file and is renamed into place, so an interrupted
-// save cannot leave a half-written vault where the only copy of an owner key
-// used to be.
+// The write is a compare-and-swap against the Version we last observed. On
+// ErrConflict during an update the merge is retried a bounded number of
+// times. A conflict on create (baseVersion == VersionNone) is never retried:
+// the other writer won, and re-merging would decode their vault and overwrite
+// its OwnBase group with ours. Atomic publish (temp + fsync + link/rename on
+// FileStore; conditional PUT on an object store) is the Store's job.
 func (v *Vault) Save() error { return v.save(v.password) }
 
-// save re-encrypts the vault under v.password, reading the existing file with
-// readPassword. The two differ only for ChangePassword.
+// save re-encrypts the vault under v.password, reading any existing object
+// with readPassword. The two differ only for ChangePassword.
 func (v *Vault) save(readPassword string) error {
-	db := v.db
-	if stamp := fileStamp(v.path); stamp != "" && stamp != v.stamp {
-		existing, err := decode(v.path, readPassword)
+	ctx := context.Background()
+	var lastErr error
+	for attempt := 0; attempt < saveMaxAttempts; attempt++ {
+		baseVersion, db, err := v.loadMergeBase(ctx, readPassword)
 		if err != nil {
 			return err
+		}
+		ciphertext, err := encodeDB(db, v.password, v.profiles)
+		if err != nil {
+			return err
+		}
+		newVersion, err := v.store.Put(ctx, ciphertext, baseVersion)
+		if err == nil {
+			v.db = db
+			v.version = newVersion
+			return nil
+		}
+		if !errors.Is(err, ErrConflict) {
+			return err
+		}
+		// Create lost the race. Do not retry: loadMergeBase would pick up the
+		// winner and encodeDB would replace its OwnBase group with ours.
+		if baseVersion == VersionNone {
+			return fmt.Errorf("a vault already exists at %s — refusing to overwrite it", v.store.Location())
+		}
+		lastErr = err
+		// Update conflict: loop and re-merge against the new head.
+	}
+	return fmt.Errorf("save vault %s: %w after %d attempts", v.store.Location(), lastErr, saveMaxAttempts)
+}
+
+// loadMergeBase returns the Version to CAS against and the KDBX database to
+// write into. When the store's head differs from v.version, the live object is
+// decoded and used as the merge base so foreign entries survive.
+func (v *Vault) loadMergeBase(ctx context.Context, readPassword string) (Version, *gokeepasslib.Database, error) {
+	data, head, err := v.store.Get(ctx)
+	switch {
+	case errors.Is(err, ErrNotExist):
+		// Nothing in the store. Create path (baseVersion == VersionNone) or a
+		// vanished object mid-session — either way there is nothing to merge.
+		db := v.db
+		if db == nil {
+			db = newDatabase(v.password)
+		}
+		return VersionNone, db, nil
+	case err != nil:
+		// A failed Get is an error, never "skip the merge". The previous
+		// fileStamp returned "" on any stat error and save treated that as
+		// "nothing to merge", which would blind-overwrite on a flaky store.
+		return VersionNone, nil, err
+	}
+
+	// Store has an object. A Vault that has never successfully written
+	// (version == VersionNone) is still a create — it must not turn into an
+	// update against the winner of a create race, which would replace the
+	// winner's OwnBase group with ours.
+	if v.version == VersionNone {
+		return VersionNone, nil, fmt.Errorf("a vault already exists at %s — refusing to overwrite it", v.store.Location())
+	}
+
+	db := v.db
+	if head != v.version {
+		existing, err := decodeBytes(data, readPassword)
+		if err != nil {
+			return VersionNone, nil, err
 		}
 		db = existing
 	}
 	if db == nil {
 		db = newDatabase(v.password)
 	}
-	db.Credentials = gokeepasslib.NewPasswordCredentials(v.password)
+	return head, db, nil
+}
+
+// encodeDB builds the OwnBase group into db, reseeds, and returns the
+// ciphertext. db is left unlocked (plaintext in memory) on return.
+func encodeDB(db *gokeepasslib.Database, password string, profiles map[string]Profile) ([]byte, error) {
+	db.Credentials = gokeepasslib.NewPasswordCredentials(password)
 
 	group := basesGroup(db)
-	group.Entries = make([]gokeepasslib.Entry, 0, len(v.profiles))
-	for _, name := range v.Names() {
-		group.Entries = append(group.Entries, entryFromProfile(name, v.profiles[name]))
+	names := make([]string, 0, len(profiles))
+	for n := range profiles {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	group.Entries = make([]gokeepasslib.Entry, 0, len(names))
+	for _, name := range names {
+		group.Entries = append(group.Entries, entryFromProfile(name, profiles[name]))
 	}
 
 	// Fresh seeds and nonces for every write. Without this the file is
@@ -357,49 +472,22 @@ func (v *Vault) save(readPassword string) error {
 	// versions of the vault — which cloud storage keeps by design — would
 	// XOR to plaintext.
 	if err := reseed(db); err != nil {
-		return err
+		return nil, err
 	}
 
 	if err := db.LockProtectedEntries(); err != nil {
-		return fmt.Errorf("protect vault entries: %w", err)
+		return nil, fmt.Errorf("protect vault entries: %w", err)
 	}
 	// LockProtectedEntries leaves the in-memory values encrypted, and every
 	// subsequent save unlocks before locking again. Restore the plaintext
 	// state this method was entered in, whatever happens below.
 	defer func() { _ = db.UnlockProtectedEntries() }()
 
-	tmp := v.path + ".new"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
-		return fmt.Errorf("write vault %s: %w", tmp, err)
+	var buf bytes.Buffer
+	if err := gokeepasslib.NewEncoder(&buf).Encode(db); err != nil {
+		return nil, fmt.Errorf("encode vault: %w", err)
 	}
-	if err := gokeepasslib.NewEncoder(f).Encode(db); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return fmt.Errorf("encode vault: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("write vault %s: %w", tmp, err)
-	}
-	if err := os.Rename(tmp, v.path); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("replace vault %s: %w", v.path, err)
-	}
-
-	v.db = db
-	v.stamp = fileStamp(v.path)
-	return nil
-}
-
-// fileStamp identifies the contents of path cheaply. It returns "" when the
-// file is missing, which save reads as "nothing to merge with".
-func fileStamp(path string) string {
-	st, err := os.Stat(path)
-	if err != nil {
-		return ""
-	}
-	return fmt.Sprintf("%d/%d", st.ModTime().UnixNano(), st.Size())
+	return buf.Bytes(), nil
 }
 
 // reseed replaces every random parameter in the header that the encryption
@@ -473,20 +561,11 @@ func fillSlice(b []byte) error {
 	return nil
 }
 
-// decode reads and decrypts the KDBX file at path.
-func decode(path, password string) (*gokeepasslib.Database, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("no vault at %s — run: ownbasectl vault init: %w", path, err)
-		}
-		return nil, fmt.Errorf("open vault %s: %w", path, err)
-	}
-	defer f.Close()
-
+// decodeBytes decrypts a KDBX ciphertext blob.
+func decodeBytes(data []byte, password string) (*gokeepasslib.Database, error) {
 	db := gokeepasslib.NewDatabase()
 	db.Credentials = gokeepasslib.NewPasswordCredentials(password)
-	if err := gokeepasslib.NewDecoder(f).Decode(db); err != nil {
+	if err := gokeepasslib.NewDecoder(bytes.NewReader(data)).Decode(db); err != nil {
 		// The library cannot tell a bad password from a corrupt file — the
 		// authentication tag fails either way — so neither can we.
 		return nil, ErrWrongPassword
