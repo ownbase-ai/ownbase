@@ -83,9 +83,33 @@ OwnBase enforces these unconditionally for every service:
 | No privilege escalation | Every unit emits `NoNewPrivileges=true` |
 | Per-service user namespace | Podman user namespace isolation |
 | Per-capability network | Service joins only the networks of its declared `requires:` |
-| Scoped secrets | Service receives only the secrets in `/opt/ownbase/secrets/<name>.yaml.age`; scoping is structural, not policy-based |
-| No shared runtime socket | No Docker/Podman socket passed into containers |
+| Scoped secrets (injection) | Service receives only the secrets in `/opt/ownbase/secrets/<name>.yaml.age` by env injection. Cross-service secret *API* access requires an explicit `secrets:<svc>:read` (or `*`) grant in `ownbase_access` |
+| No Podman runtime socket | The Docker/Podman socket is never passed into containers |
+| Daemon API socket (opt-in) | None by default. When `ownbase_access` is declared: one per-service unix socket, directory-bound, scopes default-deny — see below |
 | Own data volume | `ownbase-<name>-data` is isolated; not shared with other services |
+
+---
+
+## Optional: talking back to the daemon (`ownbase_access`)
+
+By default a service cannot reach the daemon. To opt in, declare scopes:
+
+```yaml
+services:
+  harness:
+    repo: git@github.com:org/harness.git
+    port: 8080
+    ownbase_access:
+      - status:read
+```
+
+The container then sees `/run/ownbase/api.sock`. The socket path is the credential; scopes gate every route. Owner-only routes (`/config/source`, `/token/reset`, `/self-update`, …) refuse services even when granted `*`.
+
+Full scope table, owner-only list, and curl examples: [api.md — Service access over unix sockets](api.md#service-access-over-unix-sockets-ownbase_access). Declaration grammar: [ownbase-yaml.md](ownbase-yaml.md#daemon-api-access-ownbase_access).
+
+A service that **requires** the daemon API to function is less portable off a Base (Service Constitution: works standalone / replaceable). Prefer the minimum scopes and degrade without the socket when possible.
+
+Socket directories are created **before** container apply on each reconcile so the bind-mount source always exists.
 
 ---
 
@@ -95,13 +119,13 @@ The standard OwnBase lifecycle applies to every service:
 
 ```text
 Build          daemon clones the repo at ref:; runs podman build -t localhost/ownbase-<name>:local
-Start          systemctl start ownbase-<name>.service (Quadlet unit)
+Start          systemctl start ownbase-<name>.service (Quadlet unit); socket dir already present if ownbase_access
 Health-gate    daemon probes health_probe.http until 2xx
-Reconcile      on every explicit ownbasectl mutation (POST /reconcile) or timer backstop
+Reconcile      on every explicit ownbasectl mutation (POST /reconcile) or timer backstop; re-syncs access sockets
 Update         `ownbasectl deploy <base> <name> --ref <ref>` resolves + commits a new SHA; ownbasectl updates shows drift
 Backup         data volume included in the restic snapshot on every backup interval
 Restore        verified restore drill confirms data is recoverable
-Explain        service appears in the status API (ownbasectl status)
+Explain        service appears in the status API (ownbasectl status); may also call it over its own socket
 ```
 
 ---
