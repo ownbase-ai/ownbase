@@ -126,6 +126,9 @@ const ScopeStatusRead = "status:read"
 // ScopeConfigRead is the grant scope for GET /config.
 const ScopeConfigRead = "config:read"
 
+// ScopeConfigWrite is the grant scope for POST /config (proposal branch push).
+const ScopeConfigWrite = "config:write"
+
 // ScopeReconcile is the grant scope for POST /reconcile.
 const ScopeReconcile = "reconcile"
 
@@ -179,6 +182,9 @@ func RouteAccess(method, path string) HTTPAccess {
 	case "/config":
 		if method == http.MethodGet {
 			return HTTPAccess{Scope: ScopeConfigRead}
+		}
+		if method == http.MethodPost {
+			return HTTPAccess{Scope: ScopeConfigWrite}
 		}
 	case "/reconcile":
 		if method == http.MethodPost {

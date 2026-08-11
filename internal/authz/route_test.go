@@ -19,6 +19,7 @@ func TestRouteAccess_DefaultDeny(t *testing.T) {
 		{"GET", "/status/", authz.ScopeStatusRead, false, false},
 		{"GET", "/version", authz.ScopeStatusRead, false, false},
 		{"GET", "/config", authz.ScopeConfigRead, false, false},
+		{"POST", "/config", authz.ScopeConfigWrite, false, false},
 		{"POST", "/reconcile", authz.ScopeReconcile, false, false},
 		{"POST", "/backup/run", authz.ScopeBackupRun, false, false},
 		{"POST", "/backup/verify", authz.ScopeBackupVerify, false, false},

@@ -260,7 +260,8 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 	// branch on the external config repo (never the tracked ref). Merge on
 	// the forge, then POST /reconcile to apply.
 	mux.HandleFunc("/config", func(w http.ResponseWriter, r *http.Request) {
-		if !authRequired(w, r, cfg.StatusSrv) {
+		principal, ok := authorize(w, r, cfg.StatusSrv)
+		if !ok {
 			return
 		}
 		switch r.Method {
@@ -305,7 +306,7 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 				if result.Branch != "" {
 					target = result.Branch
 				}
-				if a, aerr := auditAction(schema.ActionConfigWrite, target); aerr == nil {
+				if a, aerr := auditAction(schema.ActionConfigWrite, target, principal); aerr == nil {
 					outcome := authz.OutcomeApplied
 					errMsg := ""
 					if err != nil {
