@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -128,6 +129,63 @@ func TestFetchRefAt_FetchesNewRefOnDemand(t *testing.T) {
 	}
 }
 
+func TestFetchRefAt_RefreshesMutableBranch(t *testing.T) {
+	// Branches move: fetchRefAt must not short-circuit when the name already
+	// resolves locally, or a force-push (or poisoned mirror) sticks forever.
+	root := t.TempDir()
+	external := filepath.Join(root, "external")
+	initRepoWithCommit(t, external)
+
+	repoPath := filepath.Join(root, "repos", "mirrors-external")
+	if err := ensureRepoAt(repoPath, external); err != nil {
+		t.Fatalf("ensureRepoAt: %v", err)
+	}
+	oldSHA := runGitOutput(t, repoPath, "rev-parse", "main")
+
+	// Advance main on the external repo.
+	runGit(t, external, "commit", "--allow-empty", "-m", "second")
+	newSHA := runGitOutput(t, external, "rev-parse", "main")
+	if oldSHA == newSHA {
+		t.Fatal("expected external main to advance")
+	}
+
+	if err := fetchRefAt(repoPath, external, "main"); err != nil {
+		t.Fatalf("fetchRefAt: %v", err)
+	}
+	got := runGitOutput(t, repoPath, "rev-parse", "main")
+	if got != newSHA {
+		t.Fatalf("main after fetch = %s, want %s (stale short-circuit?)", got, newSHA)
+	}
+}
+
+func TestFetchRefAt_SkipsFetchForLocalFullSHA(t *testing.T) {
+	root := t.TempDir()
+	external := filepath.Join(root, "external")
+	initRepoWithCommit(t, external)
+	repoPath := filepath.Join(root, "repos", "mirrors-external")
+	if err := ensureRepoAt(repoPath, external); err != nil {
+		t.Fatalf("ensureRepoAt: %v", err)
+	}
+	sha := runGitOutput(t, repoPath, "rev-parse", "main")
+	// Point externalURL at a path that does not exist — fetch would fail if
+	// attempted. Full SHA already local must short-circuit.
+	if err := fetchRefAt(repoPath, filepath.Join(root, "missing-remote"), sha); err != nil {
+		t.Fatalf("fetchRefAt full SHA: %v", err)
+	}
+}
+
+func TestIsFullCommitSHA(t *testing.T) {
+	if !isFullCommitSHA("0123456789abcdef0123456789abcdef01234567") {
+		t.Error("40-char hex should be full SHA")
+	}
+	if isFullCommitSHA("main") || isFullCommitSHA("abc") || isFullCommitSHA("") {
+		t.Error("non-SHA refs must be false")
+	}
+	if isFullCommitSHA("0123456789abcdef0123456789abcdef0123456g") {
+		t.Error("non-hex must be false")
+	}
+}
+
 func TestFetchRef_NoopWhenExternalURLOrRefEmpty(t *testing.T) {
 	if err := FetchRef("anything", "", "main", ""); err != nil {
 		t.Fatalf("FetchRef with empty externalURL should be a no-op, got %v", err)
@@ -227,10 +285,16 @@ func initRepoWithCommit(t *testing.T, dir string) {
 
 func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
+	_ = runGitOutput(t, dir, args...)
+}
+
+func runGitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
+	return strings.TrimSpace(string(out))
 }

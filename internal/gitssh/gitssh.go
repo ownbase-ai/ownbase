@@ -35,23 +35,33 @@ func PublicKeyPath() string { return filepath.Join(DefaultDir, KeyName+".pub") }
 // KnownHostsPath returns the path to the managed known_hosts file.
 func KnownHostsPath() string { return filepath.Join(DefaultDir, "known_hosts") }
 
-// ConfigPath returns the path to the optional managed ssh config file. When
-// present it takes precedence over the single-key form, enabling per-repo
-// host aliases and deploy keys.
+// ConfigPath returns the path of a legacy ssh config file that must not be
+// honored. A restored or planted config can silently redirect every git fetch
+// via Host aliases while status still shows the correct URL. Command ignores
+// it; RejectConfig removes it when present.
 func ConfigPath() string { return filepath.Join(DefaultDir, "config") }
 
-// Command returns the value for GIT_SSH_COMMAND given the managed identity in
-// dir, or "" when no managed identity exists (git then falls back to the
-// system ssh, which is correct for anonymous https:// repos). When an ssh
-// config file is present it takes precedence (supports per-repo host aliases
-// / deploy keys); otherwise a single managed key + known_hosts is used.
-func Command(dir string) string {
+// RejectConfig removes a managed ssh config file if one exists. Returns a
+// non-nil error only when removal fails (not when the file is already absent).
+// Call on daemon start so a backup-restored config cannot hijack git.
+func RejectConfig(dir string) error {
 	if dir == "" {
 		dir = DefaultDir
 	}
-	configPath := filepath.Join(dir, "config")
-	if fileExists(configPath) {
-		return "ssh -F " + shellQuote(configPath) + " -o IdentitiesOnly=yes"
+	path := filepath.Join(dir, "config")
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove disallowed ssh config %s: %w", path, err)
+	}
+	return nil
+}
+
+// Command returns the value for GIT_SSH_COMMAND given the managed identity in
+// dir, or "" when no managed identity exists (git then falls back to the
+// system ssh, which is correct for anonymous https:// repos). Always uses the
+// single managed key + known_hosts — never an ssh config file (see RejectConfig).
+func Command(dir string) string {
+	if dir == "" {
+		dir = DefaultDir
 	}
 	keyPath := filepath.Join(dir, KeyName)
 	if !fileExists(keyPath) {
