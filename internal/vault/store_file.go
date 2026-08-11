@@ -3,16 +3,26 @@ package vault
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 )
 
 // FileStore persists the vault as a single local file. Writes go to a sibling
-// temp file, are fsynced, and renamed into place so an interrupted save cannot
-// leave a half-written vault where the only copy of an owner key used to be.
+// temp file, are fsynced, and published into place so an interrupted save
+// cannot leave a half-written vault where the only copy of an owner key used
+// to be.
+//
+// Publish differs by mode:
+//   - create (VersionNone): hard-link the temp onto the final path. Link fails
+//     with ErrExist if the destination already appeared, which is the
+//     create-if-absent property Rename lacks on Unix (Rename replaces).
+//   - update (CAS): rename after re-checking the version stamp.
 //
 // Version is "mtime_ns/size", matching the previous in-process stamp format so
-// behavior is unchanged for local vaults.
+// behavior is unchanged for local vaults. Get stats the open file descriptor
+// (not the path) so the Version always describes the bytes just read, even if
+// a concurrent rename replaced the path underneath.
 type FileStore struct {
 	path string
 }
@@ -26,24 +36,27 @@ func NewFileStore(path string) *FileStore {
 // Location returns the filesystem path.
 func (s *FileStore) Location() string { return s.path }
 
-// Get reads the file.
+// Get reads the file. The Version is taken from the open fd so it cannot
+// disagree with the returned bytes under a concurrent writer.
 func (s *FileStore) Get(_ context.Context) ([]byte, Version, error) {
-	data, err := os.ReadFile(s.path)
+	f, err := os.Open(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, VersionNone, fmt.Errorf("%w: %s", ErrNotExist, s.path)
 		}
+		return nil, VersionNone, fmt.Errorf("open vault %s: %w", s.path, err)
+	}
+	defer f.Close()
+
+	data, err := io.ReadAll(f)
+	if err != nil {
 		return nil, VersionNone, fmt.Errorf("read vault %s: %w", s.path, err)
 	}
-	ver, err := fileVersion(s.path)
+	st, err := f.Stat()
 	if err != nil {
-		// We just read it; a disappearing file mid-call is treated as gone.
-		if os.IsNotExist(err) {
-			return nil, VersionNone, fmt.Errorf("%w: %s", ErrNotExist, s.path)
-		}
-		return nil, VersionNone, err
+		return nil, VersionNone, fmt.Errorf("stat vault %s: %w", s.path, err)
 	}
-	return data, ver, nil
+	return data, versionFromInfo(st), nil
 }
 
 // Put writes data under the CAS condition described by ifVersion.
@@ -77,7 +90,9 @@ func (s *FileStore) Put(_ context.Context, data []byte, ifVersion Version) (Vers
 	if err != nil {
 		return VersionNone, fmt.Errorf("write vault %s: %w", tmp, err)
 	}
-	// Ensure the temp is gone on every error path below.
+	// Ensure the temp name is gone on every path. For create (Link) the temp
+	// is a second name for the published inode and must be unlinked; for
+	// update (Rename) the temp is consumed and must not be removed.
 	removeTemp := true
 	defer func() {
 		if removeTemp {
@@ -89,7 +104,7 @@ func (s *FileStore) Put(_ context.Context, data []byte, ifVersion Version) (Vers
 		_ = f.Close()
 		return VersionNone, fmt.Errorf("write vault %s: %w", tmp, err)
 	}
-	// fsync before rename: without it a crash can leave a zero-length or
+	// fsync before publish: without it a crash can leave a zero-length or
 	// stale file at the final path on filesystems that reorder metadata.
 	if err := f.Sync(); err != nil {
 		_ = f.Close()
@@ -99,16 +114,20 @@ func (s *FileStore) Put(_ context.Context, data []byte, ifVersion Version) (Vers
 		return VersionNone, fmt.Errorf("write vault %s: %w", tmp, err)
 	}
 
-	// Re-check the CAS condition immediately before rename. Between the
-	// earlier stat and now another writer (KeePassXC, a second ownbasectl)
-	// may have landed; renaming over them would clobber silently.
 	if ifVersion == VersionNone {
-		if _, err := os.Stat(s.path); err == nil {
-			return VersionNone, fmt.Errorf("%w: %s already exists", ErrConflict, s.path)
-		} else if !os.IsNotExist(err) {
-			return VersionNone, fmt.Errorf("stat vault %s: %w", s.path, err)
+		// Hard-link is atomic create-if-absent: it fails if s.path already
+		// exists. os.Rename would replace a concurrent creator and still
+		// report success, destroying their vault.
+		if err := os.Link(tmp, s.path); err != nil {
+			if os.IsExist(err) {
+				return VersionNone, fmt.Errorf("%w: %s already exists", ErrConflict, s.path)
+			}
+			return VersionNone, fmt.Errorf("create vault %s: %w", s.path, err)
 		}
+		// removeTemp stays true — drop the extra directory entry.
 	} else {
+		// Re-check CAS immediately before rename. Between the earlier stat
+		// and now another writer may have landed.
 		now, err := fileVersion(s.path)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -119,12 +138,11 @@ func (s *FileStore) Put(_ context.Context, data []byte, ifVersion Version) (Vers
 		if now != ifVersion {
 			return VersionNone, fmt.Errorf("%w: %s", ErrConflict, s.path)
 		}
+		if err := os.Rename(tmp, s.path); err != nil {
+			return VersionNone, fmt.Errorf("replace vault %s: %w", s.path, err)
+		}
+		removeTemp = false
 	}
-
-	if err := os.Rename(tmp, s.path); err != nil {
-		return VersionNone, fmt.Errorf("replace vault %s: %w", s.path, err)
-	}
-	removeTemp = false
 
 	ver, err := fileVersion(s.path)
 	if err != nil {
@@ -139,7 +157,11 @@ func fileVersion(path string) (Version, error) {
 	if err != nil {
 		return VersionNone, err
 	}
-	return Version(fmt.Sprintf("%d/%d", st.ModTime().UnixNano(), st.Size())), nil
+	return versionFromInfo(st), nil
+}
+
+func versionFromInfo(st os.FileInfo) Version {
+	return Version(fmt.Sprintf("%d/%d", st.ModTime().UnixNano(), st.Size()))
 }
 
 // ensure FileStore satisfies Store at compile time.

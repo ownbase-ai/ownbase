@@ -367,9 +367,11 @@ func (v *Vault) ChangePassword(newPassword string) error {
 // copy), it is re-read first so those edits are not clobbered.
 //
 // The write is a compare-and-swap against the Version we last observed. On
-// ErrConflict the merge is retried a bounded number of times. Atomic publish
-// (temp + fsync + rename on FileStore; conditional PUT on an object store) is
-// the Store's job.
+// ErrConflict during an update the merge is retried a bounded number of
+// times. A conflict on create (baseVersion == VersionNone) is never retried:
+// the other writer won, and re-merging would decode their vault and overwrite
+// its OwnBase group with ours. Atomic publish (temp + fsync + link/rename on
+// FileStore; conditional PUT on an object store) is the Store's job.
 func (v *Vault) Save() error { return v.save(v.password) }
 
 // save re-encrypts the vault under v.password, reading any existing object
@@ -395,8 +397,13 @@ func (v *Vault) save(readPassword string) error {
 		if !errors.Is(err, ErrConflict) {
 			return err
 		}
+		// Create lost the race. Do not retry: loadMergeBase would pick up the
+		// winner and encodeDB would replace its OwnBase group with ours.
+		if baseVersion == VersionNone {
+			return fmt.Errorf("a vault already exists at %s — refusing to overwrite it", v.store.Location())
+		}
 		lastErr = err
-		// Conflict: loop and re-merge against the new head.
+		// Update conflict: loop and re-merge against the new head.
 	}
 	return fmt.Errorf("save vault %s: %w after %d attempts", v.store.Location(), lastErr, saveMaxAttempts)
 }
@@ -420,6 +427,14 @@ func (v *Vault) loadMergeBase(ctx context.Context, readPassword string) (Version
 		// fileStamp returned "" on any stat error and save treated that as
 		// "nothing to merge", which would blind-overwrite on a flaky store.
 		return VersionNone, nil, err
+	}
+
+	// Store has an object. A Vault that has never successfully written
+	// (version == VersionNone) is still a create — it must not turn into an
+	// update against the winner of a create race, which would replace the
+	// winner's OwnBase group with ours.
+	if v.version == VersionNone {
+		return VersionNone, nil, fmt.Errorf("a vault already exists at %s — refusing to overwrite it", v.store.Location())
 	}
 
 	db := v.db
