@@ -334,7 +334,11 @@ func loadPrivateKey(keyPath string) (ssh.Signer, error) {
 func buildHostKeyCallback(host string) (ssh.HostKeyCallback, error) {
 	khPath, err := knownHostsPath()
 	if err != nil {
-		return ssh.InsecureIgnoreHostKey(), nil //nolint:gosec // fallback when home dir unavailable
+		// Refuse rather than InsecureIgnoreHostKey: a missing home directory
+		// is rare (scrubbed env, container without $HOME/passwd entry) and
+		// the previous silent fallback disabled host verification for every
+		// connection that carries the owner key and fetches the API token.
+		return nil, fmt.Errorf("host key verification requires a home directory for ~/.ownbase/known_hosts: %w", err)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(khPath), 0o700); err != nil {
@@ -397,8 +401,14 @@ func buildHostKeyCallback(host string) (ssh.HostKeyCallback, error) {
 	}, nil
 }
 
+// userHomeDir is os.UserHomeDir, overridable in tests so the fail-closed path
+// when the home directory is unavailable can be exercised without scrubbing
+// the process environment (UserHomeDir falls back to getpwuid when $HOME is
+// unset, so t.Setenv("HOME", "") is not enough).
+var userHomeDir = os.UserHomeDir
+
 func knownHostsPath() (string, error) {
-	home, err := os.UserHomeDir()
+	home, err := userHomeDir()
 	if err != nil {
 		return "", err
 	}

@@ -359,9 +359,19 @@ write_admin_user() {
     info "Admin user ($OWNBASE_ADMIN_USER) saved for repo ownership."
 }
 
-# generate_token produces a random 32-char alphanumeric token.
+# generate_token produces a random 32-char alphanumeric token. Dies rather
+# than returning empty: an empty token leaves the daemon's management API
+# unreachable (fail-closed) and used to leave it unauthenticated.
 generate_token() {
-    tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 32 || true
+    local token
+    # head -c exits 141 (SIGPIPE) when it closes the pipe early; that is not
+    # a failure. Capture output and check length instead of trusting the
+    # pipeline exit status.
+    token="$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 32 || true)"
+    if [[ ${#token} -ne 32 ]]; then
+        die "failed to generate a 32-char API token from /dev/urandom (got ${#token} chars)"
+    fi
+    printf '%s' "$token"
 }
 
 # write_api_token writes the API Bearer token to /opt/ownbase/api-token.
@@ -369,8 +379,18 @@ generate_token() {
 write_api_token() {
     local token="$1"
     local token_file="${OWNBASE_BASE_DIR}/api-token"
+    if [[ -z "$token" ]]; then
+        die "refusing to write an empty API token to $token_file"
+    fi
     install -o root -g root -m 0600 /dev/null "$token_file"
     printf '%s' "$token" > "$token_file"
+    # Re-read and verify: a truncated write must not leave the Base with a
+    # half-token the daemon would treat as empty.
+    local stored
+    stored="$(cat "$token_file")"
+    if [[ "$stored" != "$token" || ${#stored} -lt 16 ]]; then
+        die "API token file $token_file failed verification after write"
+    fi
     info "API token written to $token_file"
 }
 

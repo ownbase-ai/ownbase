@@ -1147,17 +1147,10 @@ func mergeSecrets(custody secrets.FileKeyCustody, secretsFile string, updates ma
 }
 
 // authRequired checks the Bearer token from the StatusServer. Returns false
-// and writes 401 when the token is invalid or missing.
+// and writes 401 when the token is empty, invalid, or missing. An empty
+// configured token is fail-closed — the management API never runs open.
 func authRequired(w http.ResponseWriter, r *http.Request, srv *StatusServer) bool {
-	tok := srv.currentToken()
-	if tok == "" {
-		return true // no auth configured
-	}
-	if !bearerTokenValid(r.Header.Get("Authorization"), tok) {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return false
-	}
-	return true
+	return authorizeBearer(w, r, srv.currentToken())
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
