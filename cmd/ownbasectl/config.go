@@ -3,10 +3,11 @@ package main
 // config.go implements `ownbasectl config get/set` — the agent-first
 // interface to a Base's ownbase.yaml. Every invocation is a single
 // non-interactive command: no editor, no prompts, exit code 0/non-zero.
-// `get` reads the checkout's current document over the SSH tunnel; `set`
-// validates a whole new document locally and pushes it through the
-// daemon's front-door commit path (POST /config) — the same path a user's
-// own `git push` to the config bare repo takes.
+// `get` reads the checkout over the SSH tunnel (GET /config). `set`
+// validates a whole new document locally, then uses the client-side
+// config-repo path (clone, commit to the tracked ref with the operator's
+// git credentials, POST /reconcile). Agent proposal branches use the
+// daemon's POST /config separately — not this command.
 
 import (
 	"bytes"

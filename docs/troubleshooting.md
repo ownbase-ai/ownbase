@@ -153,6 +153,56 @@ ownbasectl adopt <name> --host <host>
 
 If SSH can't read `/opt/ownbase/api-token` itself (a login user without sudo, say), fetch it by hand and pass it explicitly: `ownbasectl ssh <name> -- sudo cat /opt/ownbase/api-token`, then `ownbasectl adopt <name> --host <host> --token <token>`.
 
+Services using the **unix socket** path are unaffected by token rotation — they never use the Bearer token.
+
+---
+
+## Daemon API from a service (`ownbase_access`)
+
+### `403 forbidden` on the socket
+
+The service is authenticated (socket path) but not permitted. Check:
+
+1. `ownbase_access:` includes the scope for that route ([api.md scope table](api.md#service-access-over-unix-sockets-ownbase_access)).
+2. The route is not **owner-only** (`/config/source`, `/token/reset`, `/self-update`, `/security/*`, `/db/restore`, `POST /ssh-key`, `GET /secrets/` list-all) — those refuse even `*`.
+3. Config has been reconciled since you edited scopes (grants load from live config).
+
+### Socket missing / `connect: no such file or directory`
+
+Inside the container the socket is `/run/ownbase/api.sock`. Missing means:
+
+- No `ownbase_access` on that service, or it was cleared.
+- Reconcile has not run since the grant was added (socket dirs are created before container apply on the next reconcile).
+- An old daemon that bind-mounted the socket *file* instead of the directory left a stale mount after restart — upgrade and restart the unit.
+
+### Config proposals (`POST /config`)
+
+| Symptom | Likely cause |
+|---|---|
+| `400` invalid ownbase.yaml | Schema validation failed — fix the document |
+| `400` no change | Content matches the tracked tip |
+| `400` branch must start with `ownbase/agent/` | Custom branch name rejected |
+| `500` git push failed | Deploy key lacks **write** on the config repo, or branch protection rejected the push |
+| `501` config write not available | Daemon built without `WriteConfig` wired |
+
+After a successful push, merge on the forge, then `POST /reconcile`. The Base does not auto-apply proposal branches.
+
+### Vault vs Base config repo mismatch
+
+`status`/`checkup` may print: Base reports config repo X but the vault pins Y. **Do not treat this as automatic sync.** The vault pin wins on purpose (a rooted Base can rewrite `config-source.yaml`).
+
+- Intentional repoint: `ownbasectl config setup <base> --repo <url>`
+- Unintentional: investigate the Base before changing the vault
+
+### Restore failed re-asserting config source
+
+After rebuild, restore waits for the daemon then `POST /config/source` from the vault. If that fails, restore exits non-zero **without** a success banner. Fix the vault pin / network / daemon health and re-run restore, or run `config setup` once the Base is up.
+
+### Git fetches on every reconcile / ssh config keeps disappearing
+
+- **Branch or tag `ref:`** always refetch from upstream (only full commit SHAs short-circuit). Expected after the rebuild-persistence fix.
+- **`/opt/ownbase/ssh/config` is deleted at daemon start** and never used for `GIT_SSH_COMMAND`. Per-repo Host aliases are unsupported by design (hijack vector via restore). Use the single managed key + known_hosts.
+
 ---
 
 ## Service build / start failures

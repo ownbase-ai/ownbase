@@ -25,8 +25,12 @@
 | Authoritative repo | **External** git repo (e.g. GitHub) holding `ownbase.yaml`; the daemon keeps a checkout at `/opt/ownbase/checkout` (see `internal/configsource`) + one bare clone per service under `/opt/ownbase/repos/` | GitHub is the single source of truth; the tracked ref is applied read-only on the Base |
 | Config authority | Operators commit on the tracked ref **client-side** with `ownbasectl` (their git creds), then `POST /reconcile`. Agents may `POST /config` to push a validated proposal branch under `ownbase/agent/*` only — never the tracked ref. Branch protection on the forge is the merge gate | The Base cannot rewrite the operator's config **history on the default branch**. A write deploy key on the config repo (not service repos) is accepted so agents can propose without borrowing the owner key; the forge, not OwnBase, enforces that proposals stay off `main` until merged |
 | Sync model | Explicit: every mutating `ownbasectl` command triggers `POST /reconcile`, which fetches the config repo and reconciles. A periodic timer backstop runs as a safety net | No post-receive hook, no SIGUSR1, no webhook, no second git host — reconciles happen when the operator asks, deterministically |
-| Service source repos | Every service declares an external `repo:` URL; the daemon keeps a `git clone --bare --mirror` of it under `/opt/ownbase/repos/<service-name>`. Full commit SHAs short-circuit the fetch when already local; **branch and tag refs are always refetched** on reconcile (see `internal/repos`) | A poisoned bare mirror or an upstream force-push must not stick forever. Only immutable full SHAs are safe to skip |
-| SSH identity | The Base's git read credentials are an ownbase-managed ed25519 key under `/opt/ownbase/ssh` (provisioned by `ownbasectl ssh-key`, injected via `GIT_SSH_COMMAND`, backed up by restic) | Survives a rebuild and works for private repos as read-only deploy keys, without relying on an ambient `/root/.ssh` that a fresh VM wouldn't have |
+| Service source repos | Every service declares an external `repo:` URL; the daemon keeps a `git clone --bare --mirror` under `/opt/ownbase/repos/<service-name>`. Full commit SHAs short-circuit fetch when already local; **branch and tag refs always refetch** on reconcile | A poisoned bare mirror or upstream force-push must not stick. Only immutable full SHAs are safe to skip |
+| SSH identity | One ownbase-managed ed25519 key under `/opt/ownbase/ssh` (`GIT_SSH_COMMAND`, restic-backed). Read-only deploy key on service repos; optional **write** on the config repo only for `POST /config` | Survives rebuild; no ambient `/root/.ssh` |
+| SSH config file | **Never honored.** `gitssh.Command` uses the single key + known_hosts only. `RejectConfig` deletes `/opt/ownbase/ssh/config` at daemon start. (Reverses an earlier "config takes precedence" choice.) | A restored or planted `config` can Host-alias every fetch while status still shows the correct URL |
+| Proposal push | `POST /config` commits as `ownbased@localhost` in a temp clone; pushes only `refs/heads/ownbase/agent/*` with `--force-with-lease`; never the tracked ref; does not auto-reconcile | Named proposals can be updated; lease refuses if someone else moved the tip; merge stays on the forge |
+| Branch name rules | Must start with `ownbase/agent/`; refuses `..`, absolute paths, shell metacharacters, and `main`/`master`/tracked ref | Prevents force-push to protected names under another label |
+| Vault config pin | `ensureConfigKnown` backfills empty vault pins only; mismatch warns and leaves the vault unchanged. `restore` re-asserts vault → Base before success | Rooted Base can rewrite `config-source.yaml`; vault is the operator's independent pin |
 | Repo ownership | Every bare clone is created by the daemon (root) and then chowned to the admin SSH user recorded at install time (`/opt/ownbase/admin-user`, see `internal/fsowner`) | The daemon runs as root, so a repo it creates is unwritable by any other account by default; chowning keeps file ownership consistent with the admin account |
 
 ## Schema and compiler
@@ -138,11 +142,22 @@
 | Commit-SHA refs | Skipped in drift comparison | A 40-char hex ref is already maximally pinned |
 | Moving a ref | `ownbasectl deploy` only — resolves the ref to a SHA client-side and commits it. There is no autonomous in-place ref mutation | Explicit-only: the daemon never changes what's running on its own initiative |
 
+## Service API access (`ownbase_access`)
+
+| Decision | Choice | Why |
+|---|---|---|
+| Socket-as-credential | Per-service unix socket; whoever connects is that service principal; no Bearer on the socket path | Filesystem ACL + "only declared services get a socket"; no token distribution into containers |
+| Default-deny scopes | `authz.RouteAccess` maps method+path → scope; unmapped = owner-only; `*` still cannot call owner-only routes | Least privilege; new routes stay closed until deliberately mapped |
+| Directory bind, not file bind | Host `/run/ownbase/svc/<svc>/` → container `/run/ownbase/`; socket at `api.sock` inside | File binds go stale when the socket inode is replaced on daemon restart |
+| Socket mode `0666` | World-connectable socket file; dir `0755` | Containers often run non-root; identity is which socket, not uid |
+| Create before apply | `prepareAccess` runs after parse, before container apply; skipped on `--dry-run` | Bind source must exist on first deploy; dry-run must not open/close live listeners |
+| `HostPath` mounts | OwnBase-generated only (API sockets); never user-declarable from yaml | Users must not bind arbitrary host paths into services |
+
 ## Explain (status)
 
 | Decision | Choice | Why |
 |---|---|---|
-| Status API | Served by the daemon at `--status-addr` (default `127.0.0.1:7070`) with bearer-token owner auth, **and** on per-service unix sockets when `ownbase_access` is declared (socket path = service principal; scopes gate routes) | Same mux, two credentials; loopback TCP stays off the network |
+| Status API | TCP loopback with bearer owner auth, **and** per-service unix sockets when `ownbase_access` is set (same mux) | Daemon already runs as one process; loopback TCP stays off the network |
 | Operating guide | A static README.md seeded into the config repo at bootstrap (replaces the auto-init stub; never overwrites user edits). There is no generated `OWNBASE.md` — that mechanism was tried and removed | The repo holds *intent*; observed state (running/healthy, CVE counts) belongs to the status API, not to git — committing it would bury the user's history in noise commits |
 | Status contract version | `schema_version` field (currently v3) guards against breaking changes | Consumers check the version before parsing |
 

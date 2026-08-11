@@ -2,12 +2,13 @@
 // one bare repo per service under /opt/ownbase/repos/, keyed by service name.
 //
 // Every service declares an external git URL (repo:); OwnBase keeps a
-// read-only `git clone --bare --mirror` of it locally, refreshed on demand
-// (FetchRef) when ownbase.yaml pins a ref that is not yet present locally.
+// read-only `git clone --bare --mirror` of it locally. FetchRef always
+// refreshes branch and tag names from upstream; only full commit SHAs
+// short-circuit when already present (immutable objects).
 //
-// Every repo is backed up locally (see internal/backup), so a Base is
-// self-contained: the external git host is only consulted when a new ref is
-// requested that hasn't been fetched yet.
+// Every repo is backed up locally (see internal/backup). The external git
+// host is consulted on every reconcile for mutable refs so a poisoned
+// mirror or force-push cannot stick forever.
 //
 // Repos are created by the daemon, which runs as root (see install.sh's
 // systemd unit) — EnsureRepo/EnsureRepos chown each repo to the configured
@@ -59,10 +60,9 @@ func EnsureRepo(name, externalURL, adminUser string) error {
 }
 
 // FetchRef fetches the given ref from externalURL into the local bare repo
-// for name when it is not already present locally. This is the on-demand
-// fetch triggered when a ref: is pinned to a value that has not yet been
-// pulled from the external source. A no-op when externalURL or ref is empty,
-// or when the ref is already present locally. See EnsureRepo for adminUser.
+// for name. Full commit SHAs skip the network when already local; branches
+// and tags always refresh. A no-op when externalURL or ref is empty.
+// See EnsureRepo for adminUser.
 func FetchRef(name, externalURL, ref, adminUser string) error {
 	if externalURL == "" || ref == "" {
 		return nil
