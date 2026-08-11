@@ -450,6 +450,46 @@ func TestAPI_TokenReset_HotSwapsServerToken(t *testing.T) {
 	}
 }
 
+// TestAPI_EmptyToken_RejectsManagementRoutes locks the fail-closed contract
+// for the management API: when StatusSrv has no token configured, every
+// authenticated route returns 401 — including ones that return plaintext
+// secrets. /health stays public.
+func TestAPI_EmptyToken_RejectsManagementRoutes(t *testing.T) {
+	srv := explain.NewStatusServer()
+	mux := http.NewServeMux()
+	statusHandler := srv.Handler("") // empty = fail-closed
+	mux.Handle("/status", statusHandler)
+	mux.Handle("/health", statusHandler)
+	explain.MountAPI(mux, explain.APIConfig{
+		StatusSrv: srv,
+		GetConfig: func() (string, error) { return "schema_version: v1\n", nil },
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	for _, path := range []string{"/status", "/config", "/secrets/", "/version"} {
+		req, _ := http.NewRequest(http.MethodGet, ts.URL+path, nil)
+		req.Header.Set("Authorization", "Bearer anything")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("GET %s = %d, want 401 (empty token is fail-closed)", path, resp.StatusCode)
+		}
+	}
+
+	health, err := http.Get(ts.URL + "/health")
+	if err != nil {
+		t.Fatalf("GET /health: %v", err)
+	}
+	health.Body.Close()
+	if health.StatusCode != http.StatusOK {
+		t.Errorf("GET /health = %d, want 200", health.StatusCode)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // SetToken hot-swap (serve.go)
 // ---------------------------------------------------------------------------

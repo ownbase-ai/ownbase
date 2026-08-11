@@ -133,7 +133,7 @@ func main() {
 	statusAddr := fs.String("status-addr", DefaultStatusAddr,
 		"address the status API server listens on (empty = disabled)")
 	apiToken := fs.String("api-token", "",
-		"Bearer token required to access the agent API (empty = no authentication)")
+		"Bearer token required to access the agent API (default: /opt/ownbase/api-token; empty rejects every authenticated route)")
 	_ = fs.Parse(os.Args[1:])
 
 	if err := run(agentConfig{
@@ -325,10 +325,22 @@ func run(cfg agentConfig) error {
 
 	// Populate cfg.apiToken from the installer-written file when no flag
 	// was provided. The file is written by install.sh with mode 0600.
+	// An empty token is fail-closed at the HTTP layer (authenticated routes
+	// return 401); only /health stays reachable. Log loudly so a missing
+	// or truncated token file is not silent.
 	if cfg.apiToken == "" {
 		if data, err := os.ReadFile(explain.DefaultAPITokenPath); err == nil {
 			cfg.apiToken = strings.TrimSpace(string(data))
-			fmt.Fprintln(os.Stderr, "ownbased: using API token from "+explain.DefaultAPITokenPath)
+			if cfg.apiToken != "" {
+				fmt.Fprintln(os.Stderr, "ownbased: using API token from "+explain.DefaultAPITokenPath)
+			} else {
+				fmt.Fprintln(os.Stderr, "ownbased: WARNING: "+explain.DefaultAPITokenPath+" is empty — authenticated API routes will return 401")
+			}
+		} else if !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "ownbased: WARNING: read API token from %s: %v — authenticated API routes will return 401\n",
+				explain.DefaultAPITokenPath, err)
+		} else {
+			fmt.Fprintln(os.Stderr, "ownbased: WARNING: no API token configured (pass --api-token or write "+explain.DefaultAPITokenPath+") — authenticated API routes will return 401")
 		}
 	}
 

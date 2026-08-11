@@ -20,7 +20,7 @@ All endpoints except `GET /health` require a Bearer token:
 Authorization: Bearer <token>
 ```
 
-The token is generated at install time and stored at `/opt/ownbase/api-token` (root, 0600) on the Base. A missing or wrong token returns `401 unauthorized`. When the daemon is started with no token configured (dev only), auth is disabled.
+The token is generated at install time and stored at `/opt/ownbase/api-token` (root, 0600) on the Base. A missing, wrong, or empty configured token returns `401 unauthorized` on every endpoint except `GET /health`. Auth never fails open: an empty or missing token leaves the management API unreachable rather than unauthenticated.
 
 Common status codes across endpoints:
 

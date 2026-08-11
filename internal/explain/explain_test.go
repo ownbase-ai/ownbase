@@ -397,9 +397,13 @@ func TestStatusServer_Status_ReturnsJSON(t *testing.T) {
 	}
 }
 
-func TestStatusServer_Status_NoTokenMeansNoAuth(t *testing.T) {
+func TestStatusServer_Status_EmptyTokenRejects(t *testing.T) {
+	// An empty configured token must fail closed: /status is 401, /health
+	// stays reachable. The previous behavior treated empty as "no auth",
+	// which left the whole management API open when the token file was
+	// missing or truncated.
 	srv := explain.NewStatusServer()
-	ts := httptest.NewServer(srv.Handler("")) // empty token = no auth
+	ts := httptest.NewServer(srv.Handler(""))
 	defer ts.Close()
 
 	resp, err := http.Get(ts.URL + "/status")
@@ -407,21 +411,60 @@ func TestStatusServer_Status_NoTokenMeansNoAuth(t *testing.T) {
 		t.Fatalf("GET /status: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("status = %d, want 200 (no auth configured)", resp.StatusCode)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401 (empty token is fail-closed)", resp.StatusCode)
+	}
+
+	// A Bearer header must not help when no token is configured — there is
+	// nothing legitimate to match against.
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/status", nil)
+	req.Header.Set("Authorization", "Bearer anything")
+	resp2, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /status with bearer: %v", err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status with bearer = %d, want 401", resp2.StatusCode)
+	}
+
+	health, err := http.Get(ts.URL + "/health")
+	if err != nil {
+		t.Fatalf("GET /health: %v", err)
+	}
+	defer health.Body.Close()
+	if health.StatusCode != http.StatusOK {
+		t.Errorf("health = %d, want 200 (liveness stays public)", health.StatusCode)
 	}
 }
 
 func TestStatusServer_Update_ReflectsImmediately(t *testing.T) {
 	srv := explain.NewStatusServer()
-	ts := httptest.NewServer(srv.Handler(""))
+	const token = "test-token"
+	ts := httptest.NewServer(srv.Handler(token))
 	defer ts.Close()
 
+	getStatus := func() explain.BaseStatus {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodGet, ts.URL+"/status", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET /status: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET /status: status = %d", resp.StatusCode)
+		}
+		var st explain.BaseStatus
+		if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
+			t.Fatalf("decode status: %v", err)
+		}
+		return st
+	}
+
 	// First request — empty services.
-	resp1, _ := http.Get(ts.URL + "/status")
-	var s1 explain.BaseStatus
-	_ = json.NewDecoder(resp1.Body).Decode(&s1)
-	resp1.Body.Close()
+	_ = getStatus()
 
 	// Update with a non-empty status.
 	srv.Update(&explain.BaseStatus{
@@ -432,11 +475,7 @@ func TestStatusServer_Update_ReflectsImmediately(t *testing.T) {
 	})
 
 	// Second request — should see updated services.
-	resp2, _ := http.Get(ts.URL + "/status")
-	var s2 explain.BaseStatus
-	_ = json.NewDecoder(resp2.Body).Decode(&s2)
-	resp2.Body.Close()
-
+	s2 := getStatus()
 	if len(s2.Services) != 1 || s2.Services[0].Name != "auth" {
 		t.Errorf("updated status not reflected: Services = %+v", s2.Services)
 	}

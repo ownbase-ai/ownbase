@@ -15,15 +15,17 @@ import (
 // StatusServer caches the most recently gathered BaseStatus and serves it
 // over HTTP. It is the Base <-> opterm API seam defined in M8.
 //
-// The /status endpoint requires a Bearer token when Token is non-empty.
-// The /health endpoint is always public — opterm uses it for liveness checks.
+// Every endpoint except /health requires a non-empty Bearer token. An empty
+// token is fail-closed: authenticated routes return 401 rather than opening
+// the API. /health stays public so liveness probes still work while the
+// daemon is misconfigured.
 //
 // Callers replace the cached status by calling Update after each reconcile.
 // The Bearer token can be hot-swapped at runtime via SetToken.
 type StatusServer struct {
 	mu     sync.RWMutex
 	status *BaseStatus
-	token  string // Bearer token; empty = no auth
+	token  string // Bearer token; empty rejects every authenticated route
 }
 
 // NewStatusServer returns a StatusServer with a minimal initial status.
@@ -130,8 +132,9 @@ func (s *StatusServer) SetLastPatchAt(t time.Time) {
 	s.status.Security.Vulns.LastPatchAt = t
 }
 
-// SetToken updates the Bearer token required to access /status. Passing an
-// empty string disables authentication. Safe for concurrent use; takes effect
+// SetToken updates the Bearer token required for authenticated routes. An
+// empty token leaves every authenticated route returning 401 (fail-closed);
+// it does not disable authentication. Safe for concurrent use; takes effect
 // on the next request without restarting the server.
 func (s *StatusServer) SetToken(token string) {
 	s.mu.Lock()
@@ -147,18 +150,16 @@ func (s *StatusServer) currentToken() string {
 }
 
 // Handler returns an http.Handler for the status API. The token argument sets
-// the initial Bearer token; an empty string disables authentication. The token
-// can be changed at runtime via SetToken without restarting the server.
+// the initial Bearer token. An empty token leaves /status returning 401; only
+// /health remains reachable. The token can be changed at runtime via SetToken
+// without restarting the server.
 func (s *StatusServer) Handler(token string) http.Handler {
 	s.SetToken(token)
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
-		if tok := s.currentToken(); tok != "" {
-			if !bearerTokenValid(r.Header.Get("Authorization"), tok) {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
-			}
+		if !authorizeBearer(w, r, s.currentToken()) {
+			return
 		}
 		st := s.Get()
 		w.Header().Set("Content-Type", "application/json")
@@ -174,6 +175,17 @@ func (s *StatusServer) Handler(token string) http.Handler {
 	})
 
 	return mux
+}
+
+// authorizeBearer writes 401 and returns false unless the request carries a
+// valid Bearer token matching secret. An empty secret is fail-closed: no
+// request is authorized. Shared by /status and the management API.
+func authorizeBearer(w http.ResponseWriter, r *http.Request, secret string) bool {
+	if secret == "" || !bearerTokenValid(r.Header.Get("Authorization"), secret) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return false
+	}
+	return true
 }
 
 // ListenAndServe starts the HTTP server at addr. Blocks until the server
