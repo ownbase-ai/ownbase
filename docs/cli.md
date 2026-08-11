@@ -466,8 +466,16 @@ ownbasectl service remove mybase crm
 | `--requires` | capability dependencies |
 | `--env` | `KEY=VALUE`, repeatable |
 | `--add-capabilities` | Linux capabilities to restore |
+| `--ownbase-access` | daemon API scopes (e.g. `status:read`, `config:write`); repeatable, replaces the list. On `update`, pass an empty value to clear all grants. Quote `*` in the shell |
 
-`update` touches only the fields whose flags were passed. `--env` merges, with new values winning on a duplicate key; `--requires`, `--domains`, and `--add-capabilities` replace their lists entirely.
+`update` touches only the fields whose flags were passed. `--env` merges, with new values winning on a duplicate key; `--requires`, `--domains`, `--add-capabilities`, and `--ownbase-access` replace their lists entirely.
+
+```bash
+ownbasectl service update mybase harness --ownbase-access status:read --ownbase-access config:write
+ownbasectl service update mybase harness --ownbase-access ''   # revoke all grants
+```
+
+Scopes gate the per-service unix socket API. Full table: [api.md — Service access over unix sockets](api.md#service-access-over-unix-sockets-ownbase_access).
 
 `--replicas` is concurrency on one machine (warm workers), not high availability. Volumes default to per-replica when set; see [ownbase-yaml.md](ownbase-yaml.md#replicas-replicas). `ownbasectl tunnel` bridges replica 0 only for a replicated service.
 

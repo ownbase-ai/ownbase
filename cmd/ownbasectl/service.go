@@ -2,10 +2,10 @@ package main
 
 // service.go implements `ownbasectl service add/remove/update` — structured,
 // non-interactive commands that read-modify-write the current ownbase.yaml
-// on a Base through the same /config front door as `ownbasectl config set`.
-// There is no per-field API on the daemon: the whole document is fetched,
-// edited locally with the same schema types the daemon itself validates
-// against, and pushed back atomically. Every command is a single
+// via the client-side config-repo path (same as `ownbasectl config set`:
+// clone, edit, commit, push tracked ref, POST /reconcile). The whole
+// document is edited locally with the same schema types the daemon
+// validates against, and pushed atomically. Every command is a single
 // invocation — no editor, no prompts — safe to run from a script or an AI
 // agent unattended.
 
@@ -49,6 +49,7 @@ type serviceFieldFlags struct {
 	requires        []string
 	env             []string
 	addCapabilities []string
+	ownbaseAccess   []string
 	replicas        int
 }
 
@@ -67,6 +68,7 @@ func (f *serviceFieldFlags) register(cmd *cobra.Command) {
 	fl.StringSliceVar(&f.requires, "requires", nil, "capability (service key) this service depends on; repeatable; replaces the full list")
 	fl.StringArrayVar(&f.env, "env", nil, "KEY=VALUE static environment variable to set; repeatable")
 	fl.StringSliceVar(&f.addCapabilities, "add-capabilities", nil, "Linux capability to add back after the default DropCapability=ALL, e.g. NET_BIND_SERVICE for a service that binds directly to a port below 1024; repeatable, replaces the full list; only set what the service genuinely needs")
+	fl.StringSliceVar(&f.ownbaseAccess, "ownbase-access", nil, "daemon API scope for this service (e.g. status:read, config:write); repeatable, replaces the full list; pass an empty value on update to clear all grants. Quote * in the shell.")
 	fl.IntVar(&f.replicas, "replicas", 0, "run N indexed containers (1..64); omitted = single unindexed container; volumes default to per-replica when set")
 }
 
@@ -98,6 +100,10 @@ func runServiceAdd(base, name string, f serviceFieldFlags, jsonOut bool) error {
 	if err != nil {
 		return err
 	}
+	access, err := normalizeOwnbaseAccess(name, f.ownbaseAccess)
+	if err != nil {
+		return err
+	}
 
 	err = mutateConfig(base, func(current string) (string, string, error) {
 		cfg, err := schema.ParseConfig(strings.NewReader(current))
@@ -124,6 +130,7 @@ func runServiceAdd(base, name string, f serviceFieldFlags, jsonOut bool) error {
 			Requires:        f.requires,
 			Env:             env,
 			AddCapabilities: f.addCapabilities,
+			OwnbaseAccess:   access,
 		}
 		if f.replicas > 0 {
 			r := f.replicas
@@ -261,6 +268,13 @@ func runServiceUpdate(cmd *cobra.Command, base, name string, f serviceFieldFlags
 		if changed("add-capabilities") {
 			decl.AddCapabilities = f.addCapabilities
 		}
+		if changed("ownbase-access") {
+			access, err := normalizeOwnbaseAccess(name, f.ownbaseAccess)
+			if err != nil {
+				return "", "", err
+			}
+			decl.OwnbaseAccess = access
+		}
 		if changed("env") {
 			newEnv, err := parseEnvPairs(f.env)
 			if err != nil {
@@ -292,6 +306,38 @@ func runServiceUpdate(cmd *cobra.Command, base, name string, f serviceFieldFlags
 	}
 	fmt.Printf("Updated service %q on %q — reconcile triggered.\n", name, base)
 	return nil
+}
+
+// normalizeOwnbaseAccess trims empties and validates scopes before the config
+// repo is cloned. An all-empty list clears grants (nil). Validation uses the
+// same schema rules as ownbase.yaml parse.
+func normalizeOwnbaseAccess(service string, raw []string) ([]string, error) {
+	var out []string
+	for _, s := range raw {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		out = append(out, s)
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	// Minimal config so OwnbaseConfig.Validate runs validateOwnbaseAccess.
+	cfg := &schema.OwnbaseConfig{
+		SchemaVersion: "v1",
+		Services: map[string]schema.ServiceDecl{
+			service: {
+				Repo:          "https://example.com/validate.git",
+				Port:          1,
+				OwnbaseAccess: out,
+			},
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("--ownbase-access: %w", err)
+	}
+	return out, nil
 }
 
 // parseEnvPairs validates that every entry is a well-formed KEY=VALUE pair.

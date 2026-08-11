@@ -59,3 +59,62 @@ func TestServiceUpdate_AddCapabilitiesFlag(t *testing.T) {
 		t.Error("expected add-capabilities to be unchanged when not passed")
 	}
 }
+
+func TestServiceAdd_OwnbaseAccessFlag(t *testing.T) {
+	cmd := newServiceAddCmd()
+	if err := cmd.Flags().Parse([]string{
+		"--repo", "https://github.com/example/app",
+		"--ownbase-access", "status:read,config:write",
+	}); err != nil {
+		t.Fatalf("parse flags: %v", err)
+	}
+	got, err := cmd.Flags().GetStringSlice("ownbase-access")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	want := []string{"status:read", "config:write"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ownbase-access = %v, want %v", got, want)
+	}
+}
+
+func TestServiceUpdate_OwnbaseAccessChanged(t *testing.T) {
+	cmd := newServiceUpdateCmd()
+	if err := cmd.Flags().Parse([]string{"--ownbase-access", "status:read"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !cmd.Flags().Changed("ownbase-access") {
+		t.Error("expected Changed")
+	}
+	cmd2 := newServiceUpdateCmd()
+	if err := cmd2.Flags().Parse([]string{"--port", "8080"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if cmd2.Flags().Changed("ownbase-access") {
+		t.Error("expected unchanged when omitted")
+	}
+}
+
+func TestNormalizeOwnbaseAccess(t *testing.T) {
+	got, err := normalizeOwnbaseAccess("web", []string{" status:read ", "", "config:write"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, []string{"status:read", "config:write"}) {
+		t.Errorf("got %v", got)
+	}
+	// Clear.
+	got, err = normalizeOwnbaseAccess("web", []string{"", "  "})
+	if err != nil || got != nil {
+		t.Fatalf("clear: got %v err %v", got, err)
+	}
+	// Invalid.
+	if _, err := normalizeOwnbaseAccess("web", []string{"not a scope!!!"}); err == nil {
+		t.Fatal("expected invalid scope error")
+	}
+	// Star is valid.
+	got, err = normalizeOwnbaseAccess("web", []string{"*"})
+	if err != nil || !reflect.DeepEqual(got, []string{"*"}) {
+		t.Fatalf("star: %v %v", got, err)
+	}
+}
