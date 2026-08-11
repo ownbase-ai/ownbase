@@ -37,12 +37,19 @@ func StatePath(name string) (string, error) {
 	return filepath.Join(home, StateDir, name), nil
 }
 
-// ResolvePath returns the configured vault location, from $OWNBASE_VAULT if
-// set, otherwise from the pointer file.
+// ResolvePath returns a human-readable vault location for display. Prefer
+// LoadLocator / ResolveStore when you need the actual Store. Falls back through
+// the locator file, then the legacy plain-path pointer, then $OWNBASE_VAULT.
 func ResolvePath() (string, error) {
-	if p := strings.TrimSpace(os.Getenv(PathEnv)); p != "" {
-		return ExpandTilde(p), nil
+	loc, err := LoadLocator()
+	if err != nil {
+		return "", err
 	}
+	return loc.Location(), nil
+}
+
+// resolveLegacyPointer reads the plain-path pointer file used before locators.
+func resolveLegacyPointer() (string, error) {
 	pointer, err := StatePath(PointerFile)
 	if err != nil {
 		return "", err

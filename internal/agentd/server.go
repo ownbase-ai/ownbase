@@ -284,15 +284,11 @@ func (s *Server) withVault(fn func(*vault.Vault) Response) Response {
 }
 
 func (s *Server) unlock(req Request) Response {
-	path := req.VaultPath
-	if path == "" {
-		p, err := vault.ResolvePath()
-		if err != nil {
-			return Response{Error: err.Error()}
-		}
-		path = p
+	store, err := resolveUnlockStore(req.VaultPath)
+	if err != nil {
+		return Response{Error: err.Error()}
 	}
-	v, err := vault.Open(path, req.Password)
+	v, err := vault.OpenStore(store, req.Password)
 	if err != nil {
 		code := ""
 		if errors.Is(err, vault.ErrWrongPassword) {
@@ -348,10 +344,21 @@ func (s *Server) status() *Status {
 			locksAt := s.lastUse.Add(s.idleTimeout)
 			st.LocksAt = &locksAt
 		}
-	} else if path, err := vault.ResolvePath(); err == nil {
-		st.VaultPath = path
+	} else if loc, err := vault.LoadLocator(); err == nil {
+		st.VaultPath = loc.Location()
 	}
 	return st
+}
+
+// resolveUnlockStore picks the Store for an unlock request. An explicit
+// VaultPath is always a local file (the escape hatch / legacy path). An empty
+// path resolves the configured locator, which may be a local file or a remote
+// object store.
+func resolveUnlockStore(vaultPath string) (vault.Store, error) {
+	if vaultPath != "" {
+		return vault.NewFileStore(vaultPath), nil
+	}
+	return vault.ResolveStore()
 }
 
 // reloadKeyringLocked rebuilds the signing keyring from the vault. Caller holds

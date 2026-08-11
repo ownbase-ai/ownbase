@@ -74,8 +74,8 @@ func (c *Client) Status() (*Status, error) {
 	resp, err := c.call(Request{Op: OpStatus})
 	if errors.Is(err, ErrNotRunning) {
 		st := &Status{Running: false}
-		if path, perr := vault.ResolvePath(); perr == nil {
-			st.VaultPath = path
+		if loc, perr := vault.LoadLocator(); perr == nil {
+			st.VaultPath = loc.Location()
 		}
 		return st, nil
 	}

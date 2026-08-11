@@ -29,7 +29,9 @@ The deliberate trade-off: your owner SSH keys are **not** files in `~/.ssh` any 
 
 ## Where it lives
 
-You choose, at `vault init`. The path is recorded in `~/.ownbase/vault`, a plain text file holding a path and nothing secret.
+You choose, at `vault init`. The location is recorded in `~/.ownbase/locator` (JSON, mode 600). Older installs used a plain path in `~/.ownbase/vault`; that still works.
+
+### Local file
 
 ```bash
 ownbasectl vault init ~/Library/Mobile\ Documents/com~apple~CloudDocs/OwnBase   # iCloud Drive
@@ -37,25 +39,38 @@ ownbasectl vault init ~/Dropbox/OwnBase                                         
 ownbasectl vault init ~/ownbase.kdbx                                            # just this machine
 ```
 
-Give it a directory and `ownbase.kdbx` is appended; give it a file path and that path is used.
+Give it a directory and `ownbase.kdbx` is appended; give it a file path and that path is used. A synced folder is fine — the file is ciphertext without the master password.
 
-**A synced folder is the right default.** The file is useless without the master password, so the sync provider learns nothing, and having it on a second machine is what saves you when the first one dies. Cloud storage version history is also the cheapest possible protection against a corrupted write.
-
-Point a second machine at the same file by recording the existing path rather than creating a new vault:
+### Object storage (recommended for headless recovery)
 
 ```bash
-ownbasectl vault init ~/Dropbox/OwnBase/ownbase.kdbx   # records; does not overwrite
+ownbasectl vault init \
+  --bucket my-vault-bucket \
+  --region auto \
+  --endpoint https://<account>.r2.cloudflarestorage.com \
+  --access-key-id … \
+  --secret-access-key …
 ```
 
-`vault init` refuses to overwrite an existing file. A vault is the only copy of the keys that reach your Bases, so clobbering one can lock you out permanently.
+Works with any S3-compatible API (AWS S3, Cloudflare R2, Backblaze B2, MinIO, Wasabi). The vault is one object (default key `ownbase/vault/ownbase.kdbx`). Prefer a **dedicated vault bucket** whose credentials the Base never holds — backup credentials for the Base should be scoped to a separate backup bucket so a compromised Base cannot delete your vault.
 
-`$OWNBASE_VAULT` overrides the recorded location for one invocation — useful for a second vault on removable media, and for tests.
+After a remote init, save the recovery string that is printed (or re-print with `ownbasectl vault recovery-string`). On a fresh machine:
+
+```bash
+ownbasectl vault open --recovery 'ownbase-recovery-v1:…'
+```
+
+That string plus the master password is everything you need. A local ciphertext cache under `~/.ownbase/cache/` keeps reads working offline after the first successful fetch; writes always go to the live store.
+
+`vault init` refuses to overwrite an existing vault. Pointing it at one that already exists just records the location (how a second machine joins).
+
+`$OWNBASE_VAULT` overrides the recorded location for one invocation (local path only).
 
 ## The master password
 
 It is the only thing protecting the file, and it is never stored anywhere. Choose it accordingly: a long passphrase you can type, not a short one you can guess.
 
-The file is encrypted with ChaCha20 under a key derived by **Argon2id** — 64 MiB of memory, tuned so one derivation costs a few hundred milliseconds. That cost is what makes a human-typed password worth relying on: it is imperceptible when you unlock, and it makes an offline guessing attack against a stolen copy of the file expensive per attempt rather than free. Those parameters are stored in the file header, so they survive being opened by other KDBX clients.
+The file is encrypted with ChaCha20 under a key derived by **Argon2** (KDBX 4 / Argon2d via gokeepasslib) — 64 MiB of memory, tuned so one derivation costs a few hundred milliseconds. New master passwords must be at least 12 characters. That cost is what makes a human-typed password worth relying on: it is imperceptible when you unlock, and it makes an offline guessing attack against a stolen copy of the file expensive per attempt rather than free. Those parameters are stored in the file header, so they survive being opened by other KDBX clients.
 
 Every write re-randomizes the seeds and the cipher nonce, so two versions of the file — which cloud storage keeps by design — never share a keystream.
 

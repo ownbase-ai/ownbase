@@ -11,6 +11,8 @@ package main
 // desktop app and CI are never blocked on a TTY.
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -55,66 +57,106 @@ disk and no other command needs the master password.`,
 		newVaultLockCmd(),
 		newVaultStatusCmd(),
 		newVaultPasswdCmd(),
+		newVaultOpenCmd(),
+		newVaultRecoveryStringCmd(),
 	)
 	return cmd
+}
+
+// MinMasterPasswordLen is the floor for a newly chosen master password. The
+// vault consolidates every credential that reaches a Base; short passwords
+// are not worth the Argon2 cost we pay.
+const MinMasterPasswordLen = 12
+
+// vaultInitFlags is shared by local-file and remote object-store init.
+type vaultInitFlags struct {
+	path            string
+	passwordStdin   bool
+	jsonOut         bool
+	bucket          string
+	region          string
+	endpoint        string
+	key             string
+	accessKeyID     string
+	secretAccessKey string
+	pathStyle       bool
+	credsStdin      bool
 }
 
 func newVaultInitCmd() *cobra.Command {
-	var (
-		path          string
-		passwordStdin bool
-		jsonOut       bool
-	)
+	var f vaultInitFlags
 	cmd := &cobra.Command{
-		Use:   "init <path>",
+		Use:   "init [<path>]",
 		Short: "Create a new credential vault and record where it lives",
-		Long: `Creates an empty KDBX vault at the given path and remembers that
-location in ~/.ownbase/vault, so every later command finds it. Name a
-directory and ownbase.kdbx is created inside it.
+		Long: `Creates an empty KDBX vault and remembers how to find it.
 
-Choose somewhere you already sync and back up — the vault is the only copy
-of the keys that reach your Bases. A cloud-storage folder is a good default:
-the file is encrypted with your master password before it is written, so the
-storage provider holds ciphertext and nothing else.
-
-init refuses to overwrite an existing vault. Pointing it at a vault file that
-already exists just records the location, which is how a second machine
-joins an existing vault.`,
-		Example: `  ownbasectl vault init ~/Library/Mobile\ Documents/com~apple~CloudDocs/OwnBase
+Local file (default):
   ownbasectl vault init ~/Dropbox/OwnBase
-  ownbasectl vault init ~/Dropbox/OwnBase --password-stdin < pw.txt`,
+
+Object storage (recommended for headless recovery):
+  ownbasectl vault init --bucket my-vault-bucket --region auto \
+    --endpoint https://<account>.r2.cloudflarestorage.com \
+    --access-key-id … --secret-access-key …
+
+The remote form stores the vault as a single object (default key
+ownbase/vault/ownbase.kdbx). After init, print and save the recovery string:
+
+  ownbasectl vault recovery-string
+
+Recovery needs that string plus your master password — nothing else.
+
+init refuses to overwrite an existing vault. Pointing it at a vault that
+already exists just records the location (how a second machine joins).`,
+		Example: `  ownbasectl vault init ~/Dropbox/OwnBase
+  ownbasectl vault init --bucket ownbase-vault --region auto \
+    --endpoint https://xxx.r2.cloudflarestorage.com \
+    --access-key-id AKIA… --secret-access-key …`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Positional or --path; the positional form reads better and is
-			// what the docs use, but --path predates it and still works.
 			if len(args) == 1 {
-				if path != "" && path != args[0] {
+				if f.path != "" && f.path != args[0] {
 					return withExitCode(exitUsage, errors.New(
 						"give the vault path either as an argument or with --path, not both"))
 				}
-				path = args[0]
+				f.path = args[0]
 			}
-			return runVaultInit(path, passwordStdin, jsonOut)
+			return runVaultInit(f)
 		},
 	}
-	cmd.Flags().StringVar(&path, "path", "", "where to create the vault file")
-	cmd.Flags().BoolVar(&passwordStdin, "password-stdin", false, "read the master password from stdin instead of prompting")
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "print the result as JSON")
+	cmd.Flags().StringVar(&f.path, "path", "", "local vault file path")
+	cmd.Flags().BoolVar(&f.passwordStdin, "password-stdin", false, "read the master password from stdin instead of prompting")
+	cmd.Flags().BoolVar(&f.jsonOut, "json", false, "print the result as JSON")
+	cmd.Flags().StringVar(&f.bucket, "bucket", "", "S3-compatible bucket for a remote vault")
+	cmd.Flags().StringVar(&f.region, "region", "", "bucket region (use auto for R2)")
+	cmd.Flags().StringVar(&f.endpoint, "endpoint", "", "S3 API endpoint URL (required for R2/B2/MinIO)")
+	cmd.Flags().StringVar(&f.key, "key", vault.DefaultObjectKey, "object key inside the bucket")
+	cmd.Flags().StringVar(&f.accessKeyID, "access-key-id", "", "bucket access key id")
+	cmd.Flags().StringVar(&f.secretAccessKey, "secret-access-key", "", "bucket secret access key")
+	cmd.Flags().BoolVar(&f.pathStyle, "path-style", false, "use path-style S3 URLs (MinIO)")
+	cmd.Flags().BoolVar(&f.credsStdin, "creds-stdin", false,
+		"read bucket credentials as JSON from stdin (optional \"password\" field; cannot combine with --password-stdin)")
 	return cmd
 }
 
-func runVaultInit(path string, passwordStdin, jsonOut bool) error {
-	if strings.TrimSpace(path) == "" {
+func runVaultInit(f vaultInitFlags) error {
+	remote := f.bucket != "" || f.endpoint != "" || f.accessKeyID != "" || f.credsStdin
+	if remote {
+		return runVaultInitRemote(f)
+	}
+	return runVaultInitLocal(f)
+}
+
+func runVaultInitLocal(f vaultInitFlags) error {
+	if strings.TrimSpace(f.path) == "" {
 		return withExitCode(exitUsage, errors.New(
-			"a vault path is required, e.g. ownbasectl vault init ~/Dropbox/OwnBase"))
+			"a vault path is required, e.g. ownbasectl vault init ~/Dropbox/OwnBase\n"+
+				"       or use --bucket/--endpoint for a remote vault"))
 	}
 
-	// Resolve the location before asking for a password: an existing vault is
-	// a "record this and unlock it" case, not a "create" case, and the two ask
-	// for different things (one password, or a new one confirmed twice).
-	// Do not write the pointer yet — a cancelled prompt or a wrong password
-	// must leave ~/.ownbase/vault pointing at whatever already worked.
-	recorded, err := vault.NormalizePath(path)
+	// Resolve before asking for a password: existing vault = adopt, not create.
+	// Do not write the locator yet — a cancelled prompt must leave the prior
+	// location alone.
+	recorded, err := vault.NormalizePath(f.path)
 	if err != nil {
 		return err
 	}
@@ -123,7 +165,7 @@ func runVaultInit(path string, passwordStdin, jsonOut bool) error {
 		adopting = true
 	}
 
-	password, err := readVaultInitPassword(passwordStdin, adopting)
+	password, err := readVaultInitPassword(f.passwordStdin, adopting)
 	if err != nil {
 		return err
 	}
@@ -133,8 +175,6 @@ func runVaultInit(path string, passwordStdin, jsonOut bool) error {
 		}
 	}
 
-	// Unlock immediately: creating a vault and then being told it is locked
-	// would be a pointless second step.
 	c, err := agentClient()
 	if err != nil {
 		return err
@@ -144,34 +184,227 @@ func runVaultInit(path string, passwordStdin, jsonOut bool) error {
 		return err
 	}
 
-	// Only now is the new location known-good. Pointing earlier would strand
-	// every later command on a path the user never successfully opened.
-	if _, err := vault.RecordPath(path); err != nil {
+	loc := vault.Locator{Kind: vault.LocatorKindFile, Path: recorded}
+	if err := vault.SaveLocator(loc); err != nil {
 		return err
 	}
 
+	return printVaultInitResult(f.jsonOut, recorded, !adopting, "", st)
+}
+
+func runVaultInitRemote(f vaultInitFlags) error {
+	// --creds-stdin consumes stdin entirely, so it cannot be combined with
+	// --password-stdin. Put "password" in the creds JSON instead.
+	if f.credsStdin && f.passwordStdin {
+		return withExitCode(exitUsage, errors.New(
+			"cannot combine --creds-stdin and --password-stdin (stdin can only be read once); include \"password\" in the creds JSON"))
+	}
+
+	var passwordFromCreds string
+	if f.credsStdin {
+		var err error
+		passwordFromCreds, err = readVaultInitCredsStdin(&f)
+		if err != nil {
+			return err
+		}
+	}
+	if f.bucket == "" || f.region == "" || f.accessKeyID == "" || f.secretAccessKey == "" {
+		return withExitCode(exitUsage, errors.New(
+			"remote vault init requires --bucket, --region, --access-key-id, and --secret-access-key (or --creds-stdin)"))
+	}
+	if f.key == "" {
+		f.key = vault.DefaultObjectKey
+	}
+
+	loc := vault.Locator{
+		Kind:            vault.LocatorKindS3,
+		Endpoint:        f.endpoint,
+		Region:          f.region,
+		Bucket:          f.bucket,
+		Key:             f.key,
+		AccessKeyID:     f.accessKeyID,
+		SecretAccessKey: f.secretAccessKey,
+		PathStyle:       f.pathStyle,
+	}
+	store, err := loc.OpenStore()
+	if err != nil {
+		return err
+	}
+
+	// Adopt if the object already exists. A probe error other than NotExist
+	// (network blip, auth) is ignored here — CreateStore/OpenStore will
+	// surface it with a clearer message.
+	adopting := false
+	if _, _, gerr := store.Get(cmdContext()); gerr == nil {
+		adopting = true
+	}
+
+	password := passwordFromCreds
+	if password == "" {
+		// Still accept $OWNBASE_VAULT_PASSWORD or an interactive prompt.
+		// --password-stdin is rejected with --creds-stdin above (stdin is
+		// already spent). Only rewrite the "no password source" error so we
+		// do not mask real failures (too-short password, mismatched confirm).
+		password, err = readVaultInitPassword(f.passwordStdin, adopting)
+		if err != nil {
+			if f.credsStdin && isNoPasswordSource(err) {
+				return withExitCode(exitUsage, fmt.Errorf(
+					`master password required — include "password" in the --creds-stdin JSON, set %s, or run interactively`,
+					PasswordEnv))
+			}
+			return err
+		}
+	} else if !adopting {
+		// Password came from creds JSON on a create — still enforce the floor.
+		if err := validateMasterPassword(password); err != nil {
+			return err
+		}
+	}
+
+	// Prove the password works BEFORE writing ~/.ownbase/locator. A wrong
+	// password on adopt must not displace a prior working locator.
+	if adopting {
+		if _, err := vault.OpenStore(store, password); err != nil {
+			return err
+		}
+	} else {
+		if _, err := vault.CreateStore(store, password); err != nil {
+			return err
+		}
+	}
+
+	// Encode recovery as soon as the vault exists so a later unlock failure
+	// cannot swallow the one portable secret the user must save.
+	recovery, err := vault.EncodeRecovery(loc)
+	if err != nil {
+		return err
+	}
+
+	if err := vault.SaveLocator(loc); err != nil {
+		// Vault is in the bucket; still print recovery so it is not lost.
+		printRecoveryFallback(f.jsonOut, recovery, err)
+		return err
+	}
+
+	c, err := agentClient()
+	if err != nil {
+		printRecoveryFallback(f.jsonOut, recovery, err)
+		return err
+	}
+	// Empty path → agent uses ResolveStore (the locator we just wrote).
+	st, err := c.Unlock("", password, agentd.DefaultIdleTimeout)
+	if err != nil {
+		// Recovery is printed once by the fallback; do not embed it again in
+		// the returned error (avoids duplicating the secret on stderr).
+		printRecoveryFallback(f.jsonOut, recovery, err)
+		return fmt.Errorf("vault is in place at %s but unlock failed: %w", loc.Location(), err)
+	}
+
+	return printVaultInitResult(f.jsonOut, loc.Location(), !adopting, recovery, st)
+}
+
+// printRecoveryFallback surfaces the recovery string when init cannot finish
+// cleanly after the vault object already exists.
+func printRecoveryFallback(jsonOut bool, recovery string, cause error) {
+	if recovery == "" {
+		return
+	}
 	if jsonOut {
-		return printJSON(map[string]any{
-			"vault_path": recorded,
-			"created":    !adopting,
+		// Best-effort JSON line on stderr so scripted callers can scrape it
+		// without confusing stdout success parsing.
+		_ = json.NewEncoder(os.Stderr).Encode(map[string]string{
+			"recovery_string": recovery,
+			"error":           cause.Error(),
+		})
+		return
+	}
+	fmt.Fprintln(os.Stderr, "Vault object exists, but setup did not finish cleanly.")
+	fmt.Fprintln(os.Stderr, "Save this recovery string — it will not be shown again unless the locator was written:")
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, recovery)
+	fmt.Fprintln(os.Stderr)
+}
+
+// readVaultInitCredsStdin reads bucket credentials (and optional master
+// password) as one JSON object from stdin. Returns the password when present.
+func readVaultInitCredsStdin(f *vaultInitFlags) (password string, err error) {
+	data, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return "", fmt.Errorf("read creds from stdin: %w", err)
+	}
+	var in struct {
+		AccessKeyID     string `json:"access_key_id"`
+		SecretAccessKey string `json:"secret_access_key"`
+		Bucket          string `json:"bucket"`
+		Region          string `json:"region"`
+		Endpoint        string `json:"endpoint"`
+		Key             string `json:"key"`
+		Password        string `json:"password"`
+	}
+	if err := json.Unmarshal(data, &in); err != nil {
+		return "", fmt.Errorf("parse creds JSON: %w", err)
+	}
+	if in.AccessKeyID != "" {
+		f.accessKeyID = in.AccessKeyID
+	}
+	if in.SecretAccessKey != "" {
+		f.secretAccessKey = in.SecretAccessKey
+	}
+	if in.Bucket != "" {
+		f.bucket = in.Bucket
+	}
+	if in.Region != "" {
+		f.region = in.Region
+	}
+	if in.Endpoint != "" {
+		f.endpoint = in.Endpoint
+	}
+	if in.Key != "" {
+		f.key = in.Key
+	}
+	return in.Password, nil
+}
+
+func printVaultInitResult(jsonOut bool, location string, created bool, recovery string, st *agentd.Status) error {
+	if jsonOut {
+		out := map[string]any{
+			"vault_path": location,
+			"created":    created,
 			"unlocked":   true,
 			"status":     st,
-		})
+		}
+		if recovery != "" {
+			out["recovery_string"] = recovery
+		}
+		return printJSON(out)
 	}
-	if adopting {
-		fmt.Printf("Using the existing vault at %s (%d Base(s), %d key(s)).\n", recorded, st.Bases, st.Keys)
+	if !created {
+		fmt.Printf("Using the existing vault at %s (%d Base(s), %d key(s)).\n", location, st.Bases, st.Keys)
 		return nil
 	}
-	fmt.Printf("Created a vault at %s and unlocked it.\n", recorded)
+	fmt.Printf("Created a vault at %s and unlocked it.\n", location)
 	fmt.Println()
-	fmt.Println("Back this file up. It holds the only copy of the SSH keys that reach your")
-	fmt.Println("Bases — lose both it and your master password and no one can get in, which")
-	fmt.Println("is the same property that makes it safe to keep in cloud storage.")
-	fmt.Println()
+	if recovery != "" {
+		fmt.Println("Save this recovery string somewhere durable (1Password, printed paper).")
+		fmt.Println("Together with your master password it is everything you need to reopen")
+		fmt.Println("the vault on a new machine:")
+		fmt.Println()
+		fmt.Println(recovery)
+		fmt.Println()
+		fmt.Println("Re-print later with: ownbasectl vault recovery-string")
+		fmt.Println()
+	} else {
+		fmt.Println("Back this file up. It holds the only copy of the SSH keys that reach your")
+		fmt.Println("Bases — lose both it and your master password and no one can get in.")
+		fmt.Println()
+	}
 	fmt.Println("Next:")
 	fmt.Println("  ownbasectl keygen <name>    create the key for your first Base")
 	return nil
 }
+
+// cmdContext is a tiny hook so tests can inject a context later if needed.
+func cmdContext() context.Context { return context.Background() }
 
 // readVaultInitPassword asks for the master password. Creating a vault needs a
 // new password confirmed twice, because a typo there is unrecoverable; adopting
@@ -223,15 +456,16 @@ The vault auto-locks after --idle-timeout with nothing using it. Pass
 }
 
 func runVaultUnlock(path string, passwordStdin bool, idleTimeout time.Duration, explicitTimeout, jsonOut bool) error {
-	if path == "" {
-		resolved, err := vault.ResolvePath()
-		if err != nil {
+	// Empty path → agent resolves the locator (file or remote). Explicit path
+	// is always a local file. Do not os.Stat a remote location.
+	if path != "" {
+		if _, err := os.Stat(path); err != nil {
+			return fmt.Errorf("no vault at %s — create one with 'ownbasectl vault init %s'", path, path)
+		}
+	} else {
+		if _, err := vault.LoadLocator(); err != nil {
 			return vaultError(err)
 		}
-		path = resolved
-	}
-	if _, err := os.Stat(path); err != nil {
-		return fmt.Errorf("no vault at %s — create one with 'ownbasectl vault init %s'", path, path)
 	}
 
 	c, err := agentClient()
@@ -254,6 +488,7 @@ func runVaultUnlock(path string, passwordStdin bool, idleTimeout time.Duration, 
 		}
 		st, uerr := c.Unlock(path, password, timeout)
 		if uerr == nil {
+			warnStaleRecovery()
 			if jsonOut {
 				return printJSON(st)
 			}
@@ -268,6 +503,125 @@ func runVaultUnlock(path string, passwordStdin bool, idleTimeout time.Duration, 
 		}
 		fmt.Fprintln(os.Stderr, "Wrong master password — try again.")
 	}
+}
+
+// warnStaleRecovery compares the live locator credentials to the fingerprint
+// stamped when the recovery string was last printed.
+func warnStaleRecovery() {
+	loc, err := vault.LoadLocator()
+	if err != nil || loc.Kind != vault.LocatorKindS3 {
+		return
+	}
+	live := loc.Fingerprint()
+	if loc.CredsFingerprint == "" || live == "" || loc.CredsFingerprint == live {
+		return
+	}
+	fmt.Fprintln(os.Stderr, "ownbasectl: warning: storage credentials have changed since the recovery string was last printed.")
+	fmt.Fprintln(os.Stderr, "  Re-print and save a fresh one: ownbasectl vault recovery-string")
+}
+
+func newVaultOpenCmd() *cobra.Command {
+	var (
+		recovery      string
+		passwordStdin bool
+		jsonOut       bool
+	)
+	cmd := &cobra.Command{
+		Use:   "open",
+		Short: "Configure the vault from a recovery string and unlock it",
+		Long: `On a fresh machine, paste the recovery string printed at vault init
+(or by 'vault recovery-string'), enter the master password, and the vault is
+reachable again. Writes ~/.ownbase/locator so later unlocks need only the
+password.`,
+		Example: `  ownbasectl vault open --recovery 'ownbase-recovery-v1:…'
+  echo "$RECOVERY" | ownbasectl vault open --recovery-stdin --password-stdin`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runVaultOpen(recovery, passwordStdin, jsonOut)
+		},
+	}
+	cmd.Flags().StringVar(&recovery, "recovery", "", "recovery string from vault init")
+	cmd.Flags().BoolVar(&passwordStdin, "password-stdin", false, "read the master password from stdin")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "print the result as JSON")
+	return cmd
+}
+
+func runVaultOpen(recovery string, passwordStdin, jsonOut bool) error {
+	if strings.TrimSpace(recovery) == "" {
+		return withExitCode(exitUsage, errors.New("--recovery is required"))
+	}
+	loc, err := vault.DecodeRecovery(recovery)
+	if err != nil {
+		return err
+	}
+	password, err := readPassword(passwordStdin, "Master password: ")
+	if err != nil {
+		return err
+	}
+	// Verify the password opens the vault before recording the locator.
+	store, err := loc.OpenStore()
+	if err != nil {
+		return err
+	}
+	if _, err := vault.OpenStore(store, password); err != nil {
+		return err
+	}
+	if err := vault.SaveLocator(loc); err != nil {
+		return err
+	}
+	c, err := agentClient()
+	if err != nil {
+		return err
+	}
+	st, err := c.Unlock("", password, agentd.DefaultIdleTimeout)
+	if err != nil {
+		return err
+	}
+	if jsonOut {
+		return printJSON(st)
+	}
+	fmt.Printf("Vault opened and unlocked: %s (%d Base(s), %d key(s)).\n", st.VaultPath, st.Bases, st.Keys)
+	return nil
+}
+
+func newVaultRecoveryStringCmd() *cobra.Command {
+	var jsonOut bool
+	cmd := &cobra.Command{
+		Use:   "recovery-string",
+		Short: "Print the recovery string for the configured vault",
+		Long: `Prints the portable recovery string for the current locator. Save it
+with your master password somewhere durable. Re-printing after rotating
+storage credentials updates the fingerprint so unlock can warn about stale
+copies.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			loc, err := vault.LoadLocator()
+			if err != nil {
+				return vaultError(err)
+			}
+			if loc.Kind != vault.LocatorKindS3 {
+				return errors.New("recovery strings are for remote vaults — this vault is a local file")
+			}
+			s, err := vault.EncodeRecovery(loc)
+			if err != nil {
+				return err
+			}
+			// Refresh the fingerprint stamp so unlock knows this print is current.
+			if err := vault.SaveLocator(loc); err != nil {
+				return err
+			}
+			if jsonOut {
+				return printJSON(map[string]string{
+					"recovery_string": s,
+					"location":        loc.Location(),
+				})
+			}
+			fmt.Println(s)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "print as JSON")
+	return cmd
 }
 
 func newVaultLockCmd() *cobra.Command {
@@ -495,6 +849,9 @@ func readNewPassword(fromStdin bool) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if err := validateMasterPassword(first); err != nil {
+		return "", err
+	}
 	if fromStdin || os.Getenv(PasswordEnv) != "" || !interactive() {
 		return first, nil
 	}
@@ -506,6 +863,26 @@ func readNewPassword(fromStdin bool) (string, error) {
 		return "", errors.New("the two passwords do not match")
 	}
 	return first, nil
+}
+
+func validateMasterPassword(pw string) error {
+	// Count runes so a passphrase of short words still clears the floor.
+	if len([]rune(pw)) < MinMasterPasswordLen {
+		return fmt.Errorf("master password must be at least %d characters (this vault holds every key that reaches your Bases)", MinMasterPasswordLen)
+	}
+	return nil
+}
+
+// isNoPasswordSource reports the readPassword failure when neither a TTY nor
+// $OWNBASE_VAULT_PASSWORD nor --password-stdin supplied a password. Other
+// failures (length floor, confirm mismatch) must pass through unchanged.
+func isNoPasswordSource(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "password-stdin") ||
+		strings.Contains(msg, "no terminal to prompt")
 }
 
 // interactive reports whether stdin is a terminal we may prompt on.
