@@ -52,6 +52,11 @@ const (
 	// commits the default-branch HEAD SHA back to ownbase.yaml.
 	ActionUpdatePinRef ActionType = "update.pin_ref" // autonomous
 
+	// ActionConfigSource is emitted when the operator (re)points the Base at
+	// an external config repo via POST /config/source. Tier notify: this is
+	// the single most consequential state change on the machine.
+	ActionConfigSource ActionType = "config.source" // notify
+
 	// Host / security actions
 	ActionHostHarden            ActionType = "host.harden"          // autonomous
 	ActionHostInstallRuntime    ActionType = "host.install_runtime" // autonomous
@@ -103,6 +108,8 @@ var defaultTiers = map[ActionType]RiskTier{
 	ActionRestoreApply:  TierApprove,
 
 	ActionUpdatePinRef: TierAutonomous,
+
+	ActionConfigSource: TierNotify,
 
 	ActionHostHarden:            TierAutonomous,
 	ActionHostInstallRuntime:    TierAutonomous,

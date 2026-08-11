@@ -300,8 +300,8 @@ type ServiceDecl struct {
 	// OwnbaseAccess lists grant scopes this service may exercise against the
 	// daemon API over a private unix socket. Empty/absent means no access —
 	// the service cannot reach ownbased. Non-empty causes the daemon to
-	// listen on /run/ownbase/svc/<name>.sock and the compiler to bind-mount
-	// that socket into the container at /run/ownbase.sock.
+	// listen on /run/ownbase/svc/<name>/api.sock and the compiler to
+	// bind-mount that directory into the container at /run/ownbase/.
 	//
 	// Scope strings match authz grant rules, e.g.:
 	//   status:read, service:web:deploy, secrets:myapp:write, backup:run, *

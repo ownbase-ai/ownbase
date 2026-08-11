@@ -42,8 +42,8 @@ func TestCompile_OwnbaseAccessBindMount(t *testing.T) {
 
 	found := false
 	for _, vm := range opencode.VolumeMounts {
-		if vm.HostPath == compiler.OwnbaseAPISocketHost("opencode") &&
-			vm.MountPath == compiler.OwnbaseAPISocketContainer {
+		if vm.HostPath == compiler.OwnbaseAPISocketHostDir("opencode") &&
+			vm.MountPath == compiler.OwnbaseAPISocketContainerDir {
 			found = true
 			break
 		}
@@ -61,7 +61,7 @@ func TestCompile_OwnbaseAccessBindMount(t *testing.T) {
 	if !ok {
 		t.Fatal("missing opencode unit")
 	}
-	want := "Volume=/run/ownbase/svc/opencode.sock:/run/ownbase.sock"
+	want := "Volume=/run/ownbase/svc/opencode:/run/ownbase"
 	if !strings.Contains(unit, want) {
 		t.Errorf("unit missing %q\n%s", want, unit)
 	}

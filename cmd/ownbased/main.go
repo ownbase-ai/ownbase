@@ -174,6 +174,10 @@ type agentConfig struct {
 	vulnScanInterval time.Duration
 	statusAddr       string
 	apiToken         string
+	// prepareAccess, when non-nil, is called after ownbase.yaml is parsed and
+	// before containers are applied — so per-service API socket directories
+	// exist as bind-mount sources before Podman starts units.
+	prepareAccess func(*schema.OwnbaseConfig)
 }
 
 // reconcileState holds the state produced during a single reconcile cycle and
@@ -642,6 +646,12 @@ func run(cfg agentConfig) error {
 		// Per-service unix sockets for ownbase_access. Same mux as TCP; principal
 		// is injected from the socket that accepted the connection.
 		accessSockets = explain.NewSocketManager(explain.DefaultSocketDir, mux, authz.NewGrantCheckpoint(nil))
+		if err := accessSockets.EnsureBaseDir(); err != nil {
+			fmt.Fprintf(os.Stderr, "ownbased: access socket dir: %v\n", err)
+		}
+		cfg.prepareAccess = func(c *schema.OwnbaseConfig) {
+			syncAccessSockets(accessSockets, c)
+		}
 		defer accessSockets.Close()
 	}
 
@@ -723,20 +733,10 @@ func run(cfg agentConfig) error {
 		ctx := context.Background()
 
 		// Keep per-service API sockets aligned with ownbase_access grants.
+		// Primary sync is prepareAccess (before apply); this covers the case
+		// where reconcile failed before that hook or Config became nil.
 		if accessSockets != nil {
-			grants := authz.NewGrantCheckpoint(authz.GrantsFromConfig(state.Config))
-			accessSockets.SetGrants(grants)
-			want := map[string][]string{}
-			if state.Config != nil {
-				for name, svc := range state.Config.Services {
-					if len(svc.OwnbaseAccess) > 0 {
-						want[name] = append([]string(nil), svc.OwnbaseAccess...)
-					}
-				}
-			}
-			if err := accessSockets.Sync(want); err != nil {
-				fmt.Fprintf(os.Stderr, "ownbased: access sockets: %v\n", err)
-			}
+			syncAccessSockets(accessSockets, state.Config)
 		}
 
 		// Reboot marker is two file stats — cheap enough to re-read on every
@@ -1111,6 +1111,27 @@ func syncCoreForConfig(ctx context.Context, agentCfg agentConfig, cfg *schema.Ow
 	}
 }
 
+// syncAccessSockets aligns per-service API sockets and grant tables with cfg.
+// cfg may be nil (no config yet) — that closes every listener.
+func syncAccessSockets(m *explain.SocketManager, cfg *schema.OwnbaseConfig) {
+	if m == nil {
+		return
+	}
+	grants := authz.NewGrantCheckpoint(authz.GrantsFromConfig(cfg))
+	m.SetGrants(grants)
+	want := map[string][]string{}
+	if cfg != nil {
+		for name, svc := range cfg.Services {
+			if len(svc.OwnbaseAccess) > 0 {
+				want[name] = append([]string(nil), svc.OwnbaseAccess...)
+			}
+		}
+	}
+	if err := m.Sync(want); err != nil {
+		fmt.Fprintf(os.Stderr, "ownbased: access sockets: %v\n", err)
+	}
+}
+
 // reconcileLoop runs one full: sync checkout → compile → drift check →
 // diff → apply cycle. It is identical whether triggered by an explicit
 // reconcile signal or the timer, satisfying the Reconstruction Model's
@@ -1155,6 +1176,12 @@ func reconcileLoop(
 	state.Config = cfg
 	for _, w := range cfg.Warnings() {
 		fmt.Fprintf(os.Stderr, "ownbased: warning: %s\n", w)
+	}
+
+	// 2-pre. Open per-service API socket dirs before any container apply so
+	// directory bind-mounts have a host source on first deploy and reboot.
+	if agentCfg.prepareAccess != nil {
+		agentCfg.prepareAccess(cfg)
 	}
 
 	// 2a. Re-sync the core package (Caddy) and firewall exposure against the

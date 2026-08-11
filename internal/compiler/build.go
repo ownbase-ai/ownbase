@@ -233,12 +233,14 @@ func buildContainer(name string, svc schema.ServiceDecl, index int) ContainerMod
 		c.VolumeMounts = []VolumeMount{{VolumeName: volName, MountPath: dataPath}}
 	}
 
-	// Private daemon API socket for services with ownbase_access. One socket
-	// per service name (shared by all replicas); identity is the socket path.
+	// Private daemon API socket dir for services with ownbase_access. One
+	// directory per service name (shared by all replicas); the socket file
+	// appears inside it. Directory bind keeps the mount stable across socket
+	// inode replacement on daemon restart.
 	if len(svc.OwnbaseAccess) > 0 {
 		c.VolumeMounts = append(c.VolumeMounts, VolumeMount{
-			HostPath:  OwnbaseAPISocketHost(name),
-			MountPath: OwnbaseAPISocketContainer,
+			HostPath:  OwnbaseAPISocketHostDir(name),
+			MountPath: OwnbaseAPISocketContainerDir,
 		})
 	}
 

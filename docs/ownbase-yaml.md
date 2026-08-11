@@ -98,15 +98,21 @@ services:
 
     # Optional: let this service call the daemon API over a private unix socket.
     # Empty/absent = no access (default). When set, the daemon listens on
-    # /run/ownbase/svc/<name>.sock and the container gets it at /run/ownbase.sock.
-    # Identity is the socket (filesystem ACL); scopes gate what it may do.
+    # /run/ownbase/svc/<name>/api.sock and the container bind-mounts the
+    # directory at /run/ownbase/ (socket at /run/ownbase/api.sock).
+    # Identity is the socket path; scopes gate every route (default-deny).
+    # Host-mutating routes (/config/source, /self-update, /token/reset, …)
+    # are owner-only even when "*" is granted.
     # ownbase_access:
-    #   - status:read              # GET /status
+    #   - status:read              # GET /status, /version, /core/status, /db/status
     #   - config:read              # GET /config
-    #   - service:web:deploy       # start/restart that service
-    #   - secrets:myapp:write      # write secrets for myapp
-    #   - backup:run
-    #   - "*"                      # everything grantable (still not tier-approve)
+    #   - reconcile                # POST /reconcile
+    #   - secrets:myapp:read       # GET secrets for myapp
+    #   - secrets:myapp:write      # POST/DELETE secrets for myapp
+    #   - backup:run               # POST /backup/run
+    #   - backup:verify            # POST /backup/verify
+    #   - sshkey:read              # GET /ssh-key
+    #   - "*"                      # every grantable scope (still not owner-only routes)
 
 jobs:
   <name>:

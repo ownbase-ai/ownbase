@@ -290,8 +290,11 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 
 	// /config/source — record the external config repo (repo_url + ref),
 	// (re)clone it, and reconcile. The write side of `ownbasectl config setup`.
+	// Owner-only (socket gate refuses services). Audited: repointing the Base
+	// is the most consequential state change on the machine.
 	mux.HandleFunc("/config/source", func(w http.ResponseWriter, r *http.Request) {
-		if !authRequired(w, r, cfg.StatusSrv) {
+		principal, ok := authorize(w, r, cfg.StatusSrv)
+		if !ok {
 			return
 		}
 		if r.Method != http.MethodPost {
@@ -314,7 +317,19 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 			http.Error(w, "repo_url is required", http.StatusBadRequest)
 			return
 		}
-		if err := cfg.SetConfigSource(body.RepoURL, body.Ref); err != nil {
+		err := cfg.SetConfigSource(body.RepoURL, body.Ref)
+		if cfg.AuditLog != nil {
+			if a, aerr := auditAction(schema.ActionConfigSource, body.RepoURL, principal); aerr == nil {
+				outcome := authz.OutcomeApplied
+				errMsg := ""
+				if err != nil {
+					outcome = authz.OutcomeError
+					errMsg = err.Error()
+				}
+				_ = cfg.AuditLog.Record(a, outcome, errMsg)
+			}
+		}
+		if err != nil {
 			http.Error(w, "set config source: "+err.Error(), http.StatusInternalServerError)
 			return
 		}

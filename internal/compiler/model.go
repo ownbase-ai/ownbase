@@ -172,14 +172,21 @@ type VolumeMount struct {
 	HostPath string
 }
 
-// OwnbaseAPISocketHost is the host path of the per-service daemon API socket.
-func OwnbaseAPISocketHost(service string) string {
-	return "/run/ownbase/svc/" + service + ".sock"
+// OwnbaseAPISocketHostDir is the host directory bind-mounted into a container
+// that has ownbase_access. The socket file lives at <dir>/api.sock. Mounting
+// the directory (not the socket file) keeps the bind stable across daemon
+// restarts that replace the socket inode.
+func OwnbaseAPISocketHostDir(service string) string {
+	return "/run/ownbase/svc/" + service
 }
 
-// OwnbaseAPISocketContainer is where the API socket is mounted inside a
-// container that has ownbase_access.
-const OwnbaseAPISocketContainer = "/run/ownbase.sock"
+// OwnbaseAPISocketContainerDir is where the per-service socket directory is
+// mounted inside the container. Clients connect to
+// OwnbaseAPISocketContainerDir + "/api.sock".
+const OwnbaseAPISocketContainerDir = "/run/ownbase"
+
+// OwnbaseAPISocketContainer is the path of the API socket inside the container.
+const OwnbaseAPISocketContainer = OwnbaseAPISocketContainerDir + "/api.sock"
 
 // HealthProbeModel is the compiled form of a health probe declaration.
 type HealthProbeModel struct {
