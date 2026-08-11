@@ -11,8 +11,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -127,9 +127,11 @@ func runBaseRestore(name, backupRepo string, creds backupCredFlags, forceRebuild
 
 	// Re-assert the vault's config-source pin. The snapshot restores
 	// config-source.yaml verbatim; a poisoned pointer would otherwise become
-	// the rebuild's source of truth. Vault wins.
+	// the rebuild's source of truth. Vault wins. Wait for the daemon API —
+	// without this, provision returns before ownbased is listening and the
+	// pin never lands.
 	if err := reassertConfigSource(name, target.jsonOut); err != nil {
-		fmt.Fprintf(os.Stderr, "ownbasectl: warning: could not re-assert config source from vault: %v\n", err)
+		return fmt.Errorf("re-assert config source from vault: %w", err)
 	}
 
 	if !target.jsonOut {
@@ -141,8 +143,9 @@ func runBaseRestore(name, backupRepo string, creds backupCredFlags, forceRebuild
 	return nil
 }
 
-// reassertConfigSource POSTs the vault profile's config repo to the Base so a
-// rebuild cannot keep a compromised config-source.yaml from the snapshot.
+// reassertConfigSource waits for the daemon, then POSTs the vault profile's
+// config repo so a rebuild cannot keep a compromised config-source.yaml.
+// No-op when the vault has no config URL. Failure is fatal for restore.
 func reassertConfigSource(name string, quiet bool) error {
 	p, err := loadProfile(name)
 	if err != nil {
@@ -156,6 +159,14 @@ func reassertConfigSource(name string, quiet bool) error {
 	if ref == "" {
 		ref = vault.DefaultConfigRef
 	}
+
+	if !quiet {
+		progress("==> Waiting for daemon, then re-asserting config source from vault")
+	}
+	if err := waitForDaemonReady(name, 10*time.Minute); err != nil {
+		return err
+	}
+
 	conn, err := connectToServer(name)
 	if err != nil {
 		return err
