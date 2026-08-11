@@ -56,6 +56,10 @@ const (
 	// an external config repo via POST /config/source. Tier notify: this is
 	// the single most consequential state change on the machine.
 	ActionConfigSource ActionType = "config.source" // notify
+	// ActionConfigWrite is emitted when the daemon pushes a validated
+	// ownbase.yaml proposal branch via POST /config. Tier notify: mutates the
+	// external source of truth (branch only — never the tracked ref).
+	ActionConfigWrite ActionType = "config.write" // notify
 
 	// Host / security actions
 	ActionHostHarden            ActionType = "host.harden"          // autonomous
@@ -110,6 +114,7 @@ var defaultTiers = map[ActionType]RiskTier{
 	ActionUpdatePinRef: TierAutonomous,
 
 	ActionConfigSource: TierNotify,
+	ActionConfigWrite:  TierNotify,
 
 	ActionHostHarden:            TierAutonomous,
 	ActionHostInstallRuntime:    TierAutonomous,

@@ -69,6 +69,10 @@ type APIConfig struct {
 	// from the checkout. Called by GET /config — the read side of
 	// `ownbasectl config get`.
 	GetConfig func() (string, error)
+	// WriteConfig, when non-nil, validates content and pushes it as a
+	// proposal branch on the external config repo (never the tracked ref).
+	// Called by POST /config. Returns branch, sha, repo_url, message.
+	WriteConfig func(content, message, branch string) (ConfigWriteResult, error)
 	// Reconcile, when non-nil, pulls the external config repo into the
 	// checkout and triggers a reconcile. Called by POST /reconcile — the way
 	// every client-side config mutation (deploy, config set, service *,
@@ -107,6 +111,15 @@ type APIConfig struct {
 	// progress to w and returning a JSON-serialisable outcome. Called by
 	// POST /db/restore — the endpoint behind `ownbasectl db restore`.
 	DBRestore func(w io.Writer, req DBRestoreRequest) (any, error)
+}
+
+// ConfigWriteResult is the JSON body of a successful POST /config.
+type ConfigWriteResult struct {
+	Status  string `json:"status"`
+	Branch  string `json:"branch"`
+	SHA     string `json:"sha"`
+	RepoURL string `json:"repo_url"`
+	Message string `json:"message"`
 }
 
 // DBRestoreRequest is the body of POST /db/restore.
@@ -243,28 +256,84 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 		}
 	})
 
-	// /config — read the current ownbase.yaml from the checkout (read-only).
-	// The config repo is external; all mutations are committed client-side by
-	// ownbasectl and applied via POST /reconcile.
+	// /config — GET reads the checkout; POST pushes a validated proposal
+	// branch on the external config repo (never the tracked ref). Merge on
+	// the forge, then POST /reconcile to apply.
 	mux.HandleFunc("/config", func(w http.ResponseWriter, r *http.Request) {
-		if !authRequired(w, r, cfg.StatusSrv) {
+		principal, ok := authorize(w, r, cfg.StatusSrv)
+		if !ok {
 			return
 		}
-		if r.Method != http.MethodGet {
+		switch r.Method {
+		case http.MethodGet:
+			if cfg.GetConfig == nil {
+				http.Error(w, "config read not available", http.StatusNotImplemented)
+				return
+			}
+			content, err := cfg.GetConfig()
+			if err != nil {
+				http.Error(w, "read config: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/x-yaml; charset=utf-8")
+			_, _ = io.WriteString(w, content)
+		case http.MethodPost:
+			if cfg.WriteConfig == nil {
+				http.Error(w, "config write not available", http.StatusNotImplemented)
+				return
+			}
+			var body struct {
+				Content string `json:"content"`
+				Message string `json:"message"`
+				Branch  string `json:"branch"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			if strings.TrimSpace(body.Content) == "" {
+				http.Error(w, "content is required", http.StatusBadRequest)
+				return
+			}
+			// Schema-validate before any git work.
+			if _, err := schema.ParseConfig(strings.NewReader(body.Content)); err != nil {
+				http.Error(w, "invalid ownbase.yaml: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			result, err := cfg.WriteConfig(body.Content, body.Message, body.Branch)
+			if cfg.AuditLog != nil {
+				target := body.Branch
+				if result.Branch != "" {
+					target = result.Branch
+				}
+				if a, aerr := auditAction(schema.ActionConfigWrite, target, principal); aerr == nil {
+					outcome := authz.OutcomeApplied
+					errMsg := ""
+					if err != nil {
+						outcome = authz.OutcomeError
+						errMsg = err.Error()
+					}
+					_ = cfg.AuditLog.Record(a, outcome, errMsg)
+				}
+			}
+			if err != nil {
+				// No-change and validation-shaped errors stay 400; git/network 500.
+				msg := err.Error()
+				if strings.HasPrefix(msg, "no change:") || strings.HasPrefix(msg, "invalid ") ||
+					strings.HasPrefix(msg, "branch ") || strings.HasPrefix(msg, "refusing ") {
+					http.Error(w, "write config: "+msg, http.StatusBadRequest)
+					return
+				}
+				http.Error(w, "write config: "+msg, http.StatusInternalServerError)
+				return
+			}
+			if result.Status == "" {
+				result.Status = "pushed"
+			}
+			writeJSON(w, result)
+		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
 		}
-		if cfg.GetConfig == nil {
-			http.Error(w, "config read not available", http.StatusNotImplemented)
-			return
-		}
-		content, err := cfg.GetConfig()
-		if err != nil {
-			http.Error(w, "read config: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "application/x-yaml; charset=utf-8")
-		_, _ = io.WriteString(w, content)
 	})
 
 	// /reconcile — pull the external config repo into the checkout and

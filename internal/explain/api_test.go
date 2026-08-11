@@ -109,9 +109,7 @@ func TestAPI_ConfigGet_501WhenNotConfigured(t *testing.T) {
 	}
 }
 
-func TestAPI_ConfigSet_405_WriteRemoved(t *testing.T) {
-	// POST /config is no longer a write path — config mutations are made
-	// client-side and applied via POST /reconcile. GET is the only method.
+func TestAPI_ConfigWrite_501WhenNotConfigured(t *testing.T) {
 	srv := explain.NewStatusServer()
 	mux := http.NewServeMux()
 	mux.Handle("/status", srv.Handler("test-api-token"))
@@ -122,10 +120,68 @@ func TestAPI_ConfigSet_405_WriteRemoved(t *testing.T) {
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
 
-	resp := authedPost(t, ts, "/config", `{"content":"x"}`)
+	body := `{"content":"schema_version: v1\nservices:\n  web:\n    repo: https://github.com/example/web.git\n    port: 8080\n"}`
+	resp := authedPost(t, ts, "/config", body)
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusMethodNotAllowed {
-		t.Errorf("status = %d, want 405 (POST /config removed)", resp.StatusCode)
+	if resp.StatusCode != http.StatusNotImplemented {
+		t.Errorf("status = %d, want 501", resp.StatusCode)
+	}
+}
+
+func TestAPI_ConfigWrite_400OnInvalidYAML(t *testing.T) {
+	srv := explain.NewStatusServer()
+	mux := http.NewServeMux()
+	mux.Handle("/status", srv.Handler("test-api-token"))
+	explain.MountAPI(mux, explain.APIConfig{
+		StatusSrv: srv,
+		WriteConfig: func(content, message, branch string) (explain.ConfigWriteResult, error) {
+			t.Fatal("WriteConfig must not be called for invalid yaml")
+			return explain.ConfigWriteResult{}, nil
+		},
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	resp := authedPost(t, ts, "/config", `{"content":"not: valid: yaml: :"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 400: %s", resp.StatusCode, body)
+	}
+}
+
+func TestAPI_ConfigWrite_Success(t *testing.T) {
+	srv := explain.NewStatusServer()
+	mux := http.NewServeMux()
+	mux.Handle("/status", srv.Handler("test-api-token"))
+	explain.MountAPI(mux, explain.APIConfig{
+		StatusSrv: srv,
+		WriteConfig: func(content, message, branch string) (explain.ConfigWriteResult, error) {
+			return explain.ConfigWriteResult{
+				Status:  "pushed",
+				Branch:  "ownbase/agent/test",
+				SHA:     "0123456789abcdef0123456789abcdef01234567",
+				RepoURL: "git@example.com:org/config.git",
+				Message: message,
+			}, nil
+		},
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	body := `{"content":"schema_version: v1\nservices:\n  web:\n    repo: https://github.com/example/web.git\n    port: 8080\n","message":"add web"}`
+	resp := authedPost(t, ts, "/config", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d: %s", resp.StatusCode, b)
+	}
+	var got map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got["branch"] != "ownbase/agent/test" || got["status"] != "pushed" {
+		t.Errorf("got %+v", got)
 	}
 }
 

@@ -499,6 +499,32 @@ func run(cfg agentConfig) error {
 				}
 				return string(data), nil
 			},
+			// WriteConfig pushes a validated ownbase.yaml to a proposal
+			// branch only (never the tracked ref). Called by POST /config.
+			// Requires the managed SSH key to have write access on the
+			// config repo; branch protection on main is the merge gate.
+			WriteConfig: func(content, message, branch string) (explain.ConfigWriteResult, error) {
+				src, err := configsource.Load(configsource.DefaultStatePath)
+				if err != nil {
+					return explain.ConfigWriteResult{}, fmt.Errorf("load config source: %w", err)
+				}
+				if !src.Configured() {
+					return explain.ConfigWriteResult{}, fmt.Errorf("config source not configured")
+				}
+				writeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				defer cancel()
+				res, err := configsource.PushBranch(writeCtx, src, content, message, branch, gitssh.Env())
+				if err != nil {
+					return explain.ConfigWriteResult{}, err
+				}
+				return explain.ConfigWriteResult{
+					Status:  "pushed",
+					Branch:  res.Branch,
+					SHA:     res.SHA,
+					RepoURL: res.RepoURL,
+					Message: res.Message,
+				}, nil
+			},
 			// Reconcile pulls the external config repo into the checkout
 			// (synchronously, so the pushed change is on disk when this
 			// returns) and wakes the reconcile loop. Called by POST
