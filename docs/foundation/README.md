@@ -2,8 +2,9 @@
 
 The durable rules of how a Base works — not strategy, not roadmap. Written for humans and for the LLM agents that operate or modify OwnBase. The *why* behind all of it lives in [MISSION.md](../../MISSION.md), which wins any conflict; among the documents here, [architecture-principles.md](architecture-principles.md) wins.
 
-- [lexicon.md](lexicon.md) — canonical definitions (Base, Agent, capability, reconcile, risk tiers). Read this first if a term is unclear anywhere else.
+- [lexicon.md](lexicon.md) — canonical definitions (Base, Agent, capability, reconcile, risk tiers, principal). Read this first if a term is unclear anywhere else.
 - [architecture-principles.md](architecture-principles.md) — the technical constraints that don't change: Git as source of truth, plain files, no Kubernetes, the reconcile model, on-machine layout.
+- [identity-and-authority.md](identity-and-authority.md) — who may act (owner vs service), scopes, checkpoints, tracked ref vs proposal branch, vault pin.
 - [service-constitution.md](service-constitution.md) — the five rules every service must satisfy (removable, forkable, replaceable, data accessible, works standalone).
 - [reconstruction-model.md](reconstruction-model.md) — the core invariant: a Base is fully described by `(repo, secrets, backups)`. Install, update, recover, and rebuild are all the same reconcile operation.
 - [base-lifecycle.md](base-lifecycle.md) — the nine lifecycle stages (create → secure → build → deploy → observe → update → recover → export → retire) mapped to the CLI commands that perform each one.
@@ -23,9 +24,13 @@ Key claims are deliberately repeated across documents so each is self-contained 
 | Verified restore ("restorable" is measured, not claimed) | [reconstruction-model.md](reconstruction-model.md) | architecture-principles §12, decisions, cli, lexicon |
 | The five service rules (removable, forkable, replaceable, data accessible, standalone) | [service-constitution.md](service-constitution.md) | integration-contract, lexicon, MISSION.md |
 | No-registry rule + core-package exception | [ownbase-yaml.md](../ownbase-yaml.md) "The no-registry rule" | integration-contract, decisions, architecture-principles §6 |
-| Isolation / blast-radius model | [architecture-principles.md](architecture-principles.md) §13 | integration-contract |
-| Action taxonomy + risk tiers (service principals constrained; owner approve device still post-V1) | [architecture-principles.md](architecture-principles.md) §14 | decisions, lexicon |
-| Operating rules (read the config repo first; mutate only via `ownbase.yaml` + commit) | [operating.md](../operating.md) | AGENTS.md, README "Operating a Base", the seeded config-repo README |
+| Isolation / blast-radius model | [architecture-principles.md](architecture-principles.md) §13 | integration-contract, ownbase-yaml `ownbase_access`, api.md sockets |
+| Action taxonomy + risk tiers (service principals constrained; owner approve device still post-V1) | [architecture-principles.md](architecture-principles.md) §14 | decisions, lexicon, identity-and-authority |
+| Principals, scopes, checkpoints, owner-only routes | [identity-and-authority.md](identity-and-authority.md) | api.md, ownbase-yaml, lexicon, decisions |
+| Config authority: operator tracked-ref path vs agent proposal branches | [decisions.md](../decisions.md) "Config authority" | api.md POST /config, operating, identity-and-authority, reconstruction-model, README, INSTALL, cli, AGENTS |
+| Deploy-key permissions (read on service repos; write on config repo only if agents propose; branch protection) | [INSTALL.md](../../INSTALL.md#two-different-ssh-keys) | README setup, cli `ssh-key`, api `/ssh-key`, decisions SSH identity, AGENTS |
+| Vault config-source pin (trust anchor; mismatch is a signal; restore re-asserts) | [vault.md](../vault.md) | identity-and-authority, cli restore/status, troubleshooting, reconstruction-model |
+| Operating rules (read the config repo first; mutate only via `ownbase.yaml` + commit or POST /config proposals) | [operating.md](../operating.md) | AGENTS.md, README "Operating a Base", the seeded config-repo README |
 | Tier-1 / Tier-2 test workflow | [development.md](../development.md) | INSTALL.md "Contributors" |
 | Setup flow (keygen → user creates server → create --remote) | [README.md](../../README.md#setting-up-a-base) | INSTALL.md, AGENTS.md job 1, base-lifecycle §1 |
 | Provisioning design (key resolution, preflight, `--wait`, exit codes) | [decisions.md](../decisions.md) "Provisioning a Base" | INSTALL.md, cli |
