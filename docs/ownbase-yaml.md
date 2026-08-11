@@ -1,6 +1,6 @@
 # `ownbase.yaml` reference
 
-> The single declarative config file of a Base. It lives at the root of the Base's **external config repo** (e.g. a GitHub repo). Operators change it client-side with `ownbasectl` (`config set` / `service add|update|remove` / `deploy`), which clones the config repo, edits `ownbase.yaml`, commits, and pushes with the operator's own git credentials, then asks the Base to pull and reconcile. The daemon has **read-only** access to the config repo.
+> The single declarative config file of a Base. It lives at the root of the Base's **external config repo** (e.g. a GitHub repo). Operators change the **tracked ref** client-side with `ownbasectl` (`config set` / `service add|update|remove` / `deploy`), which clones the config repo, edits `ownbase.yaml`, commits, and pushes with the operator's own git credentials, then asks the Base to pull and reconcile. Agents may push proposal branches via `POST /config` (`ownbase/agent/*` only); the Base applies only the tracked ref after merge.
 
 ## Full schema
 
@@ -96,24 +96,10 @@ services:
         private_key: other-service:SSH_KEY_B64
         private_encoding: base64 # or "raw" (default) for PEM as-is
 
-    # Optional: let this service call the daemon API over a private unix socket.
-    # Empty/absent = no access (default). When set, the daemon listens on
-    # /run/ownbase/svc/<name>/api.sock and the container bind-mounts the
-    # directory at /run/ownbase/ (socket at /run/ownbase/api.sock).
-    # Identity is the socket path; scopes gate every route (default-deny).
-    # Host-mutating routes (/config/source, /self-update, /token/reset, …)
-    # are owner-only even when "*" is granted.
+    # Optional: daemon API access — see "Daemon API access" below.
     # ownbase_access:
-    #   - status:read              # GET /status, /version, /core/status, /db/status
-    #   - config:read              # GET /config
-    #   - config:write             # POST /config → ownbase/agent/* proposal branch only
-    #   - reconcile                # POST /reconcile (after a branch is merged)
-    #   - secrets:myapp:read       # GET secrets for myapp
-    #   - secrets:myapp:write      # POST/DELETE secrets for myapp
-    #   - backup:run               # POST /backup/run
-    #   - backup:verify            # POST /backup/verify
-    #   - sshkey:read              # GET /ssh-key
-    #   - "*"                      # every grantable scope (still not owner-only routes)
+    #   - status:read
+    #   - config:write
 
 jobs:
   <name>:
@@ -234,6 +220,53 @@ Cross-service volume mounts are still forbidden; companions talk over the networ
 
 CLI: `ownbasectl service add … --replicas 4` and `ownbasectl service update … --replicas 4` (pass `--replicas 0` on update to clear the field).
 
+## Daemon API access: `ownbase_access`
+
+Opt a service into calling the daemon HTTP API over a private unix socket. Empty or absent = **no access** (default).
+
+```yaml
+services:
+  harness:
+    repo: git@github.com:org/harness.git
+    port: 8080
+    ownbase_access:
+      - status:read
+      - config:write
+      - reconcile
+```
+
+When set, the daemon listens on `/run/ownbase/svc/<name>/api.sock` and the container bind-mounts that **directory** at `/run/ownbase/` (socket at `/run/ownbase/api.sock`). The socket path is the credential: whoever connects is that service principal. Scopes gate every route (**default-deny**). Host-mutating routes (`/config/source`, `/self-update`, `/token/reset`, …) are **owner-only even when `"*"` is granted**.
+
+### Validation
+
+- Non-empty strings; no duplicates
+- Characters: `A–Z a–z 0–9 : _ - .`
+- Allowed forms: exact scopes (`status:read`), trailing wildcards (`secrets:myapp:*`), or the literal `*`
+- Bare `deploy` is accepted as a short form; other bare words without `:` are rejected
+
+### Scopes that have HTTP routes today
+
+| Scope | Effect |
+|---|---|
+| `status:read` | `GET /status`, `/version`, `/core/status`, `/db/status` |
+| `config:read` | `GET /config` |
+| `config:write` | `POST /config` → proposal branch `ownbase/agent/*` only |
+| `reconcile` | `POST /reconcile` |
+| `backup:run` / `backup:verify` | matching backup endpoints |
+| `sshkey:read` | `GET /ssh-key` |
+| `secrets:<svc>:read` / `secrets:<svc>:write` | per-service secrets routes |
+| `*` | every grantable scope above — **includes every service's secrets** |
+
+Some strings (`service:<name>:deploy`, `service:<name>:stop`) are accepted by schema validation for the taxonomy checkpoint but have **no HTTP route** yet — declaring them does nothing on the socket until a route is added.
+
+Normative route table, owner-only list, and curl examples: [api.md — Service access over unix sockets](api.md#service-access-over-unix-sockets-ownbase_access).
+
+### Security notes
+
+- Prefer the minimum scopes. A service that needs only health visibility should get `status:read`, not `*`.
+- `*` is total for grantable routes: it can read and write every service's secrets via the API.
+- A service that **requires** the daemon API to function is less portable off a Base (see the [Service Constitution](foundation/service-constitution.md)); design so the service degrades without the socket when possible.
+
 ## Public domains: `domain:` and `domains:`
 
 A service becomes publicly reachable once it has **both** a `port:` and at least one domain — the compiler emits one Caddy route per domain, all pointing at the same container:port:
@@ -286,7 +319,7 @@ repo: git@github.com:org/auth.git                     # SSH (private repos)
 repo: https://github.com/docker-library/postgres      # anonymous HTTPS
 ```
 
-Private repos are cloned using the Base's managed SSH identity (see [cli.md](cli.md), `ssh-key`): run `ownbasectl ssh-key <base> add --host github.com`, then register the printed public key as a **read-only deploy key** on the repo. There is no push-to-Base source path — the Base never hosts service code, it only clones from your git host.
+Private repos are cloned using the Base's managed SSH identity (see [cli.md](cli.md), `ssh-key`): run `ownbasectl ssh-key <base> add --host github.com`, then register the printed public key as a **read-only deploy key** on each **service** repo. For the **config** repo, use write only if agents should call `POST /config`, and keep branch protection on the tracked ref. There is no push-to-Base *service* source path — the Base never hosts service code, it only clones from your git host.
 
 ## Updates: the `ref:` model
 
@@ -304,18 +337,19 @@ ownbasectl deploy mybase auth --ref v1.1.0   # tag, branch, or commit
 
 ## What the daemon does on every reconcile
 
-1. Fetches the external config repo into the read-only checkout at `/opt/ownbase/checkout` (`internal/configsource`)
+1. Fetches the external config repo into the checkout at `/opt/ownbase/checkout` (`internal/configsource`) — hard-reset to the tracked ref
 2. Reads `ownbase.yaml` and compiles the desired state (Quadlet units, Caddyfile)
-3. Ensures a local bare clone exists for every service, cloning each `repo:` on first sight and fetching any pinned `ref:` not yet present locally (`internal/repos`)
-3a. Generates any missing `generated_secrets:` (`internal/gensecrets`) and creates any declared `database:`, writing its `DATABASE_URL` (`internal/gendb`) — both before the compile, so a new value reaches the container in this cycle rather than the next
-4. Checks for drift (compiler output vs. `runtime/` on disk)
-5. Queries what Podman/systemd is actually running
-6. Diffs desired vs. actual → produces a `PlannedAction` list
-7. For each service: checks out its local bare clone at `ref:` and runs `podman build`
-8. Applies the plan — each action is checkpoint-authorized and audit-logged
-9. Updates the `/status` API with the new state
+3. Opens/syncs per-service API socket directories for every `ownbase_access` grant **before** containers apply (`prepareAccess`)
+4. Ensures a local bare clone exists for every service, cloning each `repo:` on first sight. Full commit SHAs skip fetch when already local; **branch and tag refs are always refetched** (`internal/repos`)
+5. Generates any missing `generated_secrets:` (`internal/gensecrets`) and creates any declared `database:`, writing its `DATABASE_URL` (`internal/gendb`) — both before the compile, so a new value reaches the container in this cycle rather than the next
+6. Checks for drift (compiler output vs. `runtime/` on disk)
+7. Queries what Podman/systemd is actually running
+8. Diffs desired vs. actual → produces a `PlannedAction` list
+9. For each service: checks out its local bare clone at `ref:` and runs `podman build`
+10. Applies the plan — each action is checkpoint-authorized and audit-logged
+11. Re-syncs access sockets/grants to match live config; updates the `/status` API
 
-Reconciles are triggered explicitly by `ownbasectl` (`deploy`, `config set`, `service *`, `config setup`) via `POST /reconcile`; a periodic timer backstop also runs as a safety net.
+Reconciles are triggered explicitly by `ownbasectl` (`deploy`, `config set`, `service *`, `config setup`) via `POST /reconcile`, or after a proposal branch is merged; a periodic timer backstop also runs as a safety net.
 
 ## Backups: `core.backup:`
 
