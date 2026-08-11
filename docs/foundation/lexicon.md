@@ -8,7 +8,7 @@
 
 **a Base** : One user's installation of OwnBase — a single owned machine, everything on it, and its config repo. "Create a Base," "the Base is healthy." Plural: Bases.
 
-**the daemon** (`ownbased`) : The OwnBase process that runs on a Base and operates it. It does exactly four things: reconcile, watch, explain, recover. See [architecture-principles.md](architecture-principles.md), principle 10.
+**the daemon** (`ownbased`) : The OwnBase process that runs on a Base and operates it. It reconciles, watches, explains, recovers, and serves the management API (TCP owner path + optional per-service sockets). See [architecture-principles.md](architecture-principles.md), principle 10, and [identity-and-authority.md](identity-and-authority.md).
 
 **`ownbasectl`** : The command-line tool that creates, connects to, and operates a Base from your machine — over an SSH tunnel to the daemon's API. See [cli.md](../cli.md).
 
@@ -42,4 +42,22 @@
 
 **Durability (vs. availability)** : The reliability commitment for a single Base is durability — data is never lost and is restorable — not high availability. See [architecture-principles.md](architecture-principles.md), principle 12.
 
-**Risk tier (autonomous / notify / approve)** : The classification of every daemon action by reversibility and blast radius, defined in the action taxonomy (`internal/schema/taxonomy.go`). For **service principals**, tiers already constrain: `approve` is refused outright, and host-mutating routes are owner-only even with `*`. For the **owner**, there is not yet an external approval device — owner actions run and are audited. Every action carries a tier, an acting principal, and an audit record. See [architecture-principles.md](architecture-principles.md), principle 14.
+**Risk tier (autonomous / notify / approve)** : The classification of every daemon action by reversibility and blast radius, defined in the action taxonomy (`internal/schema/taxonomy.go`). For **service principals**, tiers already constrain: `approve` is refused outright, and host-mutating routes are owner-only even with `*`. For the **owner**, there is not yet an external approval device — owner actions run and are audited. Every action carries a tier, an acting principal, and an audit record. See [architecture-principles.md](architecture-principles.md), principle 14, and [identity-and-authority.md](identity-and-authority.md).
+
+## Identity and authority
+
+**Principal** : Who is asking to act — `owner` or `service:<name>`. Carried on every audit record and authorization decision. See [identity-and-authority.md](identity-and-authority.md).
+
+**Owner** : The human operator (or anything holding the Base's Bearer API token via `ownbasectl` / the desktop app). Full taxonomy under current owner policy.
+
+**Service principal** : An on-Base service acting through its private unix socket. Subject to scopes and tier rules.
+
+**Scope / grant** : A closed permission string (`status:read`, `config:write`, …) declared under `ownbase_access:`. The list for a service is its grant. Default-deny on the socket API.
+
+**Checkpoint** : The authorization gate every taxonomy action passes through before execution (`OwnerCheckpoint`, `GrantCheckpoint`, or `CompositeCheckpoint` in `internal/authz`).
+
+**Owner-only route** : An HTTP path that refuses every service principal, including those granted `*` (e.g. `/config/source`, `/token/reset`).
+
+**Tracked ref** : The branch/tag/SHA the Base reconciles from (usually `main`), recorded in `config-source.yaml` and the vault profile. Operators push here with their own git credentials.
+
+**Proposal branch** : A branch under `ownbase/agent/*` pushed by the daemon via `POST /config`. Never applied until merged into the tracked ref on the forge.
