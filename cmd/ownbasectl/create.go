@@ -101,6 +101,10 @@ type baseTargetFlags struct {
 	waitTimeout time.Duration
 	waitForSSH  time.Duration
 	jsonOut     bool
+	// afterReady, when set (restore), runs after the daemon is healthy and
+	// before any success banner/JSON — so a failed post-step cannot leave
+	// the operator with a "Base is up" message and a non-zero exit.
+	afterReady func(name string) error
 }
 
 // register adds the shared provisioning flags to cmd.
@@ -496,13 +500,23 @@ func ownerTarget(name, host, sshUser string, sshPort int) (tunnel.Target, error)
 // two, and the API answering is exactly the signal that pass zero finished.
 func finishCreate(name, host, sshUser string, sshPort int, f *baseTargetFlags) error {
 	ready := false
-	if f.wait {
+	needReady := f.wait || f.afterReady != nil
+	timeout := f.waitTimeout
+	if timeout <= 0 {
+		timeout = 10 * time.Minute
+	}
+	if needReady {
 		progress("==> Waiting for the daemon to finish hardening the host ...")
-		if err := waitForDaemonReady(name, f.waitTimeout); err != nil {
+		if err := waitForDaemonReady(name, timeout); err != nil {
 			return err
 		}
 		ready = true
 		progress("    Host hardened, daemon healthy.")
+	}
+	if f.afterReady != nil {
+		if err := f.afterReady(name); err != nil {
+			return err
+		}
 	}
 
 	if f.jsonOut {
@@ -515,7 +529,7 @@ func finishCreate(name, host, sshUser string, sshPort int, f *baseTargetFlags) e
 			"ready":    ready,
 		})
 	}
-	printBaseCreatedBanner(name, host, f.wait)
+	printBaseCreatedBanner(name, host, needReady)
 	return nil
 }
 

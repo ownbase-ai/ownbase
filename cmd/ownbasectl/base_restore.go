@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -56,6 +55,11 @@ the vault is unavailable.`,
 	// host, so the guard that stops `create` from silently repointing a name
 	// does not apply here.
 	target.repointOK = true
+	// Re-assert vault config pin inside finishCreate (after daemon ready,
+	// before success banner) so a failure cannot report success first.
+	target.afterReady = func(base string) error {
+		return reassertConfigSource(base, target.jsonOut)
+	}
 	return cmd
 }
 
@@ -125,15 +129,8 @@ func runBaseRestore(name, backupRepo string, creds backupCredFlags, forceRebuild
 		return fmt.Errorf("restore failed: %w", err)
 	}
 
-	// Re-assert the vault's config-source pin. The snapshot restores
-	// config-source.yaml verbatim; a poisoned pointer would otherwise become
-	// the rebuild's source of truth. Vault wins. Wait for the daemon API —
-	// without this, provision returns before ownbased is listening and the
-	// pin never lands.
-	if err := reassertConfigSource(name, target.jsonOut); err != nil {
-		return fmt.Errorf("re-assert config source from vault: %w", err)
-	}
-
+	// afterReady (reassertConfigSource) already ran inside finishCreate before
+	// any success banner. Additional human notes only.
 	if !target.jsonOut {
 		fmt.Println()
 		fmt.Println("Restore complete. The daemon is now reconciling from the restored")
@@ -143,9 +140,10 @@ func runBaseRestore(name, backupRepo string, creds backupCredFlags, forceRebuild
 	return nil
 }
 
-// reassertConfigSource waits for the daemon, then POSTs the vault profile's
-// config repo so a rebuild cannot keep a compromised config-source.yaml.
-// No-op when the vault has no config URL. Failure is fatal for restore.
+// reassertConfigSource POSTs the vault profile's config repo so a rebuild
+// cannot keep a compromised config-source.yaml. Called from finishCreate
+// after the daemon is healthy and before success output. No-op when the
+// vault has no config URL. Failure is fatal for restore.
 func reassertConfigSource(name string, quiet bool) error {
 	p, err := loadProfile(name)
 	if err != nil {
@@ -161,12 +159,8 @@ func reassertConfigSource(name string, quiet bool) error {
 	}
 
 	if !quiet {
-		progress("==> Waiting for daemon, then re-asserting config source from vault")
+		progress("==> Re-asserting config source from vault")
 	}
-	if err := waitForDaemonReady(name, 10*time.Minute); err != nil {
-		return err
-	}
-
 	conn, err := connectToServer(name)
 	if err != nil {
 		return err
@@ -174,7 +168,7 @@ func reassertConfigSource(name string, quiet bool) error {
 	defer conn.close()
 	payload, _ := json.Marshal(map[string]string{"repo_url": url, "ref": ref})
 	if _, err := apiCall(conn, http.MethodPost, "/config/source", payload); err != nil {
-		return err
+		return fmt.Errorf("POST /config/source: %w", err)
 	}
 	if !quiet {
 		fmt.Printf("Re-asserted config source from vault: %s (%s)\n", url, ref)
