@@ -40,13 +40,19 @@ What that guards is the seam: every screen renders `ownbasectl --json`, so a fie
 - **Idempotency.** Every reconcile/install/hardening step must be safe to run twice — check before acting, not "run once and hope."
 - **Pure, deterministic compiler.** `internal/compiler` must produce byte-identical output for the same input, every time. Never let it depend on wall-clock time, randomness, or network state.
 - **Single writer to `runtime/`.** Only the compiler writes there. Anything else touching those files is a bug.
-- **Audit everything.** Every daemon action goes through the `internal/schema` taxonomy (`NewAction`) and gets logged. An action type not in the taxonomy cannot execute — extend the taxonomy deliberately, don't work around it.
+- **Audit everything, with a principal.** Every daemon action goes through the `internal/schema` taxonomy (`NewAction`), carries an acting principal (`WithPrincipal`), and is logged. An action type not in the taxonomy cannot execute — extend the taxonomy deliberately, don't work around it.
+- **Default-deny on the daemon API.** A new HTTP route is owner-only unless `authz.RouteAccess` maps it. Owner-only routes refuse service principals even when granted `*`. Tests: `internal/authz/route_test.go`.
+- **The Base never pushes the tracked ref.** Only `refs/heads/ownbase/agent/*`, force-with-lease. Merge stays on the forge.
+- **The vault is the config-source pin.** No client path may overwrite a non-empty `ConfigRepoURL` from Base-reported state. Mismatch warns.
+- **No ambient SSH config on the Base.** `GIT_SSH_COMMAND` uses the single managed key; a `config` file is deleted, never honored.
+- **Mutable refs always refetch.** Only full 40/64-char commit SHAs may short-circuit a fetch.
+- **Socket dirs before containers.** Bind-mount sources for `ownbase_access` must exist before Podman apply, and must be **directories** (stable inode across socket replacement).
 - **Plaintext secrets never touch disk.** Decrypt in memory, inject at container start, nothing else.
-- **Dry-run everywhere it matters.** `plan`/`apply --dry-run` must be side-effect-free previews of the real path, not a separate implementation.
+- **Dry-run everywhere it matters.** `plan`/`apply --dry-run` must be side-effect-free previews of the real path, not a separate implementation. In particular, `prepareAccess` / `SocketManager.Sync` must not run under dry-run (it opens listeners and can close sockets for services absent from a previewed config).
 - **Private keys stay in the agent.** A key from the [vault](vault.md) is used by asking the agent for a signature. Nothing writes one to disk or passes one around as bytes, and no password is ever accepted in argv — `ps` can read argv for as long as the process lives.
 - **Every save of the vault re-seeds.** KDBX4 is ChaCha20; writing twice under the same key and nonce reuses a keystream. `internal/vault` re-randomizes on every save and merges against the file on disk rather than overwriting it, because the vault is expected to be in a synced folder and open in KeePassXC at the same time.
 - **Sessions are always recorded.** `ownbasectl ssh` has no flag that turns recording off, and adding one would make the audit trail worth nothing. Both directions are captured; output alone cannot show a command that produced none.
-- **One control plane.** `ownbasectl` owns the semantics — the vault, the agent, the git commits, the reconcile. The desktop app spawns it and renders the result; it must never grow a second implementation of any of that, or "what is deployed on this Base" starts having two answers that can disagree. If the app needs something, the answer is a new `--json` flag on the CLI.
+- **One control plane.** `ownbasectl` owns the semantics — the vault, the agent, the git commits, the reconcile. The desktop app spawns it and renders the result; it must never grow a second implementation of any of that, or "what is deployed on this Base" starts having two answers that can disagree. If the app needs something, the answer is a new `--json` flag on the CLI. The in-container socket API is a second *consumer* of the daemon, not a second control plane — same mux, same taxonomy.
 
 ## Merge gate
 

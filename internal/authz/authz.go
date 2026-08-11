@@ -57,8 +57,9 @@ func (OwnerCheckpoint) Authorize(action schema.Action) error {
 type Grant struct {
 	// Service is the principal name this grant applies to.
 	Service string
-	// Scopes are allowed action patterns, e.g. "status:read", "service:myapp:deploy".
-	// Empty means no scopes — the principal can do nothing.
+	// Scopes are allowed action patterns, e.g. "status:read", "config:write",
+	// "secrets:myapp:read". Some taxonomy-only strings (e.g. service:myapp:deploy)
+	// have no HTTP route yet. Empty means no scopes — the principal can do nothing.
 	Scopes []string
 }
 
