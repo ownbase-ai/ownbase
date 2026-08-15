@@ -359,8 +359,11 @@ Reconciles are triggered explicitly by `ownbasectl` (`deploy`, `config set`, `se
 | `interval` | `1h` | how often a snapshot is taken |
 | `verify_interval` | `24h` | how often the verified-restore drill runs |
 | `verify_postgres` | `true` | whether the drill recovers a real Postgres from the backed-up pgBackRest repository |
+| `append_only` | `false` | when true, scheduled snapshots do **not** run `restic forget --prune`; apply retention with `ownbasectl backup prune` using delete-capable cloud keys that never live on the Base |
 
-Credentials do not go here — they live in `/opt/ownbase/secrets/backup.yaml.age`, set with `ownbasectl secrets set <base> backup RESTIC_PASSWORD=… AWS_ACCESS_KEY_ID=…`. Which volumes reach the repository is decided per service by `volumes[].backup:`.
+Credentials do not go here — they live in `/opt/ownbase/secrets/backup.yaml.age`, set with `ownbasectl secrets set <base> backup RESTIC_PASSWORD=… AWS_ACCESS_KEY_ID=…` (or `ownbasectl backup setup`). Which volumes reach the repository is decided per service by `volumes[].backup:`.
+
+**Append-only mode.** A compromised Base that holds delete-capable cloud keys can wipe the restic repository. With `append_only: true` the keys on the Base should be non-deleting (`s3:PutObject`/`GetObject`/`ListBucket`, plus `s3:DeleteObject` only on the restic `locks/*` prefix — restic must clear its own locks). Retention is applied by the owner via `ownbasectl backup prune`, which sends delete-capable credentials through the SSH tunnel for one invocation and never stores them on the Base. Optional vault escrow: `--admin-aws-…` / `--admin-b2-…` on setup or `backup prune --escrow`.
 
 ### What the verified-restore drill proves
 

@@ -95,7 +95,11 @@ func Gather(in GatherInput) *BaseStatus {
 		s.Config = &cs
 	}
 
-	s.Security = gatherSecurity(in.BackupStatus, in.DriftEvents, in.Exposure, in.Access, in.Vulns, in.Reboot)
+	appendOnly := false
+	if in.Config != nil {
+		appendOnly = in.Config.Core.Backup.AppendOnly
+	}
+	s.Security = gatherSecurity(in.BackupStatus, appendOnly, in.DriftEvents, in.Exposure, in.Access, in.Vulns, in.Reboot)
 
 	maxRecs := in.AuditMaxRecords
 	if maxRecs <= 0 {
@@ -182,9 +186,10 @@ func gatherJobs(cfg *schema.OwnbaseConfig, timers map[string]runtime.JobTimerInf
 	return result
 }
 
-func gatherSecurity(bs backup.Status, driftEvents []reconcile.DriftEvent, exposure secwatch.ExposureResult, access secwatch.AccessResult, vulns vulnscan.VulnStatus, reboot secwatch.RebootResult) SecurityStatus {
+func gatherSecurity(bs backup.Status, appendOnly bool, driftEvents []reconcile.DriftEvent, exposure secwatch.ExposureResult, access secwatch.AccessResult, vulns vulnscan.VulnStatus, reboot secwatch.RebootResult) SecurityStatus {
 	sec := SecurityStatus{
 		BackupRestorable: bs.Restorable,
+		BackupAppendOnly: appendOnly,
 		Exposure:         exposure,
 		Access:           access,
 		Vulns:            vulns,
@@ -198,6 +203,10 @@ func gatherSecurity(bs backup.Status, driftEvents []reconcile.DriftEvent, exposu
 	if !bs.LastVerified.IsZero() {
 		t := bs.LastVerified
 		sec.LastVerified = &t
+	}
+	if !bs.LastPrune.IsZero() {
+		t := bs.LastPrune
+		sec.LastPrune = &t
 	}
 	if len(driftEvents) > 0 {
 		sec.DriftDetected = true

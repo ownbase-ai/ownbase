@@ -12,9 +12,9 @@ import (
 
 func TestSetCoreBackupConfig_NoCoreBlock(t *testing.T) {
 	in := "schema_version: v1\nservices:\n  crm:\n    repo: https://github.com/example/crm.git\n"
-	out := SetCoreBackupConfig(in, "s3:s3.amazonaws.com/bucket/ownbase", "1h", "24h")
+	out := SetCoreBackupConfig(in, "s3:s3.amazonaws.com/bucket/ownbase", "1h", "24h", nil)
 
-	assertParsesWithBackup(t, out, "s3:s3.amazonaws.com/bucket/ownbase", "1h", "24h")
+	assertParsesWithBackup(t, out, "s3:s3.amazonaws.com/bucket/ownbase", "1h", "24h", false)
 	if !strings.Contains(out, "services:") {
 		t.Errorf("expected existing services: block preserved, got:\n%s", out)
 	}
@@ -22,9 +22,9 @@ func TestSetCoreBackupConfig_NoCoreBlock(t *testing.T) {
 
 func TestSetCoreBackupConfig_CoreBlockNoBackup(t *testing.T) {
 	in := "schema_version: v1\ncore:\n  caddy:\n    email: you@example.com\nservices: {}\n"
-	out := SetCoreBackupConfig(in, "/opt/ownbase/backup", "", "")
+	out := SetCoreBackupConfig(in, "/opt/ownbase/backup", "", "", nil)
 
-	assertParsesWithBackup(t, out, "/opt/ownbase/backup", "", "")
+	assertParsesWithBackup(t, out, "/opt/ownbase/backup", "", "", false)
 	if !strings.Contains(out, "email: you@example.com") {
 		t.Errorf("expected caddy.email preserved, got:\n%s", out)
 	}
@@ -32,9 +32,9 @@ func TestSetCoreBackupConfig_CoreBlockNoBackup(t *testing.T) {
 
 func TestSetCoreBackupConfig_ExistingBackupBlock_UpdatesRepo(t *testing.T) {
 	in := "schema_version: v1\ncore:\n  backup:\n    repo: /old/path\n    interval: 2h\nservices: {}\n"
-	out := SetCoreBackupConfig(in, "s3:new/bucket", "", "")
+	out := SetCoreBackupConfig(in, "s3:new/bucket", "", "", nil)
 
-	assertParsesWithBackup(t, out, "s3:new/bucket", "2h", "")
+	assertParsesWithBackup(t, out, "s3:new/bucket", "2h", "", false)
 	if strings.Contains(out, "/old/path") {
 		t.Errorf("expected old repo replaced, got:\n%s", out)
 	}
@@ -42,23 +42,38 @@ func TestSetCoreBackupConfig_ExistingBackupBlock_UpdatesRepo(t *testing.T) {
 
 func TestSetCoreBackupConfig_AddsIntervalToExistingBlock(t *testing.T) {
 	in := "schema_version: v1\ncore:\n  backup:\n    repo: /data/backup\nservices: {}\n"
-	out := SetCoreBackupConfig(in, "/data/backup", "30m", "12h")
+	out := SetCoreBackupConfig(in, "/data/backup", "30m", "12h", nil)
 
-	assertParsesWithBackup(t, out, "/data/backup", "30m", "12h")
+	assertParsesWithBackup(t, out, "/data/backup", "30m", "12h", false)
 }
 
 func TestSetCoreBackupConfig_Idempotent(t *testing.T) {
 	in := "schema_version: v1\nservices: {}\n"
-	once := SetCoreBackupConfig(in, "/data/backup", "1h", "24h")
-	twice := SetCoreBackupConfig(once, "/data/backup", "1h", "24h")
+	once := SetCoreBackupConfig(in, "/data/backup", "1h", "24h", nil)
+	twice := SetCoreBackupConfig(once, "/data/backup", "1h", "24h", nil)
 	if once != twice {
 		t.Errorf("expected idempotent result, got:\nonce:\n%s\ntwice:\n%s", once, twice)
 	}
 }
 
+func TestSetCoreBackupConfig_AppendOnly(t *testing.T) {
+	in := "schema_version: v1\nservices: {}\n"
+	on := true
+	out := SetCoreBackupConfig(in, "/data/backup", "1h", "24h", &on)
+	assertParsesWithBackup(t, out, "/data/backup", "1h", "24h", true)
+
+	off := false
+	out2 := SetCoreBackupConfig(out, "/data/backup", "1h", "24h", &off)
+	assertParsesWithBackup(t, out2, "/data/backup", "1h", "24h", false)
+
+	// nil leaves append_only untouched
+	out3 := SetCoreBackupConfig(out, "/data/backup", "1h", "24h", nil)
+	assertParsesWithBackup(t, out3, "/data/backup", "1h", "24h", true)
+}
+
 // assertParsesWithBackup parses out as ownbase.yaml and checks the resulting
 // BackupCoreConfig matches.
-func assertParsesWithBackup(t *testing.T, out, repo, interval, verifyInterval string) {
+func assertParsesWithBackup(t *testing.T, out, repo, interval, verifyInterval string, appendOnly bool) {
 	t.Helper()
 	cfg, err := schema.ParseConfig(strings.NewReader(out))
 	if err != nil {
@@ -72,5 +87,8 @@ func assertParsesWithBackup(t *testing.T, out, repo, interval, verifyInterval st
 	}
 	if verifyInterval != "" && cfg.Core.Backup.VerifyInterval != verifyInterval {
 		t.Errorf("verify_interval = %q, want %q\noutput:\n%s", cfg.Core.Backup.VerifyInterval, verifyInterval, out)
+	}
+	if cfg.Core.Backup.AppendOnly != appendOnly {
+		t.Errorf("append_only = %v, want %v\noutput:\n%s", cfg.Core.Backup.AppendOnly, appendOnly, out)
 	}
 }

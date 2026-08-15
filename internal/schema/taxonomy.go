@@ -44,6 +44,7 @@ const (
 
 	// Backup actions
 	ActionBackupRun     ActionType = "backup.run"     // autonomous
+	ActionBackupPrune   ActionType = "backup.prune"   // notify — owner-driven; may use delete-capable creds
 	ActionRestoreVerify ActionType = "restore.verify" // autonomous
 	ActionRestoreApply  ActionType = "restore.apply"  // approve
 
@@ -108,6 +109,7 @@ var defaultTiers = map[ActionType]RiskTier{
 	ActionSecretRotate: TierNotify,
 
 	ActionBackupRun:     TierAutonomous,
+	ActionBackupPrune:   TierNotify,
 	ActionRestoreVerify: TierAutonomous,
 	ActionRestoreApply:  TierApprove,
 

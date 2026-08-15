@@ -83,6 +83,14 @@ type BackupCoreConfig struct {
 	// problem, and understand that the recovery path then goes untested until
 	// the day it is needed.
 	VerifyPostgres *bool `yaml:"verify_postgres,omitempty"`
+
+	// AppendOnly disables forget+prune after each snapshot. The Base's cloud
+	// credentials should then be non-deleting (Put/Get/List only, plus
+	// DeleteObject on restic's locks/* prefix). Retention is applied by the
+	// owner via `ownbasectl backup prune`, which sends delete-capable
+	// credentials through the tunnel for one invocation and never stores them
+	// on the Base.
+	AppendOnly bool `yaml:"append_only,omitempty"`
 }
 
 // PostgresVerifyEnabled reports whether the drill should prove Postgres

@@ -68,12 +68,16 @@ const (
 	fieldConfigRepoURL      = "ConfigRepoURL"
 	fieldConfigRef          = "ConfigRef"
 	fieldLocalVM            = "LocalVM"
-	fieldBackupRepo         = "BackupRepo"
-	fieldResticPassword     = "ResticPassword"
-	fieldAWSAccessKeyID     = "AWSAccessKeyID"
-	fieldAWSSecretAccessKey = "AWSSecretAccessKey"
-	fieldB2AccountID        = "B2AccountID"
-	fieldB2AccountKey       = "B2AccountKey"
+	fieldBackupRepo              = "BackupRepo"
+	fieldResticPassword          = "ResticPassword"
+	fieldAWSAccessKeyID          = "AWSAccessKeyID"
+	fieldAWSSecretAccessKey      = "AWSSecretAccessKey"
+	fieldB2AccountID             = "B2AccountID"
+	fieldB2AccountKey            = "B2AccountKey"
+	fieldAdminAWSAccessKeyID     = "AdminAWSAccessKeyID"
+	fieldAdminAWSSecretAccessKey = "AdminAWSSecretAccessKey"
+	fieldAdminB2AccountID        = "AdminB2AccountID"
+	fieldAdminB2AccountKey       = "AdminB2AccountKey"
 )
 
 // entryNotes explains the entry to anyone who opens the vault in a KDBX
@@ -136,12 +140,21 @@ type Profile struct {
 	// ResticPassword is the restic repository encryption password.
 	// KDBX-protected. The only client-side copy after backup setup.
 	ResticPassword string `json:"restic_password,omitempty"`
-	// AWSAccessKeyID / AWSSecretAccessKey are optional S3 destination creds.
+	// AWSAccessKeyID / AWSSecretAccessKey are optional S3 destination creds
+	// held on the Base for snapshots (and escrowed here for restore). In
+	// append-only mode these should be non-deleting.
 	AWSAccessKeyID     string `json:"aws_access_key_id,omitempty"`
 	AWSSecretAccessKey string `json:"aws_secret_access_key,omitempty"`
 	// B2AccountID / B2AccountKey are optional Backblaze B2 destination creds.
 	B2AccountID  string `json:"b2_account_id,omitempty"`
 	B2AccountKey string `json:"b2_account_key,omitempty"`
+	// AdminAWS* / AdminB2* are optional delete-capable cloud keys used only
+	// by `ownbasectl backup prune`. Never sent to the Base for storage — the
+	// prune route receives them transiently through the SSH tunnel.
+	AdminAWSAccessKeyID     string `json:"admin_aws_access_key_id,omitempty"`
+	AdminAWSSecretAccessKey string `json:"admin_aws_secret_access_key,omitempty"`
+	AdminB2AccountID        string `json:"admin_b2_account_id,omitempty"`
+	AdminB2AccountKey       string `json:"admin_b2_account_key,omitempty"`
 }
 
 // KnownLocalVM reports whether the Base is definitely a local Multipass VM.
@@ -219,12 +232,14 @@ func (p Profile) Redacted() Profile {
 	p.ResticPassword = ""
 	p.AWSSecretAccessKey = ""
 	p.B2AccountKey = ""
+	p.AdminAWSSecretAccessKey = ""
+	p.AdminB2AccountKey = ""
 	return p
 }
 
-// BackupCredentials is the restic restore material for one Base. Returned by
-// the agent only via the dedicated get-backup op — never embedded in a
-// redacted Profile.
+// BackupCredentials is the restic restore (and optional prune) material for
+// one Base. Returned by the agent only via the dedicated get-backup op —
+// never embedded in a redacted Profile.
 type BackupCredentials struct {
 	Repo               string `json:"repo,omitempty"`
 	Password           string `json:"password,omitempty"`
@@ -232,17 +247,26 @@ type BackupCredentials struct {
 	AWSSecretAccessKey string `json:"aws_secret_access_key,omitempty"`
 	B2AccountID        string `json:"b2_account_id,omitempty"`
 	B2AccountKey       string `json:"b2_account_key,omitempty"`
+	// Admin* fields are delete-capable cloud keys for backup prune only.
+	AdminAWSAccessKeyID     string `json:"admin_aws_access_key_id,omitempty"`
+	AdminAWSSecretAccessKey string `json:"admin_aws_secret_access_key,omitempty"`
+	AdminB2AccountID        string `json:"admin_b2_account_id,omitempty"`
+	AdminB2AccountKey       string `json:"admin_b2_account_key,omitempty"`
 }
 
 // BackupCredentials returns the restic material stored on this profile.
 func (p Profile) BackupCredentials() BackupCredentials {
 	return BackupCredentials{
-		Repo:               p.BackupRepo,
-		Password:           p.ResticPassword,
-		AWSAccessKeyID:     p.AWSAccessKeyID,
-		AWSSecretAccessKey: p.AWSSecretAccessKey,
-		B2AccountID:        p.B2AccountID,
-		B2AccountKey:       p.B2AccountKey,
+		Repo:                    p.BackupRepo,
+		Password:                p.ResticPassword,
+		AWSAccessKeyID:          p.AWSAccessKeyID,
+		AWSSecretAccessKey:      p.AWSSecretAccessKey,
+		B2AccountID:             p.B2AccountID,
+		B2AccountKey:            p.B2AccountKey,
+		AdminAWSAccessKeyID:     p.AdminAWSAccessKeyID,
+		AdminAWSSecretAccessKey: p.AdminAWSSecretAccessKey,
+		AdminB2AccountID:        p.AdminB2AccountID,
+		AdminB2AccountKey:       p.AdminB2AccountKey,
 	}
 }
 
@@ -270,6 +294,12 @@ func (p *Profile) MergeSecretsFrom(existing Profile) {
 	if p.B2AccountKey == "" {
 		p.B2AccountKey = existing.B2AccountKey
 	}
+	if p.AdminAWSSecretAccessKey == "" {
+		p.AdminAWSSecretAccessKey = existing.AdminAWSSecretAccessKey
+	}
+	if p.AdminB2AccountKey == "" {
+		p.AdminB2AccountKey = existing.AdminB2AccountKey
+	}
 	// Non-secret backup fields: preserve when the put omitted them so a
 	// partial update (e.g. adopt refreshing the host) does not clear the repo.
 	if p.BackupRepo == "" {
@@ -280,6 +310,12 @@ func (p *Profile) MergeSecretsFrom(existing Profile) {
 	}
 	if p.B2AccountID == "" {
 		p.B2AccountID = existing.B2AccountID
+	}
+	if p.AdminAWSAccessKeyID == "" {
+		p.AdminAWSAccessKeyID = existing.AdminAWSAccessKeyID
+	}
+	if p.AdminB2AccountID == "" {
+		p.AdminB2AccountID = existing.AdminB2AccountID
 	}
 }
 
@@ -759,6 +795,10 @@ func entryFromProfile(name string, p Profile) gokeepasslib.Entry {
 	setProtected(fieldAWSSecretAccessKey, p.AWSSecretAccessKey)
 	set(fieldB2AccountID, p.B2AccountID)
 	setProtected(fieldB2AccountKey, p.B2AccountKey)
+	set(fieldAdminAWSAccessKeyID, p.AdminAWSAccessKeyID)
+	setProtected(fieldAdminAWSSecretAccessKey, p.AdminAWSSecretAccessKey)
+	set(fieldAdminB2AccountID, p.AdminB2AccountID)
+	setProtected(fieldAdminB2AccountKey, p.AdminB2AccountKey)
 	set(fieldNotes, entryNotes)
 	return e
 }
@@ -779,12 +819,16 @@ func profileFromEntry(e gokeepasslib.Entry) Profile {
 		ConfigRef:          e.GetContent(fieldConfigRef),
 		PrivateKey:         e.GetContent(fieldPrivateKey),
 		PublicKey:          e.GetContent(fieldPublicKey),
-		BackupRepo:         e.GetContent(fieldBackupRepo),
-		ResticPassword:     e.GetContent(fieldResticPassword),
-		AWSAccessKeyID:     e.GetContent(fieldAWSAccessKeyID),
-		AWSSecretAccessKey: e.GetContent(fieldAWSSecretAccessKey),
-		B2AccountID:        e.GetContent(fieldB2AccountID),
-		B2AccountKey:       e.GetContent(fieldB2AccountKey),
+		BackupRepo:              e.GetContent(fieldBackupRepo),
+		ResticPassword:          e.GetContent(fieldResticPassword),
+		AWSAccessKeyID:          e.GetContent(fieldAWSAccessKeyID),
+		AWSSecretAccessKey:      e.GetContent(fieldAWSSecretAccessKey),
+		B2AccountID:             e.GetContent(fieldB2AccountID),
+		B2AccountKey:            e.GetContent(fieldB2AccountKey),
+		AdminAWSAccessKeyID:     e.GetContent(fieldAdminAWSAccessKeyID),
+		AdminAWSSecretAccessKey: e.GetContent(fieldAdminAWSSecretAccessKey),
+		AdminB2AccountID:        e.GetContent(fieldAdminB2AccountID),
+		AdminB2AccountKey:       e.GetContent(fieldAdminB2AccountKey),
 	}
 	if n, err := strconv.Atoi(e.GetContent(fieldSSHPort)); err == nil {
 		p.SSHPort = n

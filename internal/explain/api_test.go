@@ -802,6 +802,55 @@ func TestAPI_SecretsDelete_MissingKey_404(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// /backup/prune
+// ---------------------------------------------------------------------------
+
+func TestAPI_BackupPrune_PassesBodyAndReturnsStatus(t *testing.T) {
+	var got explain.BackupPruneRequest
+	srv := explain.NewStatusServer()
+	mux := http.NewServeMux()
+	mux.Handle("/status", srv.Handler("test-api-token"))
+	explain.MountAPI(mux, explain.APIConfig{
+		StatusSrv: srv,
+		PruneBackup: func(req explain.BackupPruneRequest) (explain.BackupPruneStatus, error) {
+			got = req
+			return explain.BackupPruneStatus{LastPrune: "2026-08-14T12:00:00Z"}, nil
+		},
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	resp := authedPost(t, ts, "/backup/prune", `{"password":"pw","aws_access_key_id":"AKIA","aws_secret_access_key":"sec"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200: %s", resp.StatusCode, body)
+	}
+	if got.Password != "pw" || got.AWSAccessKeyID != "AKIA" || got.AWSSecretAccessKey != "sec" {
+		t.Errorf("PruneBackup got %+v", got)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), `"last_prune":"2026-08-14T12:00:00Z"`) {
+		t.Errorf("response body = %s", body)
+	}
+}
+
+func TestAPI_BackupPrune_NotConfigured(t *testing.T) {
+	srv := explain.NewStatusServer()
+	mux := http.NewServeMux()
+	mux.Handle("/status", srv.Handler("test-api-token"))
+	explain.MountAPI(mux, explain.APIConfig{StatusSrv: srv})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	resp := authedPost(t, ts, "/backup/prune", `{}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotImplemented {
+		t.Errorf("status = %d, want 501", resp.StatusCode)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // /backup/verify
 // ---------------------------------------------------------------------------
 

@@ -120,6 +120,11 @@ type Config struct {
 	// than merely restoring as files. Zero value skips that check — see
 	// core.backup.verify_postgres and postgres_recovery.go.
 	PostgresRecovery PostgresRecovery
+
+	// SkipPrune disables forget+prune after each snapshot. Set when
+	// core.backup.append_only is true — pruning then requires owner-supplied
+	// delete-capable credentials via Prune / POST /backup/prune.
+	SkipPrune bool
 }
 
 // progressf writes one progress line, if a Progress writer was configured.
@@ -190,6 +195,10 @@ type Status struct {
 	// LastError holds the error from the most recent failed operation.
 	// Empty when the last operation succeeded.
 	LastError string `json:"last_error,omitempty"`
+
+	// LastPrune is when forget+prune last completed successfully (scheduled
+	// or via the owner-driven prune path). Zero when never pruned.
+	LastPrune time.Time `json:"last_prune,omitempty"`
 }
 
 // Run performs one backup cycle: init repo if needed, take snapshot,
@@ -215,10 +224,16 @@ func Run(ctx context.Context, cfg Config) (Status, error) {
 		return s, fmt.Errorf("backup: snapshot: %w", err)
 	}
 
-	// Prune old snapshots per retention policy.
-	if err := pruneOld(ctx, c); err != nil {
-		// Non-fatal: pruning failure does not invalidate the backup.
-		fmt.Fprintf(os.Stderr, "backup: prune: %v (non-fatal)\n", err)
+	// Prune old snapshots per retention policy, unless append-only mode moved
+	// pruning off the Base (owner-driven POST /backup/prune).
+	pruned := false
+	if !c.SkipPrune {
+		if err := pruneOld(ctx, c); err != nil {
+			// Non-fatal: pruning failure does not invalidate the backup.
+			fmt.Fprintf(os.Stderr, "backup: prune: %v (non-fatal)\n", err)
+		} else {
+			pruned = true
+		}
 	}
 
 	s := Status{
@@ -228,9 +243,14 @@ func Run(ctx context.Context, cfg Config) (Status, error) {
 
 	// Preserve the Restorable flag from the previous status (a new backup
 	// does not automatically reset it — only a new verify pass changes it).
+	// Same for LastPrune when this run did not prune.
 	if prev, err := LoadStatus(c.StatusPath); err == nil {
 		s.Restorable = prev.Restorable
 		s.LastVerified = prev.LastVerified
+		s.LastPrune = prev.LastPrune
+	}
+	if pruned {
+		s.LastPrune = time.Now().UTC()
 	}
 
 	if err := SaveStatus(c.StatusPath, s); err != nil {
@@ -243,6 +263,44 @@ func Run(ctx context.Context, cfg Config) (Status, error) {
 		_ = c.AuditLog.Record(action, authz.OutcomeApplied, "")
 	}
 
+	return s, nil
+}
+
+// Prune runs forget+prune against the repository using cfg's credentials and
+// retention policy, then records LastPrune. Used by the owner-driven
+// POST /backup/prune path when append_only keeps Run from pruning itself.
+// Credentials are taken only from cfg (typically a merge of the Base's stored
+// backup secret with transient delete-capable keys supplied for this call) and
+// never written to disk by this function.
+func Prune(ctx context.Context, cfg Config) (Status, error) {
+	c := cfg.withDefaults()
+	if err := c.Validate(); err != nil {
+		return Status{}, err
+	}
+	if err := pruneOld(ctx, c); err != nil {
+		s := Status{LastError: err.Error()}
+		if prev, loadErr := LoadStatus(c.StatusPath); loadErr == nil {
+			s = prev
+			s.LastError = err.Error()
+		}
+		_ = SaveStatus(c.StatusPath, s)
+		return s, fmt.Errorf("backup: prune: %w", err)
+	}
+
+	s, err := LoadStatus(c.StatusPath)
+	if err != nil {
+		s = Status{}
+	}
+	s.LastPrune = time.Now().UTC()
+	s.LastError = ""
+	if err := SaveStatus(c.StatusPath, s); err != nil {
+		fmt.Fprintf(os.Stderr, "backup: save status: %v (non-fatal)\n", err)
+	}
+
+	if c.AuditLog != nil {
+		action, _ := schema.NewAction(schema.ActionBackupPrune, "base")
+		_ = c.AuditLog.Record(action, authz.OutcomeApplied, "")
+	}
 	return s, nil
 }
 

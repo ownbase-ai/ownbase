@@ -199,6 +199,9 @@ func RouteAccess(method, path string) HTTPAccess {
 		if method == http.MethodPost {
 			return HTTPAccess{Scope: ScopeBackupVerify}
 		}
+	case "/backup/prune":
+		// Owner-only: may carry transient delete-capable cloud credentials.
+		return HTTPAccess{OwnerOnly: true}
 	case "/ssh-key":
 		if method == http.MethodGet {
 			return HTTPAccess{Scope: ScopeSSHKeyRead}

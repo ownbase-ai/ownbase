@@ -98,6 +98,11 @@ type APIConfig struct {
 	// run at all, which is distinct from a drill that ran and failed a check
 	// (VerifyDrillResult.Passed == false).
 	VerifyBackup func(w io.Writer) (VerifyDrillResult, error)
+	// PruneBackup, when non-nil, runs restic forget+prune with credentials
+	// merged from the request over the Base's stored backup secret. Called by
+	// POST /backup/prune (owner-only). Transient delete-capable keys in the
+	// request body are never persisted on the Base.
+	PruneBackup func(req BackupPruneRequest) (BackupPruneStatus, error)
 	// CoreStatus, when non-nil, reports the current state of the OwnBase core
 	// package (Caddy): pinned image + digest and whether the
 	// container is running on the Base. Called by GET /core/status — the
@@ -167,6 +172,23 @@ type BackupRunStatus struct {
 	LatestSnapshot string `json:"latest_snapshot,omitempty"`
 	Restorable     bool   `json:"restorable"`
 	LastError      string `json:"last_error,omitempty"`
+}
+
+// BackupPruneRequest is the body of POST /backup/prune. Every field is
+// optional: non-empty values override the matching key from the Base's
+// age-encrypted backup secret for this one invocation only.
+type BackupPruneRequest struct {
+	Password           string `json:"password,omitempty"`
+	AWSAccessKeyID     string `json:"aws_access_key_id,omitempty"`
+	AWSSecretAccessKey string `json:"aws_secret_access_key,omitempty"`
+	B2AccountID        string `json:"b2_account_id,omitempty"`
+	B2AccountKey       string `json:"b2_account_key,omitempty"`
+}
+
+// BackupPruneStatus is the JSON body of a successful POST /backup/prune.
+type BackupPruneStatus struct {
+	LastPrune string `json:"last_prune,omitempty"`
+	LastError string `json:"last_error,omitempty"`
 }
 
 // VerifyDrillResult is the JSON-friendly outcome of one verified-restore
@@ -731,6 +753,40 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 		status, err := cfg.RunBackup()
 		if err != nil {
 			http.Error(w, "run backup: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, status)
+	})
+
+	// /backup/prune — owner-driven forget+prune. Used when
+	// core.backup.append_only keeps scheduled snapshots from pruning (the
+	// Base holds non-deleting cloud keys). Optional body credentials override
+	// the stored backup secret for this call only and are never written down.
+	mux.HandleFunc("/backup/prune", func(w http.ResponseWriter, r *http.Request) {
+		if !authRequired(w, r, cfg.StatusSrv) {
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if cfg.PruneBackup == nil {
+			http.Error(w, "backup not configured", http.StatusNotImplemented)
+			return
+		}
+		var req BackupPruneRequest
+		if r.Body != nil {
+			defer r.Body.Close()
+			dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&req); err != nil && err != io.EOF {
+				http.Error(w, "invalid prune body: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+		}
+		status, err := cfg.PruneBackup(req)
+		if err != nil {
+			http.Error(w, "prune backup: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 		writeJSON(w, status)
