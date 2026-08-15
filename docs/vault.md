@@ -169,8 +169,9 @@ The vault is small and changes rarely. Two things worth knowing:
 
 - **A synced folder is already a backup**, and its version history is what recovers you from a corrupt write. This is most of why it is the recommended location.
 - **The vault is not in your Base backups, on purpose.** Your restic repository is reachable *using* credentials from the vault, so a vault backed up only there would be unrecoverable exactly when you needed it. Keep it somewhere that does not depend on a Base being alive.
+- **The restic password is a root recovery secret.** Snapshots include `/opt/ownbase/secrets` and the age key, so repo URL + restic password is a complete export of every secret the Base has held. The vault escrows a copy for convenience (`backup recovery-kit` reprints it); keep an offline copy from the recovery kit printed at `backup setup` / `backup rekey`. The vault is not a recovery service.
 
-Losing the vault means losing SSH access to every Base in it. The machines keep running and their data is intact — a Base does not depend on your vault — but you would need to reach them another way: the provider's console, or a rebuild from backups with `ownbasectl restore`.
+Losing the vault means losing SSH access to every Base in it. The machines keep running and their data is intact — a Base does not depend on your vault — but you would need to reach them another way: the provider's console, or a rebuild from backups with `ownbasectl restore` (if you still hold the restic password offline).
 
 ## Files at a glance
 

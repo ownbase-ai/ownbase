@@ -245,7 +245,7 @@ Without `--verify`, the report shows the last drill the Base ran on its own sche
 
 ```bash
 ownbasectl backup setup mybase --repo s3:s3.amazonaws.com/my-bucket/ownbase \
-  --password <a-strong-password> \
+  --generate \
   --aws-access-key-id AKIA... --aws-secret-access-key ...
 
 # Append-only: Base holds non-deleting keys; prune with admin keys later
@@ -253,15 +253,17 @@ ownbasectl backup setup mybase --repo s3:... --password x --append-only \
   --aws-access-key-id AKIA_APPEND --aws-secret-access-key ... \
   --admin-aws-access-key-id AKIA_ADMIN --admin-aws-secret-access-key ...
 
-ownbasectl backup run mybase       # trigger an immediate snapshot
-ownbasectl backup status mybase    # last snapshot, restorable?, last verify / prune
-ownbasectl backup prune mybase     # forget+prune (required under --append-only)
+ownbasectl backup run mybase              # trigger an immediate snapshot
+ownbasectl backup status mybase           # last snapshot, restorable?, last verify / prune
+ownbasectl backup prune mybase            # forget+prune (required under --append-only)
+ownbasectl backup recovery-kit mybase     # reprint restic recovery kit from vault
 ```
 
 | Flag (setup) | Meaning |
 |---|---|
 | `--repo` | restic repository URL — `s3:`, `b2:`, or `sftp:` (required) |
-| `--password` | repository encryption password (required on setup; also stored in your vault for restore) |
+| `--password` | repository encryption password (also stored in your vault for restore) |
+| `--generate` | mint a strong 32-character password instead of `--password` |
 | `--aws-access-key-id` / `--aws-secret-access-key` | credentials for `s3:` repos (non-deleting when `--append-only`) |
 | `--b2-account-id` / `--b2-account-key` | credentials for `b2:` repos |
 | `--admin-aws-…` / `--admin-b2-…` | delete-capable cloud keys escrowed in the vault for `backup prune` only — never written to the Base |
@@ -269,7 +271,9 @@ ownbasectl backup prune mybase     # forget+prune (required under --append-only)
 | `--interval` | snapshot cadence (default `1h`) |
 | `--verify-interval` | verified-restore drill cadence (default `24h`) |
 
-Credentials are stored age-encrypted on the Base **and** escrowed in your vault (so `restore` does not need them re-typed). The repo URL and cadence are committed to `ownbase.yaml` client-side and applied by a reconcile, with no daemon restart. Still choose a strong restic password — the vault is the client-side copy, not a recovery service.
+Credentials are stored age-encrypted on the Base **and** escrowed in your vault (so `restore` does not need them re-typed). The repo URL and cadence are committed to `ownbase.yaml` client-side and applied by a reconcile, with no daemon restart.
+
+**Recovery kit.** After `setup` and `rekey`, OwnBase prints a recovery kit (repo, password, cloud env var names, stock-restic one-liner). The restic password is a **root recovery secret**: snapshots include `/opt/ownbase/secrets` and the age key, so holding the password + repo is a complete export of the Base's secrets. Store a copy offline, outside the vault — the vault is a convenience escrow, not a recovery service. Reprint anytime with `backup recovery-kit <name>` (unlocked vault required; secrets go to stdout on purpose).
 
 `backup prune` applies retention (`keep-within 30d`, `keep-last 3`). Under append-only mode the Base never does this itself. Cloud-key resolution: flags / `--creds-stdin` → vault admin escrow → Base secret. Pass `--escrow` to store admin keys supplied on this run into the vault for next time.
 

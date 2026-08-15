@@ -34,6 +34,7 @@ func newBackupCmd() *cobra.Command {
 		newBackupStatusCmd(),
 		newBackupPruneCmd(),
 		newBackupRekeyCmd(),
+		newBackupRecoveryKitCmd(),
 	)
 	return cmd
 }
@@ -139,15 +140,16 @@ func newBackupSetupCmd() *cobra.Command {
 		interval       string
 		verifyInterval string
 		appendOnly     bool
+		generate       bool
 		dryRun         bool
 		jsonOut        bool
 	)
 	cmd := &cobra.Command{
-		Use:   "setup <name> --repo <restic-url> --password <pw>",
+		Use:   "setup <name> --repo <restic-url> (--password <pw>|--generate)",
 		Short: "Turn on remote backups for a Base and run the first snapshot",
 		Example: `  ownbasectl backup setup mybase \
     --repo s3:s3.amazonaws.com/my-bucket/ownbase \
-    --password <a-strong-restic-password> \
+    --generate \
     --aws-access-key-id AKIA... --aws-secret-access-key ...
   ownbasectl backup setup mybase --repo s3:... --password x --append-only \
     --aws-access-key-id AKIA_APPEND --aws-secret-access-key ... \
@@ -164,12 +166,13 @@ func newBackupSetupCmd() *cobra.Command {
 				v := appendOnly
 				appendOnlyPtr = &v
 			}
-			return runBackupSetup(args[0], repo, creds, interval, verifyInterval, appendOnlyPtr, dryRun, jsonOut)
+			return runBackupSetup(args[0], repo, creds, interval, verifyInterval, appendOnlyPtr, generate, dryRun, jsonOut)
 		},
 	}
 	cmd.Flags().StringVar(&repo, "repo", "", "restic repository URL (s3:..., b2:..., sftp:...) (required)")
 	creds.register(cmd)
 	creds.registerAdmin(cmd)
+	cmd.Flags().BoolVar(&generate, "generate", false, "generate a strong 32-character restic password (mutually exclusive with --password)")
 	cmd.Flags().StringVar(&interval, "interval", "", "backup snapshot cadence, e.g. 1h (default: 1h)")
 	cmd.Flags().StringVar(&verifyInterval, "verify-interval", "", "verified-restore drill cadence, e.g. 24h (default: 24h)")
 	cmd.Flags().BoolVar(&appendOnly, "append-only", false, "disable scheduled prune; Base cloud keys should be non-deleting; run 'backup prune' with delete-capable keys")
@@ -182,12 +185,28 @@ func newBackupSetupCmd() *cobra.Command {
 // server (backups always go to a real off-machine restic destination —
 // S3, B2, or SFTP — never a local host directory; see docs/decisions.md).
 // appendOnly nil leaves core.backup.append_only untouched; non-nil writes it.
-func runBackupSetup(base, repo string, credFlags backupCredFlags, interval, verifyInterval string, appendOnly *bool, dryRun, jsonOut bool) error {
+func runBackupSetup(base, repo string, credFlags backupCredFlags, interval, verifyInterval string, appendOnly *bool, generate, dryRun, jsonOut bool) error {
 	if repo == "" {
 		return fmt.Errorf("--repo is required, e.g. --repo s3:s3.amazonaws.com/mybucket/ownbase")
 	}
-	if !dryRun && credFlags.password == "" {
-		return fmt.Errorf("--password is required (the restic repository encryption password); or pass --creds-stdin. After setup it is also stored in your vault for restore")
+	if generate && credFlags.password != "" {
+		return fmt.Errorf("--generate and --password are mutually exclusive")
+	}
+	if !dryRun && !generate && credFlags.password == "" {
+		return fmt.Errorf("--password is required (the restic repository encryption password), or pass --generate / --creds-stdin. After setup it is also stored in your vault for restore")
+	}
+	if generate && !dryRun {
+		pw, err := secrets.GeneratePassword(32)
+		if err != nil {
+			return err
+		}
+		credFlags.password = pw
+		// Print early so a later failure still leaves the operator with the value.
+		fmt.Fprintln(os.Stderr, "Generated restic password (save offline — root recovery secret):")
+		fmt.Fprintf(os.Stderr, "  %s\n", pw)
+	}
+	if !dryRun && credFlags.password != "" && len(credFlags.password) < 12 {
+		fmt.Fprintln(os.Stderr, "warning: restic password is shorter than 12 characters — prefer --generate or a long passphrase")
 	}
 
 	edit := func(current string) (string, string, error) {
@@ -318,6 +337,16 @@ func runBackupSetup(base, repo string, credFlags backupCredFlags, interval, veri
 	}
 	printBackupRunResult(body)
 
+	kit := buildRecoveryKit(repo, credFlags.password, credFlags)
+	if jsonOut {
+		return printJSON(map[string]any{
+			"status":       "ok",
+			"repo":         repo,
+			"generated":    generate,
+			"recovery_kit": kit,
+		})
+	}
+
 	fmt.Println()
 	fmt.Println("Backups are set up. The verified-restore drill runs automatically to")
 	fmt.Println("prove the backup is actually restorable — check with:")
@@ -329,6 +358,7 @@ func runBackupSetup(base, repo string, credFlags backupCredFlags, interval, veri
 		fmt.Println("Use non-deleting cloud keys on the Base; keep delete-capable keys in the vault")
 		fmt.Println("(--admin-aws-… / --admin-b2-…) or pass them only when pruning.")
 	}
+	printRecoveryKit(kit)
 	return nil
 }
 
@@ -700,33 +730,146 @@ func runBackupRekey(base, newPassword string, generate, jsonOut bool) error {
 	}
 
 	fp, _ := finResult["fingerprint"].(string)
+	// Repo URL from vault when present so the kit is complete after rekey.
+	repo := ""
+	if vc, err := loadBackupCreds(base); err == nil {
+		repo = vc.Repo
+	}
+	kit := recoveryKit{
+		Repo:     repo,
+		Password: newPassword,
+		Note:     recoveryKitNote,
+		Restic:   recoveryKitResticLine(repo),
+	}
 	if jsonOut {
 		return printJSON(map[string]any{
-			"status":      "ok",
-			"fingerprint": fp,
-			"add":         addResult,
-			"finalize":    finResult,
-			// recovery_kit surfaces the new password only when --generate
-			// produced it; operators who passed --new-password already have it.
-			"generated_password": func() string {
-				if generate {
-					return newPassword
-				}
-				return ""
-			}(),
+			"status":       "ok",
+			"fingerprint":  fp,
+			"add":          addResult,
+			"finalize":     finResult,
+			"generated":    generate,
+			"recovery_kit": kit,
 		})
 	}
 
 	fmt.Println()
 	fmt.Println("Restic password rotated on the repository, the Base, and your vault.")
-	if generate {
-		fmt.Println()
-		fmt.Println("Generated password (store offline — this is a root recovery secret):")
-		fmt.Printf("  %s\n", newPassword)
-	}
 	if fp != "" {
 		fmt.Printf("Fingerprint: %s\n", fp)
 	}
 	fmt.Printf("Confirm with: ownbasectl backup status %s\n", base)
+	printRecoveryKit(kit)
+	return nil
+}
+
+// recoveryKit is the offline recovery material for a Base's restic repository.
+// Printed after setup/rekey and by `backup recovery-kit`. Treat the password
+// as a root secret: snapshots include /opt/ownbase/secrets and the age key.
+type recoveryKit struct {
+	Repo         string   `json:"repo,omitempty"`
+	Password     string   `json:"password,omitempty"`
+	CloudEnvVars []string `json:"cloud_env_vars,omitempty"`
+	Restic       string   `json:"restic_command,omitempty"`
+	Note         string   `json:"note,omitempty"`
+	Fingerprint  string   `json:"fingerprint,omitempty"`
+}
+
+const recoveryKitNote = "This password + repo = every secret this Base has ever held (snapshots include /opt/ownbase/secrets and the age key). Store a copy offline, outside the vault. The vault is a convenience escrow, not a recovery service."
+
+func recoveryKitResticLine(repo string) string {
+	if repo == "" {
+		return "RESTIC_PASSWORD='…' restic -r <repo> snapshots"
+	}
+	return "RESTIC_PASSWORD='…' restic -r " + repo + " snapshots"
+}
+
+func buildRecoveryKit(repo, password string, creds backupCredFlags) recoveryKit {
+	kit := recoveryKit{
+		Repo:     repo,
+		Password: password,
+		Note:     recoveryKitNote,
+		Restic:   recoveryKitResticLine(repo),
+	}
+	if password != "" {
+		kit.Fingerprint = backup.CredFingerprint(password)
+	}
+	if creds.awsAccessKey != "" || creds.awsSecretKey != "" {
+		kit.CloudEnvVars = append(kit.CloudEnvVars, "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
+	}
+	if creds.b2AccountID != "" || creds.b2AccountKey != "" {
+		kit.CloudEnvVars = append(kit.CloudEnvVars, "B2_ACCOUNT_ID", "B2_ACCOUNT_KEY")
+	}
+	return kit
+}
+
+func printRecoveryKit(kit recoveryKit) {
+	fmt.Println()
+	fmt.Println("─────────────────────────── Recovery kit ───────────────────────────")
+	fmt.Println("  Store offline. This is a root recovery secret.")
+	if kit.Repo != "" {
+		fmt.Printf("  Repo:     %s\n", kit.Repo)
+	}
+	if kit.Password != "" {
+		fmt.Printf("  Password: %s\n", kit.Password)
+	}
+	if len(kit.CloudEnvVars) > 0 {
+		fmt.Printf("  Cloud:    %s\n", strings.Join(kit.CloudEnvVars, ", "))
+	}
+	if kit.Fingerprint != "" {
+		fmt.Printf("  Fingerprint: %s\n", kit.Fingerprint)
+	}
+	if kit.Restic != "" {
+		fmt.Printf("  Stock restic: %s\n", kit.Restic)
+	}
+	fmt.Println()
+	fmt.Println("  " + kit.Note)
+	fmt.Println("  Reprint later: ownbasectl backup recovery-kit <base>")
+	fmt.Println("────────────────────────────────────────────────────────────────────")
+}
+
+func newBackupRecoveryKitCmd() *cobra.Command {
+	var jsonOut bool
+	cmd := &cobra.Command{
+		Use:   "recovery-kit <name>",
+		Short: "Print the restic recovery kit from the vault escrow",
+		Long: `Prints the repo URL, restic password, and cloud env var names stored in
+the vault for this Base. Deliberately writes secrets to stdout so you can
+copy them offline. Prefer a TTY you control; the password is a root recovery
+secret (snapshots hold every service secret and the age key).`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runBackupRecoveryKit(args[0], jsonOut)
+		},
+	}
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "print the recovery kit as JSON")
+	return cmd
+}
+
+func runBackupRecoveryKit(base string, jsonOut bool) error {
+	vc, err := loadBackupCreds(base)
+	if err != nil {
+		return err
+	}
+	if vc.Repo == "" && vc.Password == "" {
+		return fmt.Errorf("no backup credentials in the vault for %q — run 'ownbasectl backup setup %s' first", base, base)
+	}
+	fmt.Fprintln(os.Stderr, "warning: printing restic recovery secrets to stdout")
+	kit := recoveryKit{
+		Repo:        vc.Repo,
+		Password:    vc.Password,
+		Note:        recoveryKitNote,
+		Restic:      recoveryKitResticLine(vc.Repo),
+		Fingerprint: backup.CredFingerprint(vc.Password),
+	}
+	if vc.AWSAccessKeyID != "" || vc.AWSSecretAccessKey != "" {
+		kit.CloudEnvVars = append(kit.CloudEnvVars, "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
+	}
+	if vc.B2AccountID != "" || vc.B2AccountKey != "" {
+		kit.CloudEnvVars = append(kit.CloudEnvVars, "B2_ACCOUNT_ID", "B2_ACCOUNT_KEY")
+	}
+	if jsonOut {
+		return printJSON(kit)
+	}
+	printRecoveryKit(kit)
 	return nil
 }
