@@ -202,6 +202,9 @@ func RouteAccess(method, path string) HTTPAccess {
 	case "/backup/prune":
 		// Owner-only: may carry transient delete-capable cloud credentials.
 		return HTTPAccess{OwnerOnly: true}
+	case "/backup/rekey":
+		// Owner-only: rotates the restic encryption password.
+		return HTTPAccess{OwnerOnly: true}
 	case "/ssh-key":
 		if method == http.MethodGet {
 			return HTTPAccess{Scope: ScopeSSHKeyRead}

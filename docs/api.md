@@ -375,6 +375,21 @@ Response:
 
 Waits for any in-flight snapshot or verify drill first. `501` when backups are not configured. `/status` exposes `security.backup_append_only` and `security.last_prune` so clients can tell when prune is overdue.
 
+### `POST /backup/rekey` — rotate the restic password (owner-only)
+
+Two crash-safe phases behind `ownbasectl backup rekey`. Restic multi-key means both passwords open the repo until finalize removes the old ones.
+
+Body:
+
+```json
+{"phase": "add"|"finalize", "new_password": "…"}
+```
+
+- **add** — add `new_password` as a second key (no-op if it already opens the repo).
+- **finalize** — write `RESTIC_PASSWORD` into `/opt/ownbase/secrets/backup.yaml.age`, verify it opens, remove every other key.
+
+Response: `{"phase":"…","already_done":false,"keys_removed":1,"fingerprint":"abcd1234"}`. The fingerprint is an 8-hex dual-write check value also exposed on `/status` as `security.backup_cred_fingerprint` (with `security.backup_repo`).
+
 ### `POST /backup/verify` — run the verified-restore drill now
 
 Restores the newest snapshot into an isolated directory, runs the integrity checks, and — when the backup contains a pgBackRest repository — recovers a real Postgres from it. Sets `Restorable` only on a full pass. Behind `ownbasectl checkup <base> --verify`.

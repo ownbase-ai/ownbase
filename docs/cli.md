@@ -273,6 +273,15 @@ Credentials are stored age-encrypted on the Base **and** escrowed in your vault 
 
 `backup prune` applies retention (`keep-within 30d`, `keep-last 3`). Under append-only mode the Base never does this itself. Cloud-key resolution: flags / `--creds-stdin` → vault admin escrow → Base secret. Pass `--escrow` to store admin keys supplied on this run into the vault for next time.
 
+```bash
+ownbasectl backup rekey mybase --generate          # rotate restic password everywhere
+ownbasectl backup rekey mybase --new-password '…'
+```
+
+`backup rekey` rotates the restic encryption password on the repository, the Base secret, and the vault escrow. Prefer `--generate`. Crash-safe: re-run with the same password to finish.
+
+`secrets set <base> backup RESTIC_PASSWORD=…` also updates the vault escrow (best-effort). Checkup flags vault/Base repo or password-fingerprint drift.
+
 `backup status --json` prints the **full** `/status` payload, not just the backup section.
 
 ### `db status <name>`

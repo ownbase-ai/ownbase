@@ -33,6 +33,50 @@ func TestConfig_Validate_OK(t *testing.T) {
 	}
 }
 
+func TestCredFingerprint(t *testing.T) {
+	if backup.CredFingerprint("") != "" {
+		t.Error("empty password should fingerprint empty")
+	}
+	a := backup.CredFingerprint("secret-a")
+	b := backup.CredFingerprint("secret-b")
+	if len(a) != 8 {
+		t.Errorf("fingerprint length = %d, want 8", len(a))
+	}
+	if a == b {
+		t.Error("different passwords produced the same fingerprint")
+	}
+	if backup.CredFingerprint("secret-a") != a {
+		t.Error("fingerprint is not stable")
+	}
+}
+
+func TestRekey_UnknownPhase(t *testing.T) {
+	_, err := backup.Rekey(context.Background(), backup.Config{Repository: "/tmp/x", DryRun: true}, "nope", "pw")
+	if err == nil {
+		t.Fatal("expected error for unknown phase")
+	}
+}
+
+func TestRekey_DryRunAddAndFinalize(t *testing.T) {
+	ctx := context.Background()
+	cfg := backup.Config{Repository: "/tmp/rekey-test", DryRun: true}
+	add, err := backup.Rekey(ctx, cfg, backup.RekeyPhaseAdd, "new-pw")
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if add.Fingerprint != backup.CredFingerprint("new-pw") {
+		t.Errorf("add fingerprint = %q", add.Fingerprint)
+	}
+	// Dry-run passwordOpens always true, so add is already_done.
+	fin, err := backup.Rekey(ctx, cfg, backup.RekeyPhaseFinalize, "new-pw")
+	if err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	if fin.Phase != backup.RekeyPhaseFinalize {
+		t.Errorf("phase = %q", fin.Phase)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Status persistence (LoadStatus / SaveStatus)
 // ---------------------------------------------------------------------------

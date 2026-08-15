@@ -12,6 +12,8 @@ import (
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
+
+	"github.com/ownbase/ownbase/internal/vault"
 )
 
 func newSecretsCmd() *cobra.Command {
@@ -202,6 +204,14 @@ func runSecretsSet(base, service string, kvArgs []string, fromStdin bool) error 
 		return fmt.Errorf("parse response: %w", err)
 	}
 	fmt.Printf("Updated %d secret(s) for service %q.\n", resp.Updated, resp.Service)
+
+	// Keep the vault backup escrow in lockstep with the Base secret so
+	// restore does not silently use a stale RESTIC_PASSWORD.
+	if service == "backup" {
+		if err := syncBackupEscrowFromUpdates(base, updates); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: Base secrets updated but vault escrow was not: %v\n  Fix with: ownbasectl backup rekey %s (or re-run backup setup)\n", err, base)
+		}
+	}
 	return nil
 }
 
@@ -237,7 +247,37 @@ func runSecretsDelete(base, service, key string) error {
 		return fmt.Errorf("parse response: %w", err)
 	}
 	fmt.Printf("Deleted secret %q from service %q.\n", resp.Deleted, resp.Service)
+
+	if service == "backup" {
+		// Vault MergeSecretsFrom preserves empty fields, so a delete cannot
+		// clear the escrow. Tell the operator rather than pretend.
+		fmt.Fprintf(os.Stderr, "note: vault escrow still holds any prior %s — clear it in KeePassXC or run backup rekey/setup if restore must not use it\n", key)
+	}
 	return nil
+}
+
+// syncBackupEscrowFromUpdates mirrors non-empty backup secret mutations into
+// the vault profile so restore keeps working after `secrets set backup …`.
+// Best-effort: callers warn rather than fail the Base-side write that already
+// succeeded. Empty values are skipped (MergeSecretsFrom would ignore them).
+func syncBackupEscrowFromUpdates(base string, updates map[string]string) error {
+	return saveProfile(base, func(p *vault.Profile) {
+		if v := updates["RESTIC_PASSWORD"]; v != "" {
+			p.ResticPassword = v
+		}
+		if v := updates["AWS_ACCESS_KEY_ID"]; v != "" {
+			p.AWSAccessKeyID = v
+		}
+		if v := updates["AWS_SECRET_ACCESS_KEY"]; v != "" {
+			p.AWSSecretAccessKey = v
+		}
+		if v := updates["B2_ACCOUNT_ID"]; v != "" {
+			p.B2AccountID = v
+		}
+		if v := updates["B2_ACCOUNT_KEY"]; v != "" {
+			p.B2AccountKey = v
+		}
+	})
 }
 
 // apiGet performs an authenticated GET request and returns the response body.

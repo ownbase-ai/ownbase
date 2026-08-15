@@ -212,3 +212,94 @@ func checkRepo(ctx context.Context, cfg Config) error {
 	}
 	return nil
 }
+
+// passwordOpens reports whether password decrypts the repository config.
+// Used by rekey to detect already-applied phases and to verify before
+// removing old keys. Never logs the password.
+func passwordOpens(ctx context.Context, cfg Config, password string) bool {
+	if cfg.DryRun {
+		return true
+	}
+	if password == "" {
+		return false
+	}
+	try := cfg
+	try.PasswordFile = ""
+	try.Credentials = copyCreds(cfg.Credentials)
+	try.Credentials["RESTIC_PASSWORD"] = password
+	_, err := resticRun(ctx, try, "cat", "config")
+	return err == nil
+}
+
+// resticKey is one entry from `restic key list --json`.
+type resticKey struct {
+	ID        string `json:"id"`
+	Current   bool   `json:"current"`
+	UserName  string `json:"userName"`
+	CreatedBy string `json:"createdBy"`
+}
+
+// keyList returns the keys that unlock the repository under cfg's password.
+func keyList(ctx context.Context, cfg Config) ([]resticKey, error) {
+	if cfg.DryRun {
+		return nil, nil
+	}
+	out, err := resticRun(ctx, cfg, "key", "list", "--json")
+	if err != nil {
+		return nil, fmt.Errorf("restic key list: %w\n%s", err, out)
+	}
+	jsonLine := extractJSONArray(out)
+	var keys []resticKey
+	if err := json.Unmarshal([]byte(jsonLine), &keys); err != nil {
+		return nil, fmt.Errorf("parse restic key list: %w\n%s", err, out)
+	}
+	return keys, nil
+}
+
+// keyAdd adds newPassword as an additional key, authenticated with cfg's
+// current RESTIC_PASSWORD. The new password is fed on stdin via
+// --new-password-file=/dev/stdin so it never lands in argv or on disk.
+// Idempotent when newPassword already opens the repo.
+func keyAdd(ctx context.Context, cfg Config, newPassword string) error {
+	if cfg.DryRun {
+		return nil
+	}
+	if newPassword == "" {
+		return fmt.Errorf("restic key add: new password is empty")
+	}
+	if passwordOpens(ctx, cfg, newPassword) {
+		return nil
+	}
+	cmd := exec.CommandContext(ctx, "restic", "key", "add", "--new-password-file=/dev/stdin")
+	cmd.Env = resticEnv(cfg)
+	cmd.Stdin = strings.NewReader(newPassword + "\n")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("restic key add: %w\n%s", err, out)
+	}
+	return nil
+}
+
+// keyRemove deletes the key with the given id. cfg must open the repo with a
+// remaining key (typically the new password after rekey).
+func keyRemove(ctx context.Context, cfg Config, id string) error {
+	if cfg.DryRun {
+		return nil
+	}
+	if id == "" {
+		return fmt.Errorf("restic key remove: empty id")
+	}
+	out, err := resticRun(ctx, cfg, "key", "remove", id)
+	if err != nil {
+		return fmt.Errorf("restic key remove %s: %w\n%s", id, err, out)
+	}
+	return nil
+}
+
+func copyCreds(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in)+1)
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}

@@ -850,6 +850,32 @@ func TestAPI_BackupPrune_NotConfigured(t *testing.T) {
 	}
 }
 
+func TestAPI_BackupRekey_PassesBody(t *testing.T) {
+	var got explain.BackupRekeyRequest
+	srv := explain.NewStatusServer()
+	mux := http.NewServeMux()
+	mux.Handle("/status", srv.Handler("test-api-token"))
+	explain.MountAPI(mux, explain.APIConfig{
+		StatusSrv: srv,
+		RekeyBackup: func(req explain.BackupRekeyRequest) (explain.BackupRekeyStatus, error) {
+			got = req
+			return explain.BackupRekeyStatus{Phase: req.Phase, Fingerprint: "abcd1234"}, nil
+		},
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	resp := authedPost(t, ts, "/backup/rekey", `{"phase":"add","new_password":"npw"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d: %s", resp.StatusCode, body)
+	}
+	if got.Phase != "add" || got.NewPassword != "npw" {
+		t.Errorf("got %+v", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // /backup/verify
 // ---------------------------------------------------------------------------
