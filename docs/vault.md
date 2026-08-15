@@ -146,9 +146,14 @@ OwnBase/
       PrivateKey    the owner SSH key, OpenSSH PEM
       PublicKey     the authorized_keys line
       SSHPort, APIPort, ConfigRepoURL, ConfigRef, LocalVM
+      BackupRepo, ResticPassword          ← restic restore material (password is protected)
+      AWSAccessKeyID, AWSSecretAccessKey  ← optional S3 dest (secret half protected)
+      B2AccountID, B2AccountKey           ← optional B2 dest (secret half protected)
+      AdminAWSAccessKeyID, AdminAWSSecretAccessKey  ← prune-only delete-capable keys
+      AdminB2AccountID, AdminB2AccountKey           ← never stored on the Base
 ```
 
-Standard KeePass fields are used where they fit — `Title`, `URL`, `UserName`, `Password` — so the entry is legible in any client rather than being a bag of custom attributes.
+Standard KeePass fields are used where they fit — `Title`, `URL`, `UserName`, `Password` — so the entry is legible in any client rather than being a bag of custom attributes. Backup and admin fields are custom attributes; secret halves (`ResticPassword`, `*SecretAccessKey`, `*AccountKey`, `Admin*Secret*`) are KDBX-protected. Reprint the recovery kit with `ownbasectl backup recovery-kit <base>` rather than copying fields by hand unless you are deliberately exporting offline.
 
 You can keep your own passwords in the same file. OwnBase only ever replaces the `OwnBase` group when it writes, and it re-reads the file first if something else changed it, so your entries survive. It is still a shared mutable file: avoid saving from KeePassXC and `ownbasectl` at the same instant, the same way you would with any document in a synced folder.
 

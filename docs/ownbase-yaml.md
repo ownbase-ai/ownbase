@@ -361,9 +361,50 @@ Reconciles are triggered explicitly by `ownbasectl` (`deploy`, `config set`, `se
 | `verify_postgres` | `true` | whether the drill recovers a real Postgres from the backed-up pgBackRest repository |
 | `append_only` | `false` | when true, scheduled snapshots do **not** run `restic forget --prune`; apply retention with `ownbasectl backup prune` using delete-capable cloud keys that never live on the Base |
 
-Credentials do not go here — they live in `/opt/ownbase/secrets/backup.yaml.age`, set with `ownbasectl secrets set <base> backup RESTIC_PASSWORD=… AWS_ACCESS_KEY_ID=…` (or `ownbasectl backup setup`). Which volumes reach the repository is decided per service by `volumes[].backup:`.
+Credentials do not go here — they live in `/opt/ownbase/secrets/backup.yaml.age`, set by `ownbasectl backup setup` (or `secrets set <base> backup AWS_…=…` for cloud keys only; `RESTIC_PASSWORD` must go through `backup setup` / `backup rekey`). Which volumes reach the repository is decided per service by `volumes[].backup:`.
 
-**Append-only mode.** A compromised Base that holds delete-capable cloud keys can wipe the restic repository. With `append_only: true` the keys on the Base should be non-deleting (`s3:PutObject`/`GetObject`/`ListBucket`, plus `s3:DeleteObject` only on the restic `locks/*` prefix — restic must clear its own locks). Retention is applied by the owner via `ownbasectl backup prune`, which sends delete-capable credentials through the SSH tunnel for one invocation and never stores them on the Base. Optional vault escrow: `--admin-aws-…` / `--admin-b2-…` on setup or `backup prune --escrow`.
+**Append-only mode.** A compromised Base that holds delete-capable cloud keys can wipe the restic repository. With `append_only: true` the keys on the Base should be non-deleting. Retention is applied by the owner via `ownbasectl backup prune`, which sends delete-capable credentials through the SSH tunnel for one invocation and never stores them on the Base. Optional vault escrow: `--admin-aws-…` / `--admin-b2-…` on setup or `backup prune --escrow`.
+
+#### Non-deleting S3 key (Base / snapshot path)
+
+Mint two IAM users (or one user with two access keys): one for the Base, one for prune. Attach the Base key a policy like this (replace bucket and prefix):
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ResticReadWriteNoDelete",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:ListBucket",
+        "s3:GetBucketLocation",
+        "s3:ListBucketMultipartUploads",
+        "s3:AbortMultipartUpload",
+        "s3:ListMultipartUploadParts"
+      ],
+      "Resource": [
+        "arn:aws:s3:::my-bucket",
+        "arn:aws:s3:::my-bucket/ownbase/*"
+      ]
+    },
+    {
+      "Sid": "ResticClearOwnLocks",
+      "Effect": "Allow",
+      "Action": "s3:DeleteObject",
+      "Resource": "arn:aws:s3:::my-bucket/ownbase/locks/*"
+    }
+  ]
+}
+```
+
+Restic must delete its own lock files; without the second statement snapshots hang on stale locks. The prune/admin key keeps unrestricted `s3:DeleteObject` (and the same Get/Put/List set) on the prefix so `backup prune` can run `forget --prune`. Prefer a dedicated backup bucket the Base never holds delete rights on.
+
+**B2 / other S3-compatible APIs.** B2 application keys cannot express a path-scoped delete exception as cleanly as IAM. Practical options: (1) use a full-capability key only in the vault admin escrow and keep the Base on a read/write key if the provider allows it, or (2) accept that B2 append-only is weaker than S3 IAM and rely on bucket versioning. Check your provider's key model before treating append-only as ransomware-proof.
+
+**Belt and braces.** Enable bucket versioning (and, where available, object-lock / compliance retention) on the backup bucket so even a delete-capable key cannot silently erase history.
 
 ### What the verified-restore drill proves
 
