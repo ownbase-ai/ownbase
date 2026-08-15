@@ -13,8 +13,9 @@ import "strings"
 // verifyInterval within the core.backup: block of yamlContent. Creates the
 // core: and/or backup: blocks if they do not already exist. Existing fields
 // are replaced in place; new fields are appended to the end of the backup:
-// block.
-func SetCoreBackupConfig(yamlContent, repo, interval, verifyInterval string) string {
+// block. When appendOnly is non-nil, append_only is set to that value
+// (true/false); nil leaves the field untouched.
+func SetCoreBackupConfig(yamlContent, repo, interval, verifyInterval string, appendOnly *bool) string {
 	lines := strings.Split(yamlContent, "\n")
 
 	coreIdx := findTopLevelKey(lines, "core:")
@@ -42,7 +43,14 @@ func SetCoreBackupConfig(yamlContent, repo, interval, verifyInterval string) str
 		lines, backupEnd = setOrInsertField(lines, backupStart, backupEnd, fieldIndent, "interval", interval)
 	}
 	if verifyInterval != "" {
-		lines, _ = setOrInsertField(lines, backupStart, backupEnd, fieldIndent, "verify_interval", verifyInterval)
+		lines, backupEnd = setOrInsertField(lines, backupStart, backupEnd, fieldIndent, "verify_interval", verifyInterval)
+	}
+	if appendOnly != nil {
+		val := "false"
+		if *appendOnly {
+			val = "true"
+		}
+		lines, _ = setOrInsertField(lines, backupStart, backupEnd, fieldIndent, "append_only", val)
 	}
 
 	return strings.Join(lines, "\n")

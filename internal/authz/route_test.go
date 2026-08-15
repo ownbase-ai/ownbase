@@ -23,6 +23,7 @@ func TestRouteAccess_DefaultDeny(t *testing.T) {
 		{"POST", "/reconcile", authz.ScopeReconcile, false, false},
 		{"POST", "/backup/run", authz.ScopeBackupRun, false, false},
 		{"POST", "/backup/verify", authz.ScopeBackupVerify, false, false},
+		{"POST", "/backup/prune", "", true, false},
 		{"GET", "/ssh-key", authz.ScopeSSHKeyRead, false, false},
 		{"POST", "/ssh-key", "", true, false},
 		{"GET", "/secrets/myapp", authz.ScopeSecretsRead("myapp"), false, false},

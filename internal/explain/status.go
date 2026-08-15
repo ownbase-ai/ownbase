@@ -130,6 +130,15 @@ type SecurityStatus struct {
 	// LastBackup is when the most recent backup snapshot was taken.
 	// Pointer so omitempty suppresses it on a Base that has never backed up.
 	LastBackup *time.Time `json:"last_backup,omitempty"`
+	// BackupAppendOnly is true when core.backup.append_only is set — scheduled
+	// snapshots do not prune; the owner runs `ownbasectl backup prune`.
+	BackupAppendOnly bool `json:"backup_append_only,omitempty"`
+	// LastPrune is when forget+prune last completed. Nil when never pruned.
+	LastPrune *time.Time `json:"last_prune,omitempty"`
+	// FirstBackup is when the first successful snapshot was taken. Used by
+	// checkup to age a never-pruned append-only Base without the rolling
+	// LastBackup clock resetting the window every hour.
+	FirstBackup *time.Time `json:"first_backup,omitempty"`
 
 	// DriftDetected is true when runtime/ differs from what the compiler produced.
 	// Any drift is a tamper signal — runtime/ has exactly one writer (the agent).

@@ -380,6 +380,74 @@ func TestCheckupFindings_BackupConfiguredButNotYetVerified(t *testing.T) {
 	}
 }
 
+// TestCheckupFindings_AppendOnlyNeverPrunedAgesFromFirstBackup covers the
+// case Bugbot flagged: last_backup rolls forward every snapshot, so a
+// never-pruned append-only Base must age from first_backup (or fire once
+// that is old enough), not last_backup.
+func TestCheckupFindings_AppendOnlyNeverPrunedAgesFromFirstBackup(t *testing.T) {
+	// Fresh last_backup, old first_backup, never pruned → should fire.
+	oldFirst := time.Now().UTC().Add(-90 * 24 * time.Hour).Format(time.RFC3339)
+	freshLast := time.Now().UTC().Format(time.RFC3339)
+	body := []byte(`{
+		"config": {"repo_url": "git@example.com/x.git"},
+		"security": {
+			"backup_restorable": true,
+			"backup_append_only": true,
+			"last_backup": "` + freshLast + `",
+			"first_backup": "` + oldFirst + `",
+			"exposure": {"available": true, "firewall_active": true, "unexpected_count": 0},
+			"access": {"available": true, "banned_ips": []},
+			"vulns": {
+				"available": true,
+				"trivy_installed": true,
+				"scanned_at": "` + freshLast + `",
+				"host": {"critical": 0, "high": 0}
+			},
+			"drift_count": 0
+		},
+		"updates": {"drift": []}
+	}`)
+	findings := checkupFindings("mybase", body)
+	var found bool
+	for _, f := range findings {
+		if strings.Contains(f.Fix, "backup prune") {
+			found = true
+			if f.Action.Kind != actionRun {
+				t.Errorf("expected run action, got %+v", f.Action)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected prune finding despite fresh last_backup, got %+v", findings)
+	}
+
+	// Fresh first_backup → should not fire yet.
+	bodyFresh := []byte(`{
+		"config": {"repo_url": "git@example.com/x.git"},
+		"security": {
+			"backup_restorable": true,
+			"backup_append_only": true,
+			"last_backup": "` + freshLast + `",
+			"first_backup": "` + freshLast + `",
+			"exposure": {"available": true, "firewall_active": true, "unexpected_count": 0},
+			"access": {"available": true, "banned_ips": []},
+			"vulns": {
+				"available": true,
+				"trivy_installed": true,
+				"scanned_at": "` + freshLast + `",
+				"host": {"critical": 0, "high": 0}
+			},
+			"drift_count": 0
+		},
+		"updates": {"drift": []}
+	}`)
+	for _, f := range checkupFindings("mybase", bodyFresh) {
+		if strings.Contains(f.Fix, "backup prune") {
+			t.Fatalf("should not nag prune when first_backup is fresh, got %+v", f)
+		}
+	}
+}
+
 // TestCheckupFindings_NoSecuritySection_StillScansUpdates covers the case
 // Bugbot flagged: a status payload without a "security" key (e.g. from an
 // older agent build) must not skip the unrelated updates.drift scan.

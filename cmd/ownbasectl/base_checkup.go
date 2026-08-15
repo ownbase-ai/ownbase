@@ -392,6 +392,14 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 			}
 		}
 
+		// Append-only Bases never prune on schedule — surface a stale prune
+		// once the window exceeds ~2× default retention (60 days).
+		if appendOnly, _ := sec["backup_append_only"].(bool); appendOnly {
+			if finding, ok := appendOnlyPruneStaleFinding(base, sec); ok {
+				findings = append(findings, finding)
+			}
+		}
+
 		if exp, ok := sec["exposure"].(map[string]any); ok {
 			if available, _ := exp["available"].(bool); available {
 				if fwActive, _ := exp["firewall_active"].(bool); !fwActive {
@@ -871,14 +879,66 @@ func parseStatusTime(s string) (time.Time, error) {
 	return time.Parse(time.RFC3339Nano, s)
 }
 
+// appendOnlyPruneStaleDays is ~2× backup.DefaultRetentionDays. Past this
+// without a successful prune, an append-only Base's repo is growing without
+// bound and the operator should run backup prune.
+const appendOnlyPruneStaleDays = 60
+
+// appendOnlyPruneStaleFinding reports when an append-only Base has not pruned
+// within appendOnlyPruneStaleDays. A zero last_prune ages from first_backup
+// (not last_backup — that field rolls forward every snapshot and would keep
+// the finding from ever firing on an active Base). Falls back to last_backup
+// only when first_backup is missing (pre-field status files).
+func appendOnlyPruneStaleFinding(base string, sec map[string]any) (checkupFinding, bool) {
+	staleAfter := time.Duration(appendOnlyPruneStaleDays) * 24 * time.Hour
+	lastPrune, _ := sec["last_prune"].(string)
+	var reference time.Time
+	if lastPrune != "" {
+		lp, err := parseStatusTime(lastPrune)
+		if err != nil {
+			return checkupFinding{}, false
+		}
+		reference = lp
+	} else {
+		// Never pruned: age from the first successful snapshot so hourly
+		// backups do not reset the clock.
+		ageFrom, _ := sec["first_backup"].(string)
+		if ageFrom == "" {
+			ageFrom, _ = sec["last_backup"].(string)
+		}
+		if ageFrom == "" {
+			return checkupFinding{}, false
+		}
+		t, err := parseStatusTime(ageFrom)
+		if err != nil {
+			return checkupFinding{}, false
+		}
+		reference = t
+	}
+	if time.Since(reference) < staleAfter {
+		return checkupFinding{}, false
+	}
+	return checkupFinding{
+		Summary: "Append-only backups have not been pruned recently",
+		Fix:     "ownbasectl backup prune " + base,
+		Action: checkupAction{
+			Kind:  actionRun,
+			Run:   "ownbasectl backup prune " + base,
+			Label: "Prune backups",
+		},
+	}, true
+}
+
 // printBackupCheckupSection renders the compact backup-health block at the
 // top of the checkup report.
 func printBackupCheckupSection(base string, body []byte) error {
 	var s struct {
 		Security struct {
 			BackupRestorable bool   `json:"backup_restorable"`
+			BackupAppendOnly bool   `json:"backup_append_only"`
 			LastBackup       string `json:"last_backup"`
 			LastVerified     string `json:"last_verified"`
+			LastPrune        string `json:"last_prune"`
 		} `json:"security"`
 	}
 	if err := json.Unmarshal(body, &s); err != nil {
@@ -902,6 +962,14 @@ func printBackupCheckupSection(base string, body []byte) error {
 		}
 	} else {
 		fmt.Printf("    Last drill:    %s\n", shortTime(s.Security.LastVerified))
+	}
+	if s.Security.BackupAppendOnly {
+		fmt.Println("    Mode:          append-only")
+		if s.Security.LastPrune == "" {
+			fmt.Printf("    Last prune:    never — run 'ownbasectl backup prune %s'\n", base)
+		} else {
+			fmt.Printf("    Last prune:    %s\n", shortTime(s.Security.LastPrune))
+		}
 	}
 	return nil
 }

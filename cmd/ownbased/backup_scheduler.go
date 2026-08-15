@@ -25,6 +25,7 @@ import (
 
 	"github.com/ownbase/ownbase/internal/authz"
 	"github.com/ownbase/ownbase/internal/backup"
+	"github.com/ownbase/ownbase/internal/explain"
 	"github.com/ownbase/ownbase/internal/schema"
 )
 
@@ -109,7 +110,7 @@ func runBackupScheduler(ctx context.Context, cfg agentConfig, auditLog authz.Aud
 			go func() {
 				defer backupBusy.Store(false)
 				fmt.Fprintln(os.Stderr, "ownbased: backup: running scheduled snapshot")
-				if _, err := backup.Run(ctx, loadBackupConfig(cfg, backupCoreCfg.Repo, auditLog)); err != nil {
+				if _, err := backup.Run(ctx, loadBackupConfig(cfg, backupCoreCfg, auditLog)); err != nil {
 					fmt.Fprintf(os.Stderr, "ownbased: backup: %v\n", err)
 				}
 				signalReconcile(reconcileSig)
@@ -122,7 +123,7 @@ func runBackupScheduler(ctx context.Context, cfg agentConfig, auditLog authz.Aud
 			go func() {
 				defer backupBusy.Store(false)
 				fmt.Fprintln(os.Stderr, "ownbased: backup: running verified restore drill")
-				result, err := backup.VerifyRestore(ctx, loadBackupConfig(cfg, backupCoreCfg.Repo, auditLog))
+				result, err := backup.VerifyRestore(ctx, loadBackupConfig(cfg, backupCoreCfg, auditLog))
 				switch {
 				case err != nil:
 					fmt.Fprintf(os.Stderr, "ownbased: verify restore: %v\n", err)
@@ -185,7 +186,47 @@ func runBackupNow(ctx context.Context, cfg agentConfig, auditLog authz.AuditLogg
 	}
 	defer release()
 
-	return backup.Run(ctx, loadBackupConfig(cfg, backupCoreCfg.Repo, auditLog))
+	return backup.Run(ctx, loadBackupConfig(cfg, backupCoreCfg, auditLog))
+}
+
+// pruneBackupNow runs forget+prune with optional credential overrides from
+// the request. Overrides are merged into the in-memory Config only — they are
+// never written to the age-encrypted backup secret or anywhere else on disk.
+func pruneBackupNow(ctx context.Context, cfg agentConfig, auditLog authz.AuditLogger, req explain.BackupPruneRequest) (backup.Status, error) {
+	backupCoreCfg := readCoreConfigFromDisk(cfg.checkoutPath).Backup
+	if !backupCoreCfg.Enabled() {
+		return backup.Status{}, fmt.Errorf("no backup repo configured — run 'ownbasectl backup setup' first")
+	}
+
+	release, err := acquireBackupSlot(ctx)
+	if err != nil {
+		return backup.Status{}, fmt.Errorf("waiting for in-progress backup/verify to finish: %w", err)
+	}
+	defer release()
+
+	backupCfg := loadBackupConfig(cfg, backupCoreCfg, auditLog)
+	backupCfg.Credentials = mergeBackupCredOverrides(backupCfg.Credentials, req)
+	return backup.Prune(ctx, backupCfg)
+}
+
+// mergeBackupCredOverrides copies base and overlays non-empty request fields.
+// The returned map is always a new map so the caller's original is untouched.
+func mergeBackupCredOverrides(base map[string]string, req explain.BackupPruneRequest) map[string]string {
+	out := make(map[string]string, len(base)+5)
+	for k, v := range base {
+		out[k] = v
+	}
+	set := func(key, val string) {
+		if val != "" {
+			out[key] = val
+		}
+	}
+	set("RESTIC_PASSWORD", req.Password)
+	set("AWS_ACCESS_KEY_ID", req.AWSAccessKeyID)
+	set("AWS_SECRET_ACCESS_KEY", req.AWSSecretAccessKey)
+	set("B2_ACCOUNT_ID", req.B2AccountID)
+	set("B2_ACCOUNT_KEY", req.B2AccountKey)
+	return out
 }
 
 // verifyBackupNow runs the verified-restore drill synchronously, streaming
@@ -215,7 +256,7 @@ func verifyBackupNow(ctx context.Context, cfg agentConfig, auditLog authz.AuditL
 	}
 	defer release()
 
-	backupCfg := loadBackupConfig(cfg, backupCoreCfg.Repo, auditLog)
+	backupCfg := loadBackupConfig(cfg, backupCoreCfg, auditLog)
 	backupCfg.Progress = progress
 	return backup.VerifyRestore(ctx, backupCfg)
 }

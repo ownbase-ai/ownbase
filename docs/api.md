@@ -349,6 +349,32 @@ Runs one backup cycle synchronously (the daemon allows up to 10 minutes). Respon
 {"last_backup": "…", "latest_snapshot": "abc123", "restorable": true, "last_error": ""}
 ```
 
+When `core.backup.append_only` is true the cycle skips `restic forget --prune`; use `POST /backup/prune` instead.
+
+### `POST /backup/prune` — forget+prune now (owner-only)
+
+Applies the retention policy (`keep-within 30d`, `keep-last 3`). Behind `ownbasectl backup prune`. **Owner-only** — the body may carry transient delete-capable cloud credentials that must never be persisted on the Base.
+
+Optional body (every field overrides the matching key from `/opt/ownbase/secrets/backup.yaml.age` for this invocation only):
+
+```json
+{
+  "password": "…",
+  "aws_access_key_id": "…",
+  "aws_secret_access_key": "…",
+  "b2_account_id": "…",
+  "b2_account_key": "…"
+}
+```
+
+Response:
+
+```json
+{"last_prune": "…", "last_error": ""}
+```
+
+Waits for any in-flight snapshot or verify drill first. `501` when backups are not configured. `/status` exposes `security.backup_append_only` and `security.last_prune` so clients can tell when prune is overdue.
+
 ### `POST /backup/verify` — run the verified-restore drill now
 
 Restores the newest snapshot into an isolated directory, runs the integrity checks, and — when the backup contains a pgBackRest repository — recovers a real Postgres from it. Sets `Restorable` only on a full pass. Behind `ownbasectl checkup <base> --verify`.

@@ -137,6 +137,80 @@ func TestStatus_Restorable_DefaultFalse(t *testing.T) {
 // Run dry-run — no restic required
 // ---------------------------------------------------------------------------
 
+func TestRun_DryRun_SkipPrunePreservesLastPrune(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	statusPath := filepath.Join(dir, "status.json")
+	prevPrune := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	prevFirst := time.Date(2025, 12, 1, 0, 0, 0, 0, time.UTC)
+	if err := backup.SaveStatus(statusPath, backup.Status{
+		LastPrune:   prevPrune,
+		FirstBackup: prevFirst,
+		Restorable:  true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := backup.Config{
+		Repository: filepath.Join(dir, "repo"),
+		StatusPath: statusPath,
+		DryRun:     true,
+		SkipPrune:  true,
+	}
+	s, err := backup.Run(ctx, cfg)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !s.LastPrune.Equal(prevPrune) {
+		t.Errorf("LastPrune = %v, want preserved %v", s.LastPrune, prevPrune)
+	}
+	if !s.FirstBackup.Equal(prevFirst) {
+		t.Errorf("FirstBackup = %v, want preserved %v", s.FirstBackup, prevFirst)
+	}
+}
+
+func TestRun_DryRun_SetsFirstBackupOnce(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfg := backup.Config{
+		Repository: filepath.Join(dir, "repo"),
+		StatusPath: filepath.Join(dir, "status.json"),
+		DryRun:     true,
+	}
+	s1, err := backup.Run(ctx, cfg)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if s1.FirstBackup.IsZero() {
+		t.Fatal("FirstBackup should be set on first run")
+	}
+	time.Sleep(5 * time.Millisecond)
+	s2, err := backup.Run(ctx, cfg)
+	if err != nil {
+		t.Fatalf("Run2: %v", err)
+	}
+	if !s2.FirstBackup.Equal(s1.FirstBackup) {
+		t.Errorf("FirstBackup changed: %v → %v", s1.FirstBackup, s2.FirstBackup)
+	}
+}
+
+func TestPrune_DryRun_UpdatesLastPrune(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	statusPath := filepath.Join(dir, "status.json")
+	cfg := backup.Config{
+		Repository: filepath.Join(dir, "repo"),
+		StatusPath: statusPath,
+		DryRun:     true,
+	}
+	s, err := backup.Prune(ctx, cfg)
+	if err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+	if s.LastPrune.IsZero() {
+		t.Error("LastPrune should be set after successful prune")
+	}
+}
+
 func TestRun_DryRun_NoResticRequired(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

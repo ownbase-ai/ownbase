@@ -119,6 +119,8 @@
 | Integrity checks | `restic check --read-data-subset=5%` + file-presence + a **real Postgres recovery** when the restore contains a pgBackRest repository | The first two prove the files came back; only the third proves the database does. A repository can restore cleanly and still fail to recover (a gap in the WAL archive, a full backup aged out from under its incrementals), and no file-level check can tell the difference. Replaces an earlier `pg_controldata` check, which parsed a control file and therefore could not |
 | Drill isolation | Recovery runs in `podman run --rm` with no network, `listen_addresses=''`, and `archive_mode=off`, against the restic-restored copy of the repository | The drill must be unable to affect production or write to a backup repository, even by accident |
 | Opting out | `core.backup.verify_postgres: false` | The recovery costs real CPU and minutes; operators who cannot spare them should have to say so explicitly, since the alternative is that the recovery path goes untested until the day it is needed |
+| Append-only mode | `core.backup.append_only: true` skips scheduled `forget --prune`; owner runs `POST /backup/prune` with transient delete-capable creds | A compromised Base that holds delete rights can wipe the off-machine repo. Non-deleting keys on the Base + owner-driven prune keeps ransomware/root from deleting history while retention still runs |
+| Prune credentials | Optional body on `POST /backup/prune` merged over the Base secret for one call; never written to disk. Optional vault admin escrow (`AdminAWS*` / `AdminB2*`) | Delete rights stay off the Base; the vault already holds crown-jewel material and is the natural place for the admin copy |
 
 ## Point-in-time recovery (`ownbasectl db`)
 

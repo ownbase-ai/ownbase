@@ -633,6 +633,23 @@ func run(cfg agentConfig) error {
 				}
 				return out, nil
 			},
+			// PruneBackup runs owner-driven forget+prune (ownbasectl backup
+			// prune). Body credentials override the Base secret for this call
+			// only — never written to disk.
+			PruneBackup: func(req explain.BackupPruneRequest) (explain.BackupPruneStatus, error) {
+				runCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+				defer cancel()
+				status, err := pruneBackupNow(runCtx, cfg, auditLog, req)
+				signalReconcile(reconcileSig)
+				if err != nil {
+					return explain.BackupPruneStatus{}, err
+				}
+				out := explain.BackupPruneStatus{LastError: status.LastError}
+				if !status.LastPrune.IsZero() {
+					out.LastPrune = status.LastPrune.Format(time.RFC3339)
+				}
+				return out, nil
+			},
 			// DBStatus reports the Postgres point-in-time recovery posture
 			// (ownbasectl db status).
 			DBStatus: func() (any, error) {
@@ -1077,7 +1094,9 @@ func hasPublicDomainOnDisk(checkoutPath string) bool {
 // Podman volume mountpoints via BuildPaths. Credentials are refreshed on every
 // call so a `ownbasectl secrets set backup` rotation takes effect without
 // restart. Falls back gracefully when the config or volumes cannot be resolved.
-func loadBackupConfig(cfg agentConfig, repo string, auditLog authz.AuditLogger) backup.Config {
+// core.backup.append_only maps to SkipPrune so scheduled snapshots never call
+// restic forget when the Base holds non-deleting cloud keys.
+func loadBackupConfig(cfg agentConfig, backupCore schema.BackupCoreConfig, auditLog authz.AuditLogger) backup.Config {
 	creds, err := secrets.IssueMap(
 		secrets.FileKeyCustody{},
 		filepath.Join(explain.DefaultSecretsDir, "backup.yaml.age"),
@@ -1103,12 +1122,13 @@ func loadBackupConfig(cfg agentConfig, repo string, auditLog authz.AuditLogger) 
 	}
 
 	return backup.Config{
-		Repository:       repo,
+		Repository:       backupCore.Repo,
 		Paths:            paths,
 		Credentials:      creds,
 		DryRun:           cfg.dryRun,
 		AuditLog:         auditLog,
 		PostgresRecovery: pgRecovery,
+		SkipPrune:        backupCore.AppendOnly,
 	}
 }
 

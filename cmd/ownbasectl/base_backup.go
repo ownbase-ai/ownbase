@@ -25,42 +25,59 @@ import (
 func newBackupCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "backup",
-		Short: "Configure, run, and check remote backups (setup|run|status)",
+		Short: "Configure, run, and check remote backups (setup|run|status|prune)",
 	}
 	cmd.AddCommand(
 		newBackupSetupCmd(),
 		newBackupRunCmd(),
 		newBackupStatusCmd(),
+		newBackupPruneCmd(),
 	)
 	return cmd
 }
 
 // backupCredFlags are the restic repository credentials shared by
-// `backup setup` and `restore`.
+// `backup setup`, `backup prune`, and `restore`.
 type backupCredFlags struct {
 	password     string
 	awsAccessKey string
 	awsSecretKey string
 	b2AccountID  string
 	b2AccountKey string
-	credsStdin   bool
+	// Admin* are delete-capable cloud keys for prune (and optional vault
+	// escrow). Never written to the Base's backup secret.
+	adminAWSAccessKey string
+	adminAWSSecretKey string
+	adminB2AccountID  string
+	adminB2AccountKey string
+	credsStdin        bool
 }
 
 // register adds the shared credential flags to cmd.
 func (f *backupCredFlags) register(cmd *cobra.Command) {
 	fl := cmd.Flags()
 	fl.StringVar(&f.password, "password", "", "restic repository password (required unless --creds-stdin)")
-	fl.StringVar(&f.awsAccessKey, "aws-access-key-id", "", "AWS_ACCESS_KEY_ID (for s3: repos)")
+	fl.StringVar(&f.awsAccessKey, "aws-access-key-id", "", "AWS_ACCESS_KEY_ID (for s3: repos; non-deleting when --append-only)")
 	fl.StringVar(&f.awsSecretKey, "aws-secret-access-key", "", "AWS_SECRET_ACCESS_KEY (for s3: repos)")
 	fl.StringVar(&f.b2AccountID, "b2-account-id", "", "B2_ACCOUNT_ID (for b2: repos)")
 	fl.StringVar(&f.b2AccountKey, "b2-account-key", "", "B2_ACCOUNT_KEY (for b2: repos)")
 	fl.BoolVar(&f.credsStdin, "creds-stdin", false, "read credentials as JSON from stdin (avoids secrets in argv)")
 }
 
+// registerAdmin adds optional delete-capable cloud-key flags used by setup
+// (escrow only) and prune (transient override + optional escrow).
+func (f *backupCredFlags) registerAdmin(cmd *cobra.Command) {
+	fl := cmd.Flags()
+	fl.StringVar(&f.adminAWSAccessKey, "admin-aws-access-key-id", "", "delete-capable AWS key for backup prune (vault escrow only; never stored on the Base)")
+	fl.StringVar(&f.adminAWSSecretKey, "admin-aws-secret-access-key", "", "delete-capable AWS secret for backup prune")
+	fl.StringVar(&f.adminB2AccountID, "admin-b2-account-id", "", "delete-capable B2 account id for backup prune")
+	fl.StringVar(&f.adminB2AccountKey, "admin-b2-account-key", "", "delete-capable B2 account key for backup prune")
+}
+
 // resolve loads credentials from stdin when --creds-stdin is set. The JSON
 // shape is {"password":"…","aws_access_key_id":"…","aws_secret_access_key":"…",
-// "b2_account_id":"…","b2_account_key":"…"}. Flag values fill any field
-// the JSON omits.
+// "b2_account_id":"…","b2_account_key":"…", plus optional admin_* fields}.
+// Flag values fill any field the JSON omits.
 func (f *backupCredFlags) resolve() error {
 	if !f.credsStdin {
 		return nil
@@ -70,11 +87,15 @@ func (f *backupCredFlags) resolve() error {
 		return fmt.Errorf("read --creds-stdin: %w", err)
 	}
 	var in struct {
-		Password     string `json:"password"`
-		AWSAccessKey string `json:"aws_access_key_id"`
-		AWSSecretKey string `json:"aws_secret_access_key"`
-		B2AccountID  string `json:"b2_account_id"`
-		B2AccountKey string `json:"b2_account_key"`
+		Password          string `json:"password"`
+		AWSAccessKey      string `json:"aws_access_key_id"`
+		AWSSecretKey      string `json:"aws_secret_access_key"`
+		B2AccountID       string `json:"b2_account_id"`
+		B2AccountKey      string `json:"b2_account_key"`
+		AdminAWSAccessKey string `json:"admin_aws_access_key_id"`
+		AdminAWSSecretKey string `json:"admin_aws_secret_access_key"`
+		AdminB2AccountID  string `json:"admin_b2_account_id"`
+		AdminB2AccountKey string `json:"admin_b2_account_key"`
 	}
 	if err := json.Unmarshal(data, &in); err != nil {
 		return fmt.Errorf("parse --creds-stdin JSON: %w", err)
@@ -94,6 +115,18 @@ func (f *backupCredFlags) resolve() error {
 	if in.B2AccountKey != "" {
 		f.b2AccountKey = in.B2AccountKey
 	}
+	if in.AdminAWSAccessKey != "" {
+		f.adminAWSAccessKey = in.AdminAWSAccessKey
+	}
+	if in.AdminAWSSecretKey != "" {
+		f.adminAWSSecretKey = in.AdminAWSSecretKey
+	}
+	if in.AdminB2AccountID != "" {
+		f.adminB2AccountID = in.AdminB2AccountID
+	}
+	if in.AdminB2AccountKey != "" {
+		f.adminB2AccountKey = in.AdminB2AccountKey
+	}
 	return nil
 }
 
@@ -103,6 +136,7 @@ func newBackupSetupCmd() *cobra.Command {
 		creds          backupCredFlags
 		interval       string
 		verifyInterval string
+		appendOnly     bool
 		dryRun         bool
 		jsonOut        bool
 	)
@@ -113,6 +147,9 @@ func newBackupSetupCmd() *cobra.Command {
     --repo s3:s3.amazonaws.com/my-bucket/ownbase \
     --password <a-strong-restic-password> \
     --aws-access-key-id AKIA... --aws-secret-access-key ...
+  ownbasectl backup setup mybase --repo s3:... --password x --append-only \
+    --aws-access-key-id AKIA_APPEND --aws-secret-access-key ... \
+    --admin-aws-access-key-id AKIA_ADMIN --admin-aws-secret-access-key ...
   echo '{"password":"..."}' | ownbasectl backup setup mybase --repo s3:... --creds-stdin
   ownbasectl backup setup mybase --repo s3:... --password x --dry-run --json`,
 		Args: cobra.ExactArgs(1),
@@ -120,13 +157,20 @@ func newBackupSetupCmd() *cobra.Command {
 			if err := creds.resolve(); err != nil {
 				return err
 			}
-			return runBackupSetup(args[0], repo, creds, interval, verifyInterval, dryRun, jsonOut)
+			var appendOnlyPtr *bool
+			if cmd.Flags().Changed("append-only") {
+				v := appendOnly
+				appendOnlyPtr = &v
+			}
+			return runBackupSetup(args[0], repo, creds, interval, verifyInterval, appendOnlyPtr, dryRun, jsonOut)
 		},
 	}
 	cmd.Flags().StringVar(&repo, "repo", "", "restic repository URL (s3:..., b2:..., sftp:...) (required)")
 	creds.register(cmd)
+	creds.registerAdmin(cmd)
 	cmd.Flags().StringVar(&interval, "interval", "", "backup snapshot cadence, e.g. 1h (default: 1h)")
 	cmd.Flags().StringVar(&verifyInterval, "verify-interval", "", "verified-restore drill cadence, e.g. 24h (default: 24h)")
+	cmd.Flags().BoolVar(&appendOnly, "append-only", false, "disable scheduled prune; Base cloud keys should be non-deleting; run 'backup prune' with delete-capable keys")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "compute the ownbase.yaml edit without writing secrets or committing")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "print the dry-run preview (or result) as JSON")
 	return cmd
@@ -135,7 +179,8 @@ func newBackupSetupCmd() *cobra.Command {
 // runBackupSetup is the one flow used for both a local VM and a remote
 // server (backups always go to a real off-machine restic destination —
 // S3, B2, or SFTP — never a local host directory; see docs/decisions.md).
-func runBackupSetup(base, repo string, credFlags backupCredFlags, interval, verifyInterval string, dryRun, jsonOut bool) error {
+// appendOnly nil leaves core.backup.append_only untouched; non-nil writes it.
+func runBackupSetup(base, repo string, credFlags backupCredFlags, interval, verifyInterval string, appendOnly *bool, dryRun, jsonOut bool) error {
 	if repo == "" {
 		return fmt.Errorf("--repo is required, e.g. --repo s3:s3.amazonaws.com/mybucket/ownbase")
 	}
@@ -144,8 +189,12 @@ func runBackupSetup(base, repo string, credFlags backupCredFlags, interval, veri
 	}
 
 	edit := func(current string) (string, string, error) {
-		updated := backup.SetCoreBackupConfig(current, repo, interval, verifyInterval)
-		return updated, fmt.Sprintf("chore(backup): configure backup repo %s", repo), nil
+		updated := backup.SetCoreBackupConfig(current, repo, interval, verifyInterval, appendOnly)
+		msg := fmt.Sprintf("chore(backup): configure backup repo %s", repo)
+		if appendOnly != nil && *appendOnly {
+			msg += " (append-only)"
+		}
+		return updated, msg, nil
 	}
 
 	if dryRun {
@@ -157,6 +206,7 @@ func runBackupSetup(base, repo string, credFlags backupCredFlags, interval, veri
 			return printJSON(map[string]any{
 				"status":         "preview",
 				"repo":           repo,
+				"append_only":    appendOnly,
 				"would_change":   preview.WouldChange,
 				"commit_message": preview.CommitMessage,
 				"diff":           preview.Diff,
@@ -178,6 +228,7 @@ func runBackupSetup(base, repo string, credFlags backupCredFlags, interval, veri
 	}
 	defer conn.close()
 
+	// Only non-admin keys go to the Base. Admin keys stay in the vault for prune.
 	creds := map[string]string{"RESTIC_PASSWORD": credFlags.password}
 	if credFlags.awsAccessKey != "" {
 		creds["AWS_ACCESS_KEY_ID"] = credFlags.awsAccessKey
@@ -201,6 +252,7 @@ func runBackupSetup(base, repo string, credFlags backupCredFlags, interval, veri
 	// Also escrow a client-side copy in the vault so restore does not need the
 	// password re-typed (and so a destroyed Base is not a circular recovery
 	// problem). Flags remain the source of truth for this invocation.
+	// Admin keys are escrowed here too when supplied — never POSTed above.
 	if err := saveProfile(base, func(p *vault.Profile) {
 		p.BackupRepo = repo
 		p.ResticPassword = credFlags.password
@@ -215,6 +267,18 @@ func runBackupSetup(base, repo string, credFlags backupCredFlags, interval, veri
 		}
 		if credFlags.b2AccountKey != "" {
 			p.B2AccountKey = credFlags.b2AccountKey
+		}
+		if credFlags.adminAWSAccessKey != "" {
+			p.AdminAWSAccessKeyID = credFlags.adminAWSAccessKey
+		}
+		if credFlags.adminAWSSecretKey != "" {
+			p.AdminAWSSecretAccessKey = credFlags.adminAWSSecretKey
+		}
+		if credFlags.adminB2AccountID != "" {
+			p.AdminB2AccountID = credFlags.adminB2AccountID
+		}
+		if credFlags.adminB2AccountKey != "" {
+			p.AdminB2AccountKey = credFlags.adminB2AccountKey
 		}
 	}); err != nil {
 		return fmt.Errorf("store backup credentials in vault: %w", err)
@@ -256,6 +320,13 @@ func runBackupSetup(base, repo string, credFlags backupCredFlags, interval, veri
 	fmt.Println("Backups are set up. The verified-restore drill runs automatically to")
 	fmt.Println("prove the backup is actually restorable — check with:")
 	fmt.Printf("  ownbasectl backup status %s\n", base)
+	if appendOnly != nil && *appendOnly {
+		fmt.Println()
+		fmt.Println("Append-only mode is on: scheduled snapshots will not prune. Apply retention with:")
+		fmt.Printf("  ownbasectl backup prune %s\n", base)
+		fmt.Println("Use non-deleting cloud keys on the Base; keep delete-capable keys in the vault")
+		fmt.Println("(--admin-aws-… / --admin-b2-…) or pass them only when pruning.")
+	}
 	return nil
 }
 
@@ -331,8 +402,10 @@ func runBackupStatus(base string, jsonOut bool) error {
 	var s struct {
 		Security struct {
 			BackupRestorable bool   `json:"backup_restorable"`
+			BackupAppendOnly bool   `json:"backup_append_only"`
 			LastBackup       string `json:"last_backup"`
 			LastVerified     string `json:"last_verified"`
+			LastPrune        string `json:"last_prune"`
 		} `json:"security"`
 	}
 	if err := json.Unmarshal(body, &s); err != nil {
@@ -355,8 +428,161 @@ func runBackupStatus(base string, jsonOut bool) error {
 	} else {
 		fmt.Printf("  Last verified: %s\n", shortTime(s.Security.LastVerified))
 	}
+	if s.Security.BackupAppendOnly {
+		fmt.Println("  Mode:          append-only (scheduled snapshots do not prune)")
+		if s.Security.LastPrune == "" {
+			fmt.Printf("  Last prune:    never — run 'ownbasectl backup prune %s'\n", base)
+		} else {
+			fmt.Printf("  Last prune:    %s\n", shortTime(s.Security.LastPrune))
+		}
+	} else if s.Security.LastPrune != "" {
+		fmt.Printf("  Last prune:    %s\n", shortTime(s.Security.LastPrune))
+	}
 	fmt.Println("─────────────────────────────────────────────────────────────────────────")
 	return nil
+}
+
+func newBackupPruneCmd() *cobra.Command {
+	var (
+		creds   backupCredFlags
+		escrow  bool
+		jsonOut bool
+	)
+	cmd := &cobra.Command{
+		Use:   "prune <name>",
+		Short: "Run restic forget+prune (owner-driven; required under --append-only)",
+		Long: `Apply the retention policy (keep-within 30d, keep-last 3) via restic
+forget --prune. Under core.backup.append_only the Base holds non-deleting
+cloud keys and never prunes on its own — this command sends delete-capable
+credentials through the SSH tunnel for one invocation and does not store
+them on the Base.
+
+Credential resolution order for cloud keys: explicit flags / --creds-stdin,
+then vault admin escrow (--admin-aws-… stored by setup or --escrow), then
+the Base's stored backup secret (works when that secret is still delete-capable).
+The restic password defaults from the vault escrow or the Base secret.`,
+		Example: `  ownbasectl backup prune mybase
+  ownbasectl backup prune mybase \
+    --admin-aws-access-key-id AKIA... --admin-aws-secret-access-key ... --escrow
+  echo '{"admin_aws_access_key_id":"...","admin_aws_secret_access_key":"..."}' \
+    | ownbasectl backup prune mybase --creds-stdin`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := creds.resolve(); err != nil {
+				return err
+			}
+			return runBackupPrune(args[0], creds, escrow, jsonOut)
+		},
+	}
+	// Password optional on prune — Base secret / vault usually has it.
+	// register still adds --password; we rewrite its help after.
+	creds.register(cmd)
+	cmd.Flags().Lookup("password").Usage = "restic repository password (default: vault escrow or Base secret)"
+	creds.registerAdmin(cmd)
+	cmd.Flags().BoolVar(&escrow, "escrow", false, "store any admin cloud keys supplied on this run into the vault for later prune")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "print the prune result as JSON")
+	return cmd
+}
+
+// runBackupPrune POSTs /backup/prune with merged credentials.
+func runBackupPrune(base string, credFlags backupCredFlags, escrow, jsonOut bool) error {
+	// Pull vault escrow first so flags can override empty fields. A locked
+	// vault is fatal (connect would fail the same way). A missing Base profile
+	// or empty escrow is fine — the Base secret may be enough.
+	vc, vcErr := loadBackupCreds(base)
+	if vcErr != nil {
+		if exitCodeFor(vcErr) == exitLocked {
+			return vcErr
+		}
+		vc = vault.BackupCredentials{}
+	}
+
+	// Cloud keys for the prune call: flags → vault admin → vault steady-state
+	// (last only helps non-append-only Bases whose stored keys can still delete).
+	awsID := firstNonEmpty(credFlags.adminAWSAccessKey, credFlags.awsAccessKey, vc.AdminAWSAccessKeyID, vc.AWSAccessKeyID)
+	awsSecret := firstNonEmpty(credFlags.adminAWSSecretKey, credFlags.awsSecretKey, vc.AdminAWSSecretAccessKey, vc.AWSSecretAccessKey)
+	b2ID := firstNonEmpty(credFlags.adminB2AccountID, credFlags.b2AccountID, vc.AdminB2AccountID, vc.B2AccountID)
+	b2Key := firstNonEmpty(credFlags.adminB2AccountKey, credFlags.b2AccountKey, vc.AdminB2AccountKey, vc.B2AccountKey)
+	password := firstNonEmpty(credFlags.password, vc.Password)
+
+	if escrow {
+		if err := saveProfile(base, func(p *vault.Profile) {
+			if credFlags.adminAWSAccessKey != "" {
+				p.AdminAWSAccessKeyID = credFlags.adminAWSAccessKey
+			}
+			if credFlags.adminAWSSecretKey != "" {
+				p.AdminAWSSecretAccessKey = credFlags.adminAWSSecretKey
+			}
+			if credFlags.adminB2AccountID != "" {
+				p.AdminB2AccountID = credFlags.adminB2AccountID
+			}
+			if credFlags.adminB2AccountKey != "" {
+				p.AdminB2AccountKey = credFlags.adminB2AccountKey
+			}
+		}); err != nil {
+			return fmt.Errorf("escrow admin credentials in vault: %w", err)
+		}
+	}
+
+	conn, err := connectToServer(base)
+	if err != nil {
+		return err
+	}
+	defer conn.close()
+
+	req := map[string]string{}
+	if password != "" {
+		req["password"] = password
+	}
+	if awsID != "" {
+		req["aws_access_key_id"] = awsID
+	}
+	if awsSecret != "" {
+		req["aws_secret_access_key"] = awsSecret
+	}
+	if b2ID != "" {
+		req["b2_account_id"] = b2ID
+	}
+	if b2Key != "" {
+		req["b2_account_key"] = b2Key
+	}
+	payload, _ := json.Marshal(req)
+
+	fmt.Println("Running backup prune ...")
+	body, err := apiCallWithTimeout(conn, http.MethodPost, "/backup/prune", payload, 10*time.Minute)
+	if err != nil {
+		return fmt.Errorf("prune backup: %w", err)
+	}
+	if jsonOut {
+		fmt.Println(string(body))
+		return nil
+	}
+	var r struct {
+		LastPrune string `json:"last_prune"`
+		LastError string `json:"last_error"`
+	}
+	if err := json.Unmarshal(body, &r); err != nil {
+		fmt.Println(strings.TrimSpace(string(body)))
+		return nil
+	}
+	if r.LastError != "" {
+		return fmt.Errorf("prune failed: %s", r.LastError)
+	}
+	if r.LastPrune != "" {
+		fmt.Printf("Prune complete — last_prune %s\n", shortTime(r.LastPrune))
+	} else {
+		fmt.Println("Prune complete")
+	}
+	return nil
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // printBackupRunResult renders the JSON body returned by POST /backup/run.

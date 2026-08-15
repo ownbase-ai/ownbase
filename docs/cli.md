@@ -241,27 +241,37 @@ Without `--verify`, the report shows the last drill the Base ran on its own sche
 
 `--json` is one document: `{"findings": [{"summary", "fix", "action"}…], "status": {…}}`, plus a `"verify"` key when `--verify` ran. Each finding's `action` is `{kind: "run"|"open"|"manual", …}` — the CLI decides both what counts as a problem and how to address it, and the desktop app switches on `kind` rather than recomputing either. For the machine's own words with no verdict attached, use `status --json`. A failed drill still exits non-zero with its message on stderr, so stdout stays parseable.
 
-### `backup setup|run|status <name>`
+### `backup setup|run|status|prune <name>`
 
 ```bash
 ownbasectl backup setup mybase --repo s3:s3.amazonaws.com/my-bucket/ownbase \
   --password <a-strong-password> \
   --aws-access-key-id AKIA... --aws-secret-access-key ...
 
+# Append-only: Base holds non-deleting keys; prune with admin keys later
+ownbasectl backup setup mybase --repo s3:... --password x --append-only \
+  --aws-access-key-id AKIA_APPEND --aws-secret-access-key ... \
+  --admin-aws-access-key-id AKIA_ADMIN --admin-aws-secret-access-key ...
+
 ownbasectl backup run mybase       # trigger an immediate snapshot
-ownbasectl backup status mybase    # last snapshot, restorable?, last verify drill
+ownbasectl backup status mybase    # last snapshot, restorable?, last verify / prune
+ownbasectl backup prune mybase     # forget+prune (required under --append-only)
 ```
 
 | Flag (setup) | Meaning |
 |---|---|
 | `--repo` | restic repository URL — `s3:`, `b2:`, or `sftp:` (required) |
 | `--password` | repository encryption password (required on setup; also stored in your vault for restore) |
-| `--aws-access-key-id` / `--aws-secret-access-key` | credentials for `s3:` repos |
+| `--aws-access-key-id` / `--aws-secret-access-key` | credentials for `s3:` repos (non-deleting when `--append-only`) |
 | `--b2-account-id` / `--b2-account-key` | credentials for `b2:` repos |
+| `--admin-aws-…` / `--admin-b2-…` | delete-capable cloud keys escrowed in the vault for `backup prune` only — never written to the Base |
+| `--append-only` | write `core.backup.append_only: true`; scheduled snapshots skip prune |
 | `--interval` | snapshot cadence (default `1h`) |
 | `--verify-interval` | verified-restore drill cadence (default `24h`) |
 
 Credentials are stored age-encrypted on the Base **and** escrowed in your vault (so `restore` does not need them re-typed). The repo URL and cadence are committed to `ownbase.yaml` client-side and applied by a reconcile, with no daemon restart. Still choose a strong restic password — the vault is the client-side copy, not a recovery service.
+
+`backup prune` applies retention (`keep-within 30d`, `keep-last 3`). Under append-only mode the Base never does this itself. Cloud-key resolution: flags / `--creds-stdin` → vault admin escrow → Base secret. Pass `--escrow` to store admin keys supplied on this run into the vault for next time.
 
 `backup status --json` prints the **full** `/status` payload, not just the backup section.
 

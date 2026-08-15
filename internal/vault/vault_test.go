@@ -306,13 +306,17 @@ func findForeignEntry(t *testing.T, path, password, title string) (string, strin
 func TestBackupCredentialsRoundTrip(t *testing.T) {
 	v, path := newTestVault(t, "pw")
 	v.Put("mybase", vault.Profile{
-		Host:               "h",
-		BackupRepo:         "s3:s3.amazonaws.com/bucket/ownbase",
-		ResticPassword:     "restic-secret",
-		AWSAccessKeyID:     "AKIAEXAMPLE",
-		AWSSecretAccessKey: "aws-secret",
-		B2AccountID:        "b2id",
-		B2AccountKey:       "b2-secret",
+		Host:                    "h",
+		BackupRepo:              "s3:s3.amazonaws.com/bucket/ownbase",
+		ResticPassword:          "restic-secret",
+		AWSAccessKeyID:          "AKIAEXAMPLE",
+		AWSSecretAccessKey:      "aws-secret",
+		B2AccountID:             "b2id",
+		B2AccountKey:            "b2-secret",
+		AdminAWSAccessKeyID:     "AKIAADMIN",
+		AdminAWSSecretAccessKey: "admin-secret",
+		AdminB2AccountID:        "adminb2",
+		AdminB2AccountKey:       "admin-b2-secret",
 	})
 	if err := v.Save(); err != nil {
 		t.Fatal(err)
@@ -328,32 +332,43 @@ func TestBackupCredentialsRoundTrip(t *testing.T) {
 	if p.BackupRepo != "s3:s3.amazonaws.com/bucket/ownbase" ||
 		p.ResticPassword != "restic-secret" ||
 		p.AWSSecretAccessKey != "aws-secret" ||
-		p.B2AccountKey != "b2-secret" {
+		p.B2AccountKey != "b2-secret" ||
+		p.AdminAWSAccessKeyID != "AKIAADMIN" ||
+		p.AdminAWSSecretAccessKey != "admin-secret" ||
+		p.AdminB2AccountKey != "admin-b2-secret" {
 		t.Errorf("backup fields did not round-trip: %+v", p)
 	}
 	if !p.HasBackupCredentials() {
 		t.Error("HasBackupCredentials = false")
 	}
+	bc := p.BackupCredentials()
+	if bc.AdminAWSSecretAccessKey != "admin-secret" || bc.AdminB2AccountKey != "admin-b2-secret" {
+		t.Errorf("BackupCredentials missing admin fields: %+v", bc)
+	}
 	r := p.Redacted()
-	if r.ResticPassword != "" || r.AWSSecretAccessKey != "" || r.B2AccountKey != "" || r.PrivateKey != "" {
+	if r.ResticPassword != "" || r.AWSSecretAccessKey != "" || r.B2AccountKey != "" ||
+		r.AdminAWSSecretAccessKey != "" || r.AdminB2AccountKey != "" || r.PrivateKey != "" {
 		t.Errorf("Redacted leaked secrets: %+v", r)
 	}
-	if r.BackupRepo == "" || r.AWSAccessKeyID == "" {
+	if r.BackupRepo == "" || r.AWSAccessKeyID == "" || r.AdminAWSAccessKeyID == "" {
 		t.Errorf("Redacted stripped non-secrets: %+v", r)
 	}
 }
 
 func TestMergeSecretsFrom(t *testing.T) {
 	existing := vault.Profile{
-		PrivateKey:         "priv",
-		PublicKey:          "pub",
-		ResticPassword:     "rpw",
-		AWSSecretAccessKey: "asec",
-		BackupRepo:         "repo",
+		PrivateKey:              "priv",
+		PublicKey:               "pub",
+		ResticPassword:          "rpw",
+		AWSSecretAccessKey:      "asec",
+		BackupRepo:              "repo",
+		AdminAWSAccessKeyID:     "admin-id",
+		AdminAWSSecretAccessKey: "admin-sec",
 	}
 	p := vault.Profile{Host: "new-host", BackupRepo: ""}
 	p.MergeSecretsFrom(existing)
-	if p.PrivateKey != "priv" || p.ResticPassword != "rpw" || p.BackupRepo != "repo" {
+	if p.PrivateKey != "priv" || p.ResticPassword != "rpw" || p.BackupRepo != "repo" ||
+		p.AdminAWSAccessKeyID != "admin-id" || p.AdminAWSSecretAccessKey != "admin-sec" {
 		t.Errorf("merge incomplete: %+v", p)
 	}
 	// Explicit values win.
