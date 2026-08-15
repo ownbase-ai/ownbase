@@ -183,6 +183,14 @@ func runSecretsSet(base, service string, kvArgs []string, fromStdin bool) error 
 	if len(updates) == 0 {
 		return fmt.Errorf("no secrets to set — pass KEY=VALUE arguments and/or --stdin JSON")
 	}
+	// RESTIC_PASSWORD must go through backup rekey so the restic keyring,
+	// Base secret, and vault escrow stay aligned. Writing it here alone
+	// dual-writes a password that does not open the repository.
+	if service == "backup" {
+		if _, ok := updates["RESTIC_PASSWORD"]; ok {
+			return fmt.Errorf("RESTIC_PASSWORD cannot be set via secrets set — use:\n  ownbasectl backup rekey %s --generate\n(or --new-password). That rotates the restic keyring, Base secret, and vault together", base)
+		}
+	}
 
 	conn, err := connectToServer(base)
 	if err != nil {
@@ -205,11 +213,12 @@ func runSecretsSet(base, service string, kvArgs []string, fromStdin bool) error 
 	}
 	fmt.Printf("Updated %d secret(s) for service %q.\n", resp.Updated, resp.Service)
 
-	// Keep the vault backup escrow in lockstep with the Base secret so
-	// restore does not silently use a stale RESTIC_PASSWORD.
+	// Keep vault cloud-key escrow in lockstep. RESTIC_PASSWORD is refused
+	// above — changing it without restic key add would dual-write a password
+	// that does not open the repository.
 	if service == "backup" {
-		if err := syncBackupEscrowFromUpdates(base, updates); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: Base secrets updated but vault escrow was not: %v\n  Fix with: ownbasectl backup rekey %s (or re-run backup setup)\n", err, base)
+		if err := syncBackupCloudEscrow(base, updates); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: Base secrets updated but vault cloud-key escrow was not: %v\n", err)
 		}
 	}
 	return nil
@@ -256,15 +265,16 @@ func runSecretsDelete(base, service, key string) error {
 	return nil
 }
 
-// syncBackupEscrowFromUpdates mirrors non-empty backup secret mutations into
-// the vault profile so restore keeps working after `secrets set backup …`.
-// Best-effort: callers warn rather than fail the Base-side write that already
-// succeeded. Empty values are skipped (MergeSecretsFrom would ignore them).
-func syncBackupEscrowFromUpdates(base string, updates map[string]string) error {
+// syncBackupCloudEscrow mirrors non-empty AWS/B2 backup secret mutations into
+// the vault profile. RESTIC_PASSWORD is intentionally excluded — see
+// runSecretsSet. Best-effort: callers warn rather than fail the Base write.
+func syncBackupCloudEscrow(base string, updates map[string]string) error {
+	hasCloud := updates["AWS_ACCESS_KEY_ID"] != "" || updates["AWS_SECRET_ACCESS_KEY"] != "" ||
+		updates["B2_ACCOUNT_ID"] != "" || updates["B2_ACCOUNT_KEY"] != ""
+	if !hasCloud {
+		return nil
+	}
 	return saveProfile(base, func(p *vault.Profile) {
-		if v := updates["RESTIC_PASSWORD"]; v != "" {
-			p.ResticPassword = v
-		}
 		if v := updates["AWS_ACCESS_KEY_ID"]; v != "" {
 			p.AWSAccessKeyID = v
 		}

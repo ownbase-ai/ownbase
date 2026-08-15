@@ -652,6 +652,10 @@ func runBackupRekey(base, newPassword string, generate, jsonOut bool) error {
 			return err
 		}
 		newPassword = pw
+		// Print immediately so a later failure still leaves the operator able
+		// to finish with --new-password (phase add may already have succeeded).
+		fmt.Fprintln(os.Stderr, "Generated restic password (save this — needed if rekey is interrupted):")
+		fmt.Fprintf(os.Stderr, "  %s\n", newPassword)
 	}
 
 	conn, err := connectToServer(base)
@@ -679,7 +683,7 @@ func runBackupRekey(base, newPassword string, generate, jsonOut bool) error {
 
 	addResult, err := post("add")
 	if err != nil {
-		return err
+		return fmt.Errorf("%w\n  If you used --generate, the password was printed above — re-run with --new-password to resume", err)
 	}
 
 	// Escrow before finalize so a crash after the Base secret swap still
@@ -687,12 +691,12 @@ func runBackupRekey(base, newPassword string, generate, jsonOut bool) error {
 	if err := saveProfile(base, func(p *vault.Profile) {
 		p.ResticPassword = newPassword
 	}); err != nil {
-		return fmt.Errorf("store new password in vault: %w\n  Phase add succeeded — re-run rekey with the same --new-password to finish", err)
+		return fmt.Errorf("store new password in vault: %w\n  Phase add succeeded — re-run: ownbasectl backup rekey %s --new-password '<password printed above or you chose>'", err, base)
 	}
 
 	finResult, err := post("finalize")
 	if err != nil {
-		return fmt.Errorf("%w\n  Vault already holds the new password — re-run rekey with the same --new-password to finish", err)
+		return fmt.Errorf("%w\n  Vault already holds the new password — re-run: ownbasectl backup rekey %s --new-password '<same password>'", err, base)
 	}
 
 	fp, _ := finResult["fingerprint"].(string)

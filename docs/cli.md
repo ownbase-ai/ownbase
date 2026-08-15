@@ -280,7 +280,7 @@ ownbasectl backup rekey mybase --new-password '…'
 
 `backup rekey` rotates the restic encryption password on the repository, the Base secret, and the vault escrow. Prefer `--generate`. Crash-safe: re-run with the same password to finish.
 
-`secrets set <base> backup RESTIC_PASSWORD=…` also updates the vault escrow (best-effort). Checkup flags vault/Base repo or password-fingerprint drift.
+`secrets set <base> backup` may update AWS/B2 keys (and mirrors them into the vault escrow). `RESTIC_PASSWORD` is refused there — use `backup rekey` so the restic keyring stays aligned. Checkup flags vault/Base repo or password-fingerprint drift.
 
 `backup status --json` prints the **full** `/status` payload, not just the backup section.
 
