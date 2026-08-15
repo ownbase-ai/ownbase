@@ -264,7 +264,12 @@ func runBackupSetup(base, repo string, credFlags backupCredFlags, interval, veri
 		creds["B2_ACCOUNT_KEY"] = credFlags.b2AccountKey
 	}
 
-	fmt.Println("==> Storing backup credentials (encrypted at rest on the Base) ...")
+	// Progress goes to stderr when --json so stdout stays a single document.
+	progress := os.Stdout
+	if jsonOut {
+		progress = os.Stderr
+	}
+	fmt.Fprintln(progress, "==> Storing backup credentials (encrypted at rest on the Base) ...")
 	credsPayload, _ := json.Marshal(creds)
 	if _, err := apiCall(conn, http.MethodPost, "/secrets/backup", credsPayload); err != nil {
 		return fmt.Errorf("store backup credentials: %w", err)
@@ -305,7 +310,7 @@ func runBackupSetup(base, repo string, credFlags backupCredFlags, interval, veri
 		return fmt.Errorf("store backup credentials in vault: %w", err)
 	}
 
-	fmt.Printf("==> Configuring backup repo %s ...\n", repo)
+	fmt.Fprintf(progress, "==> Configuring backup repo %s ...\n", repo)
 	// The repo/cadence live in ownbase.yaml (external config repo); commit
 	// them client-side and reconcile — the same path as any other config
 	// mutation. Credentials go through the secrets API above (never git).
@@ -314,7 +319,7 @@ func runBackupSetup(base, repo string, credFlags backupCredFlags, interval, veri
 		return fmt.Errorf("configure backup: %w", cfgErr)
 	}
 
-	fmt.Println("==> Running the first backup now (this may take a while for large volumes) ...")
+	fmt.Fprintln(progress, "==> Running the first backup now (this may take a while for large volumes) ...")
 	// The reconcile triggered above pulls the config into the checkout the
 	// daemon reads from. Retry briefly, but only for
 	// that specific "not configured yet" race — a permanent failure (bad
@@ -335,18 +340,21 @@ func runBackupSetup(base, repo string, credFlags backupCredFlags, interval, veri
 	if err != nil {
 		return fmt.Errorf("run first backup: %w\n  Backups are configured — the scheduler will retry automatically within a minute.", err)
 	}
-	printBackupRunResult(body)
 
 	kit := buildRecoveryKit(repo, credFlags.password, credFlags)
 	if jsonOut {
+		var run map[string]any
+		_ = json.Unmarshal(body, &run)
 		return printJSON(map[string]any{
 			"status":       "ok",
 			"repo":         repo,
 			"generated":    generate,
+			"first_backup": run,
 			"recovery_kit": kit,
 		})
 	}
 
+	printBackupRunResult(body)
 	fmt.Println()
 	fmt.Println("Backups are set up. The verified-restore drill runs automatically to")
 	fmt.Println("prove the backup is actually restorable — check with:")
@@ -730,21 +738,31 @@ func runBackupRekey(base, newPassword string, generate, jsonOut bool) error {
 	}
 
 	fp, _ := finResult["fingerprint"].(string)
-	// Repo URL from vault when present so the kit is complete after rekey.
-	repo := ""
-	if vc, err := loadBackupCreds(base); err == nil {
-		repo = vc.Repo
-	}
+	// Full kit from vault escrow (repo + cloud env names) with the new password.
 	kit := recoveryKit{
-		Repo:     repo,
-		Password: newPassword,
-		Note:     recoveryKitNote,
-		Restic:   recoveryKitResticLine(repo),
+		Password:    newPassword,
+		Note:        recoveryKitNote,
+		Fingerprint: backup.CredFingerprint(newPassword),
+	}
+	if fp != "" {
+		kit.Fingerprint = fp
+	}
+	if vc, err := loadBackupCreds(base); err == nil {
+		kit.Repo = vc.Repo
+		kit.Restic = recoveryKitResticLine(vc.Repo)
+		if vc.AWSAccessKeyID != "" || vc.AWSSecretAccessKey != "" {
+			kit.CloudEnvVars = append(kit.CloudEnvVars, "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
+		}
+		if vc.B2AccountID != "" || vc.B2AccountKey != "" {
+			kit.CloudEnvVars = append(kit.CloudEnvVars, "B2_ACCOUNT_ID", "B2_ACCOUNT_KEY")
+		}
+	} else {
+		kit.Restic = recoveryKitResticLine("")
 	}
 	if jsonOut {
 		return printJSON(map[string]any{
 			"status":       "ok",
-			"fingerprint":  fp,
+			"fingerprint":  kit.Fingerprint,
 			"add":          addResult,
 			"finalize":     finResult,
 			"generated":    generate,
@@ -754,8 +772,8 @@ func runBackupRekey(base, newPassword string, generate, jsonOut bool) error {
 
 	fmt.Println()
 	fmt.Println("Restic password rotated on the repository, the Base, and your vault.")
-	if fp != "" {
-		fmt.Printf("Fingerprint: %s\n", fp)
+	if kit.Fingerprint != "" {
+		fmt.Printf("Fingerprint: %s\n", kit.Fingerprint)
 	}
 	fmt.Printf("Confirm with: ownbasectl backup status %s\n", base)
 	printRecoveryKit(kit)
