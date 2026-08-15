@@ -56,18 +56,18 @@ const (
 // fields so a Base entry is legible in any KDBX client; the rest are custom
 // string fields.
 const (
-	fieldTitle              = "Title"
-	fieldUserName           = "UserName"
-	fieldPassword           = "Password"
-	fieldURL                = "URL"
-	fieldNotes              = "Notes"
-	fieldPrivateKey         = "PrivateKey"
-	fieldPublicKey          = "PublicKey"
-	fieldSSHPort            = "SSHPort"
-	fieldAPIPort            = "APIPort"
-	fieldConfigRepoURL      = "ConfigRepoURL"
-	fieldConfigRef          = "ConfigRef"
-	fieldLocalVM            = "LocalVM"
+	fieldTitle                   = "Title"
+	fieldUserName                = "UserName"
+	fieldPassword                = "Password"
+	fieldURL                     = "URL"
+	fieldNotes                   = "Notes"
+	fieldPrivateKey              = "PrivateKey"
+	fieldPublicKey               = "PublicKey"
+	fieldSSHPort                 = "SSHPort"
+	fieldAPIPort                 = "APIPort"
+	fieldConfigRepoURL           = "ConfigRepoURL"
+	fieldConfigRef               = "ConfigRef"
+	fieldLocalVM                 = "LocalVM"
 	fieldBackupRepo              = "BackupRepo"
 	fieldResticPassword          = "ResticPassword"
 	fieldAWSAccessKeyID          = "AWSAccessKeyID"
@@ -812,13 +812,13 @@ func value_(key, content string, protected bool) gokeepasslib.ValueData {
 
 func profileFromEntry(e gokeepasslib.Entry) Profile {
 	p := Profile{
-		Host:               e.GetContent(fieldURL),
-		SSHUser:            e.GetContent(fieldUserName),
-		Token:              e.GetPassword(),
-		ConfigRepoURL:      e.GetContent(fieldConfigRepoURL),
-		ConfigRef:          e.GetContent(fieldConfigRef),
-		PrivateKey:         e.GetContent(fieldPrivateKey),
-		PublicKey:          e.GetContent(fieldPublicKey),
+		Host:                    e.GetContent(fieldURL),
+		SSHUser:                 e.GetContent(fieldUserName),
+		Token:                   e.GetPassword(),
+		ConfigRepoURL:           e.GetContent(fieldConfigRepoURL),
+		ConfigRef:               e.GetContent(fieldConfigRef),
+		PrivateKey:              e.GetContent(fieldPrivateKey),
+		PublicKey:               e.GetContent(fieldPublicKey),
 		BackupRepo:              e.GetContent(fieldBackupRepo),
 		ResticPassword:          e.GetContent(fieldResticPassword),
 		AWSAccessKeyID:          e.GetContent(fieldAWSAccessKeyID),
