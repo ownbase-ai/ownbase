@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ownbase/ownbase/internal/backup"
+	"github.com/ownbase/ownbase/internal/secrets"
 	"github.com/ownbase/ownbase/internal/vault"
 )
 
@@ -32,6 +33,7 @@ func newBackupCmd() *cobra.Command {
 		newBackupRunCmd(),
 		newBackupStatusCmd(),
 		newBackupPruneCmd(),
+		newBackupRekeyCmd(),
 	)
 	return cmd
 }
@@ -602,4 +604,129 @@ func printBackupRunResult(body []byte) {
 		return
 	}
 	fmt.Printf("Backup complete — snapshot %s\n", r.LatestSnapshot)
+}
+
+func newBackupRekeyCmd() *cobra.Command {
+	var (
+		newPassword string
+		generate    bool
+		jsonOut     bool
+	)
+	cmd := &cobra.Command{
+		Use:   "rekey <name>",
+		Short: "Rotate the restic repository encryption password",
+		Long: `Rotate RESTIC_PASSWORD on the restic repository, the Base secret, and
+the vault escrow in a crash-safe two-phase flow (restic multi-key):
+
+  1. add      — add the new password as a second key
+  2. vault    — escrow the new password client-side
+  3. finalize — write the Base secret, then remove every other key
+
+Re-running after any crash converges. Prefer --generate over inventing a
+password by hand.`,
+		Example: `  ownbasectl backup rekey mybase --generate
+  ownbasectl backup rekey mybase --new-password '…'`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runBackupRekey(args[0], newPassword, generate, jsonOut)
+		},
+	}
+	cmd.Flags().StringVar(&newPassword, "new-password", "", "new restic repository password")
+	cmd.Flags().BoolVar(&generate, "generate", false, "generate a strong 32-character password")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "print the result as JSON")
+	return cmd
+}
+
+// runBackupRekey executes the three-step rotation. generate and newPassword
+// are mutually exclusive; one is required.
+func runBackupRekey(base, newPassword string, generate, jsonOut bool) error {
+	if generate && newPassword != "" {
+		return fmt.Errorf("--generate and --new-password are mutually exclusive")
+	}
+	if !generate && newPassword == "" {
+		return fmt.Errorf("pass --new-password or --generate")
+	}
+	if generate {
+		pw, err := secrets.GeneratePassword(32)
+		if err != nil {
+			return err
+		}
+		newPassword = pw
+		// Print immediately so a later failure still leaves the operator able
+		// to finish with --new-password (phase add may already have succeeded).
+		fmt.Fprintln(os.Stderr, "Generated restic password (save this — needed if rekey is interrupted):")
+		fmt.Fprintf(os.Stderr, "  %s\n", newPassword)
+	}
+
+	conn, err := connectToServer(base)
+	if err != nil {
+		return err
+	}
+	defer conn.close()
+
+	post := func(phase string) (map[string]any, error) {
+		payload, _ := json.Marshal(map[string]string{
+			"phase":        phase,
+			"new_password": newPassword,
+		})
+		fmt.Printf("==> Rekey phase %s ...\n", phase)
+		body, err := apiCallWithTimeout(conn, http.MethodPost, "/backup/rekey", payload, 10*time.Minute)
+		if err != nil {
+			return nil, fmt.Errorf("rekey %s: %w", phase, err)
+		}
+		var out map[string]any
+		if err := json.Unmarshal(body, &out); err != nil {
+			return nil, fmt.Errorf("parse rekey %s response: %w", phase, err)
+		}
+		return out, nil
+	}
+
+	addResult, err := post("add")
+	if err != nil {
+		return fmt.Errorf("%w\n  If you used --generate, the password was printed above — re-run with --new-password to resume", err)
+	}
+
+	// Escrow before finalize so a crash after the Base secret swap still
+	// leaves the new password in the vault.
+	if err := saveProfile(base, func(p *vault.Profile) {
+		p.ResticPassword = newPassword
+	}); err != nil {
+		return fmt.Errorf("store new password in vault: %w\n  Phase add succeeded — re-run: ownbasectl backup rekey %s --new-password '<password printed above or you chose>'", err, base)
+	}
+
+	finResult, err := post("finalize")
+	if err != nil {
+		return fmt.Errorf("%w\n  Vault already holds the new password — re-run: ownbasectl backup rekey %s --new-password '<same password>'", err, base)
+	}
+
+	fp, _ := finResult["fingerprint"].(string)
+	if jsonOut {
+		return printJSON(map[string]any{
+			"status":      "ok",
+			"fingerprint": fp,
+			"add":         addResult,
+			"finalize":    finResult,
+			// recovery_kit surfaces the new password only when --generate
+			// produced it; operators who passed --new-password already have it.
+			"generated_password": func() string {
+				if generate {
+					return newPassword
+				}
+				return ""
+			}(),
+		})
+	}
+
+	fmt.Println()
+	fmt.Println("Restic password rotated on the repository, the Base, and your vault.")
+	if generate {
+		fmt.Println()
+		fmt.Println("Generated password (store offline — this is a root recovery secret):")
+		fmt.Printf("  %s\n", newPassword)
+	}
+	if fp != "" {
+		fmt.Printf("Fingerprint: %s\n", fp)
+	}
+	fmt.Printf("Confirm with: ownbasectl backup status %s\n", base)
+	return nil
 }

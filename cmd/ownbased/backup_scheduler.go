@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sync/atomic"
 	"time"
 
@@ -27,6 +28,7 @@ import (
 	"github.com/ownbase/ownbase/internal/backup"
 	"github.com/ownbase/ownbase/internal/explain"
 	"github.com/ownbase/ownbase/internal/schema"
+	"github.com/ownbase/ownbase/internal/secrets"
 )
 
 // backupSchedulerPollInterval is how often the scheduler wakes up to check
@@ -227,6 +229,73 @@ func mergeBackupCredOverrides(base map[string]string, req explain.BackupPruneReq
 	set("B2_ACCOUNT_ID", req.B2AccountID)
 	set("B2_ACCOUNT_KEY", req.B2AccountKey)
 	return out
+}
+
+// rekeyBackupNow runs one phase of restic password rotation. The add phase
+// uses the Base's current RESTIC_PASSWORD; finalize swaps the Base secret to
+// newPassword first, then removes every other restic key.
+func rekeyBackupNow(ctx context.Context, cfg agentConfig, auditLog authz.AuditLogger, req explain.BackupRekeyRequest) (backup.RekeyResult, error) {
+	backupCoreCfg := readCoreConfigFromDisk(cfg.checkoutPath).Backup
+	if !backupCoreCfg.Enabled() {
+		return backup.RekeyResult{}, fmt.Errorf("no backup repo configured — run 'ownbasectl backup setup' first")
+	}
+	phase := backup.RekeyPhase(req.Phase)
+	if phase != backup.RekeyPhaseAdd && phase != backup.RekeyPhaseFinalize {
+		return backup.RekeyResult{}, fmt.Errorf("phase must be %q or %q", backup.RekeyPhaseAdd, backup.RekeyPhaseFinalize)
+	}
+	if req.NewPassword == "" {
+		return backup.RekeyResult{}, fmt.Errorf("new_password is required")
+	}
+
+	release, err := acquireBackupSlot(ctx)
+	if err != nil {
+		return backup.RekeyResult{}, fmt.Errorf("waiting for in-progress backup/verify to finish: %w", err)
+	}
+	defer release()
+
+	backupCfg := loadBackupConfig(cfg, backupCoreCfg, auditLog)
+
+	if phase == backup.RekeyPhaseFinalize {
+		// Swap the Base secret before touching the keyring so a crash after
+		// the write still leaves a secret that opens the repo (both passwords
+		// work until old keys are removed).
+		if err := writeBackupResticPassword(req.NewPassword); err != nil {
+			return backup.RekeyResult{}, fmt.Errorf("update Base backup secret: %w", err)
+		}
+		// Reload so finalize authenticates with the new password.
+		backupCfg = loadBackupConfig(cfg, backupCoreCfg, auditLog)
+	}
+
+	return backup.Rekey(ctx, backupCfg, phase, req.NewPassword)
+}
+
+// writeBackupResticPassword merges RESTIC_PASSWORD into the conventional
+// age-encrypted backup secret and re-encrypts it. Other keys (AWS/B2) are
+// preserved.
+func writeBackupResticPassword(newPassword string) error {
+	path := filepath.Join(explain.DefaultSecretsDir, "backup.yaml.age")
+	custody := secrets.FileKeyCustody{}
+	merged, err := secrets.IssueMap(custody, path)
+	if err != nil {
+		return err
+	}
+	if merged == nil {
+		merged = map[string]string{}
+	}
+	merged["RESTIC_PASSWORD"] = newPassword
+
+	id, err := custody.LoadIdentity()
+	if err != nil {
+		return fmt.Errorf("load age key: %w", err)
+	}
+	ciphertext, err := secrets.EncryptSecrets(id.Recipient(), merged)
+	if err != nil {
+		return fmt.Errorf("encrypt: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, ciphertext, 0o600)
 }
 
 // verifyBackupNow runs the verified-restore drill synchronously, streaming

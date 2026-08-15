@@ -650,6 +650,22 @@ func run(cfg agentConfig) error {
 				}
 				return out, nil
 			},
+			// RekeyBackup rotates the restic password (ownbasectl backup rekey).
+			RekeyBackup: func(req explain.BackupRekeyRequest) (explain.BackupRekeyStatus, error) {
+				runCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+				defer cancel()
+				result, err := rekeyBackupNow(runCtx, cfg, auditLog, req)
+				signalReconcile(reconcileSig)
+				if err != nil {
+					return explain.BackupRekeyStatus{}, err
+				}
+				return explain.BackupRekeyStatus{
+					Phase:       string(result.Phase),
+					AlreadyDone: result.AlreadyDone,
+					KeysRemoved: result.KeysRemoved,
+					Fingerprint: result.Fingerprint,
+				}, nil
+			},
 			// DBStatus reports the Postgres point-in-time recovery posture
 			// (ownbasectl db status).
 			DBStatus: func() (any, error) {
@@ -819,6 +835,20 @@ func run(cfg agentConfig) error {
 
 		backupStatus, _ := backup.LoadStatus(backup.DefaultStatusPath)
 
+		// Backup repo + password fingerprint for vault/Base dual-write checks.
+		// Decrypt is cheap (small age file) and matches loadBackupConfig's
+		// per-run refresh so a secrets set takes effect on the next status.
+		var backupRepo, backupCredFP string
+		if state.Config != nil {
+			backupRepo = state.Config.Core.Backup.Repo
+		}
+		if creds, err := secrets.IssueMap(
+			secrets.FileKeyCustody{},
+			filepath.Join(explain.DefaultSecretsDir, "backup.yaml.age"),
+		); err == nil {
+			backupCredFP = backup.CredFingerprint(creds["RESTIC_PASSWORD"])
+		}
+
 		// One systemctl query per scheduled job — cheap (a handful of jobs at
 		// most) and, like runtime.QueryCurrentState, a no-op returning zero
 		// values when systemctl isn't present (dev/CI).
@@ -839,18 +869,20 @@ func run(cfg agentConfig) error {
 		}
 
 		status := explain.Gather(explain.GatherInput{
-			Version:           version,
-			Config:            state.Config,
-			RunningContainers: state.Current.RunningContainers,
-			BackupStatus:      backupStatus,
-			DriftEvents:       state.DriftEvents,
-			AuditLogPath:      cfg.auditLogPath,
-			Exposure:          lastExposure,
-			Access:            lastAccess,
-			Vulns:             lastVulnStatus,
-			Reboot:            lastReboot,
-			JobTimers:         jobTimers,
-			ConfigSource:      configSource,
+			Version:               version,
+			Config:                state.Config,
+			RunningContainers:     state.Current.RunningContainers,
+			BackupStatus:          backupStatus,
+			BackupRepo:            backupRepo,
+			BackupCredFingerprint: backupCredFP,
+			DriftEvents:           state.DriftEvents,
+			AuditLogPath:          cfg.auditLogPath,
+			Exposure:              lastExposure,
+			Access:                lastAccess,
+			Vulns:                 lastVulnStatus,
+			Reboot:                lastReboot,
+			JobTimers:             jobTimers,
+			ConfigSource:          configSource,
 		})
 		statusSrv.Update(status)
 	}

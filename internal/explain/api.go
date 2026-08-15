@@ -103,6 +103,9 @@ type APIConfig struct {
 	// POST /backup/prune (owner-only). Transient delete-capable keys in the
 	// request body are never persisted on the Base.
 	PruneBackup func(req BackupPruneRequest) (BackupPruneStatus, error)
+	// RekeyBackup, when non-nil, runs one phase of restic password rotation.
+	// Called by POST /backup/rekey (owner-only).
+	RekeyBackup func(req BackupRekeyRequest) (BackupRekeyStatus, error)
 	// CoreStatus, when non-nil, reports the current state of the OwnBase core
 	// package (Caddy): pinned image + digest and whether the
 	// container is running on the Base. Called by GET /core/status — the
@@ -189,6 +192,22 @@ type BackupPruneRequest struct {
 type BackupPruneStatus struct {
 	LastPrune string `json:"last_prune,omitempty"`
 	LastError string `json:"last_error,omitempty"`
+}
+
+// BackupRekeyRequest is the body of POST /backup/rekey.
+type BackupRekeyRequest struct {
+	// Phase is "add" or "finalize" (see backup.RekeyPhase).
+	Phase string `json:"phase"`
+	// NewPassword is the replacement restic repository password.
+	NewPassword string `json:"new_password"`
+}
+
+// BackupRekeyStatus is the JSON body of a successful POST /backup/rekey.
+type BackupRekeyStatus struct {
+	Phase       string `json:"phase"`
+	AlreadyDone bool   `json:"already_done,omitempty"`
+	KeysRemoved int    `json:"keys_removed,omitempty"`
+	Fingerprint string `json:"fingerprint,omitempty"`
 }
 
 // VerifyDrillResult is the JSON-friendly outcome of one verified-restore
@@ -787,6 +806,44 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 		status, err := cfg.PruneBackup(req)
 		if err != nil {
 			http.Error(w, "prune backup: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, status)
+	})
+
+	// /backup/rekey — rotate the restic repository password in two crash-safe
+	// phases (add, then finalize). Owner-only. Behind `ownbasectl backup rekey`.
+	mux.HandleFunc("/backup/rekey", func(w http.ResponseWriter, r *http.Request) {
+		if !authRequired(w, r, cfg.StatusSrv) {
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if cfg.RekeyBackup == nil {
+			http.Error(w, "backup not configured", http.StatusNotImplemented)
+			return
+		}
+		var req BackupRekeyRequest
+		if r.Body == nil {
+			http.Error(w, "rekey body required", http.StatusBadRequest)
+			return
+		}
+		defer r.Body.Close()
+		dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
+			http.Error(w, "invalid rekey body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.Phase == "" || req.NewPassword == "" {
+			http.Error(w, "phase and new_password are required", http.StatusBadRequest)
+			return
+		}
+		status, err := cfg.RekeyBackup(req)
+		if err != nil {
+			http.Error(w, "rekey backup: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 		writeJSON(w, status)

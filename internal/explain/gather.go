@@ -34,6 +34,13 @@ type GatherInput struct {
 	// backup status file (backup.LoadStatus). Zero value = not yet backed up.
 	BackupStatus backup.Status
 
+	// BackupRepo is core.backup.repo from the live config (non-secret).
+	BackupRepo string
+
+	// BackupCredFingerprint is backup.CredFingerprint of the Base's stored
+	// RESTIC_PASSWORD. Empty when no backup password is set.
+	BackupCredFingerprint string
+
 	// DriftEvents is the list of runtime/ files that differ from what the
 	// compiler produced. From reconcile.DetectDrift. Nil = no drift.
 	DriftEvents []reconcile.DriftEvent
@@ -99,7 +106,7 @@ func Gather(in GatherInput) *BaseStatus {
 	if in.Config != nil {
 		appendOnly = in.Config.Core.Backup.AppendOnly
 	}
-	s.Security = gatherSecurity(in.BackupStatus, appendOnly, in.DriftEvents, in.Exposure, in.Access, in.Vulns, in.Reboot)
+	s.Security = gatherSecurity(in.BackupStatus, appendOnly, in.BackupRepo, in.BackupCredFingerprint, in.DriftEvents, in.Exposure, in.Access, in.Vulns, in.Reboot)
 
 	maxRecs := in.AuditMaxRecords
 	if maxRecs <= 0 {
@@ -186,15 +193,17 @@ func gatherJobs(cfg *schema.OwnbaseConfig, timers map[string]runtime.JobTimerInf
 	return result
 }
 
-func gatherSecurity(bs backup.Status, appendOnly bool, driftEvents []reconcile.DriftEvent, exposure secwatch.ExposureResult, access secwatch.AccessResult, vulns vulnscan.VulnStatus, reboot secwatch.RebootResult) SecurityStatus {
+func gatherSecurity(bs backup.Status, appendOnly bool, backupRepo, credFingerprint string, driftEvents []reconcile.DriftEvent, exposure secwatch.ExposureResult, access secwatch.AccessResult, vulns vulnscan.VulnStatus, reboot secwatch.RebootResult) SecurityStatus {
 	sec := SecurityStatus{
-		BackupRestorable: bs.Restorable,
-		BackupAppendOnly: appendOnly,
-		Exposure:         exposure,
-		Access:           access,
-		Vulns:            vulns,
-		RebootRequired:   reboot.Required,
-		RebootPackages:   reboot.Packages,
+		BackupRestorable:      bs.Restorable,
+		BackupAppendOnly:      appendOnly,
+		BackupRepo:            backupRepo,
+		BackupCredFingerprint: credFingerprint,
+		Exposure:              exposure,
+		Access:                access,
+		Vulns:                 vulns,
+		RebootRequired:        reboot.Required,
+		RebootPackages:        reboot.Packages,
 	}
 	if !bs.LastBackup.IsZero() {
 		t := bs.LastBackup

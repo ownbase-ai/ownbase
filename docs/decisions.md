@@ -121,6 +121,8 @@
 | Opting out | `core.backup.verify_postgres: false` | The recovery costs real CPU and minutes; operators who cannot spare them should have to say so explicitly, since the alternative is that the recovery path goes untested until the day it is needed |
 | Append-only mode | `core.backup.append_only: true` skips scheduled `forget --prune`; owner runs `POST /backup/prune` with transient delete-capable creds | A compromised Base that holds delete rights can wipe the off-machine repo. Non-deleting keys on the Base + owner-driven prune keeps ransomware/root from deleting history while retention still runs |
 | Prune credentials | Optional body on `POST /backup/prune` merged over the Base secret for one call; never written to disk. Optional vault admin escrow (`AdminAWS*` / `AdminB2*`) | Delete rights stay off the Base; the vault already holds crown-jewel material and is the natural place for the admin copy |
+| Restic password rotation | Two-phase `POST /backup/rekey` (add key → finalize swaps Base secret + removes old keys); client updates vault between phases | Restic multi-key makes every intermediate state recoverable; dual-write stays intentional rather than best-effort-only |
+| Dual-write drift check | `/status` exposes `backup_repo` + 8-hex `backup_cred_fingerprint`; checkup compares vault escrow | Stale vault password is a silent restore failure until the day it is needed |
 
 ## Point-in-time recovery (`ownbasectl db`)
 

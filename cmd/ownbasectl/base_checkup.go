@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/ownbase/ownbase/internal/backup"
 )
 
 func newCheckupCmd() *cobra.Command {
@@ -399,6 +401,10 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 				findings = append(findings, finding)
 			}
 		}
+
+		// Vault escrow vs Base dual-write: repo URL and restic password
+		// fingerprint must agree or restore will fail on the day it is needed.
+		findings = append(findings, backupEscrowDriftFindings(base, sec)...)
 
 		if exp, ok := sec["exposure"].(map[string]any); ok {
 			if available, _ := exp["available"].(bool); available {
@@ -877,6 +883,59 @@ func parseStatusTime(s string) (time.Time, error) {
 		return t, nil
 	}
 	return time.Parse(time.RFC3339Nano, s)
+}
+
+// backupEscrowDriftFindings compares the vault escrow against Base-reported
+// backup_repo / backup_cred_fingerprint. Missing vault access is skipped
+// (connect already required an unlocked vault; a missing profile is not a
+// drift signal for Bases that never ran backup setup from this laptop).
+func backupEscrowDriftFindings(base string, sec map[string]any) []checkupFinding {
+	baseRepo, _ := sec["backup_repo"].(string)
+	baseFP, _ := sec["backup_cred_fingerprint"].(string)
+	if baseRepo == "" && baseFP == "" {
+		return nil
+	}
+	vc, err := loadBackupCreds(base)
+	if err != nil {
+		return nil
+	}
+
+	var out []checkupFinding
+	if baseRepo != "" && vc.Repo != "" && baseRepo != vc.Repo {
+		out = append(out, checkupFinding{
+			Summary: "Vault backup repo differs from the Base",
+			Fix:     "ownbasectl backup setup " + base + " --repo <url> --password <pw>",
+			Action: checkupAction{
+				Kind:    actionForm,
+				Form:    "backup-setup",
+				Preview: true,
+				Label:   "Reconfigure backups",
+			},
+		})
+	}
+	switch {
+	case baseFP != "" && vc.Password == "":
+		out = append(out, checkupFinding{
+			Summary: "Backup password is on the Base but missing from the vault escrow",
+			Fix:     "ownbasectl backup rekey " + base + " --generate",
+			Action: checkupAction{
+				Kind:  actionRun,
+				Run:   "ownbasectl backup rekey " + base + " --generate",
+				Label: "Rekey backups",
+			},
+		})
+	case baseFP != "" && vc.Password != "" && backup.CredFingerprint(vc.Password) != baseFP:
+		out = append(out, checkupFinding{
+			Summary: "Vault restic password does not match the Base (restore would fail)",
+			Fix:     "ownbasectl backup rekey " + base + " --generate",
+			Action: checkupAction{
+				Kind:  actionRun,
+				Run:   "ownbasectl backup rekey " + base + " --generate",
+				Label: "Rekey backups",
+			},
+		})
+	}
+	return out
 }
 
 // appendOnlyPruneStaleDays is ~2× backup.DefaultRetentionDays. Past this

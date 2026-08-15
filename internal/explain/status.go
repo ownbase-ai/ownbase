@@ -139,6 +139,15 @@ type SecurityStatus struct {
 	// checkup to age a never-pruned append-only Base without the rolling
 	// LastBackup clock resetting the window every hour.
 	FirstBackup *time.Time `json:"first_backup,omitempty"`
+	// BackupRepo is the configured restic repository URL (core.backup.repo).
+	// Empty when backups are not configured. Non-secret; used by checkup to
+	// detect vault/Base repo drift.
+	BackupRepo string `json:"backup_repo,omitempty"`
+	// BackupCredFingerprint is an 8-hex fingerprint of RESTIC_PASSWORD from
+	// the Base secret (see backup.CredFingerprint). Empty when no password is
+	// stored. Used by checkup to detect vault/Base password escrow drift
+	// without exposing the password.
+	BackupCredFingerprint string `json:"backup_cred_fingerprint,omitempty"`
 
 	// DriftDetected is true when runtime/ differs from what the compiler produced.
 	// Any drift is a tamper signal — runtime/ has exactly one writer (the agent).
