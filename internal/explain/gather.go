@@ -208,6 +208,10 @@ func gatherSecurity(bs backup.Status, appendOnly bool, driftEvents []reconcile.D
 		t := bs.LastPrune
 		sec.LastPrune = &t
 	}
+	if !bs.FirstBackup.IsZero() {
+		t := bs.FirstBackup
+		sec.FirstBackup = &t
+	}
 	if len(driftEvents) > 0 {
 		sec.DriftDetected = true
 		sec.DriftCount = len(driftEvents)

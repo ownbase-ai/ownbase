@@ -885,31 +885,35 @@ func parseStatusTime(s string) (time.Time, error) {
 const appendOnlyPruneStaleDays = 60
 
 // appendOnlyPruneStaleFinding reports when an append-only Base has not pruned
-// within appendOnlyPruneStaleDays. last_backup must exist (otherwise setup
-// already covers the gap). A zero last_prune counts as infinitely stale once
-// the first backup itself is older than the threshold.
+// within appendOnlyPruneStaleDays. A zero last_prune ages from first_backup
+// (not last_backup — that field rolls forward every snapshot and would keep
+// the finding from ever firing on an active Base). Falls back to last_backup
+// only when first_backup is missing (pre-field status files).
 func appendOnlyPruneStaleFinding(base string, sec map[string]any) (checkupFinding, bool) {
-	lastBackup, _ := sec["last_backup"].(string)
-	if lastBackup == "" {
-		return checkupFinding{}, false
-	}
-	lb, err := parseStatusTime(lastBackup)
-	if err != nil {
-		return checkupFinding{}, false
-	}
 	staleAfter := time.Duration(appendOnlyPruneStaleDays) * 24 * time.Hour
 	lastPrune, _ := sec["last_prune"].(string)
 	var reference time.Time
-	if lastPrune == "" {
-		// Never pruned: only nag once the backup itself is old enough that
-		// retention would have dropped something.
-		reference = lb
-	} else {
+	if lastPrune != "" {
 		lp, err := parseStatusTime(lastPrune)
 		if err != nil {
 			return checkupFinding{}, false
 		}
 		reference = lp
+	} else {
+		// Never pruned: age from the first successful snapshot so hourly
+		// backups do not reset the clock.
+		ageFrom, _ := sec["first_backup"].(string)
+		if ageFrom == "" {
+			ageFrom, _ = sec["last_backup"].(string)
+		}
+		if ageFrom == "" {
+			return checkupFinding{}, false
+		}
+		t, err := parseStatusTime(ageFrom)
+		if err != nil {
+			return checkupFinding{}, false
+		}
+		reference = t
 	}
 	if time.Since(reference) < staleAfter {
 		return checkupFinding{}, false

@@ -199,6 +199,11 @@ type Status struct {
 	// LastPrune is when forget+prune last completed successfully (scheduled
 	// or via the owner-driven prune path). Zero when never pruned.
 	LastPrune time.Time `json:"last_prune,omitempty"`
+
+	// FirstBackup is when the first successful snapshot was taken on this
+	// Base. Set once and never cleared — used by append-only checkup to
+	// detect "never pruned" without treating the rolling LastBackup as age.
+	FirstBackup time.Time `json:"first_backup,omitempty"`
 }
 
 // Run performs one backup cycle: init repo if needed, take snapshot,
@@ -236,21 +241,26 @@ func Run(ctx context.Context, cfg Config) (Status, error) {
 		}
 	}
 
+	now := time.Now().UTC()
 	s := Status{
-		LastBackup:     time.Now().UTC(),
+		LastBackup:     now,
 		LatestSnapshot: snapshotID,
+		FirstBackup:    now, // overwritten below when a prior first exists
 	}
 
 	// Preserve the Restorable flag from the previous status (a new backup
 	// does not automatically reset it — only a new verify pass changes it).
-	// Same for LastPrune when this run did not prune.
+	// Same for LastPrune when this run did not prune, and FirstBackup always.
 	if prev, err := LoadStatus(c.StatusPath); err == nil {
 		s.Restorable = prev.Restorable
 		s.LastVerified = prev.LastVerified
 		s.LastPrune = prev.LastPrune
+		if !prev.FirstBackup.IsZero() {
+			s.FirstBackup = prev.FirstBackup
+		}
 	}
 	if pruned {
-		s.LastPrune = time.Now().UTC()
+		s.LastPrune = now
 	}
 
 	if err := SaveStatus(c.StatusPath, s); err != nil {
@@ -293,6 +303,7 @@ func Prune(ctx context.Context, cfg Config) (Status, error) {
 	}
 	s.LastPrune = time.Now().UTC()
 	s.LastError = ""
+	// Preserve FirstBackup / LastBackup / Restorable already loaded above.
 	if err := SaveStatus(c.StatusPath, s); err != nil {
 		fmt.Fprintf(os.Stderr, "backup: save status: %v (non-fatal)\n", err)
 	}
