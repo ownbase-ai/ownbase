@@ -123,6 +123,7 @@
 | Prune credentials | Optional body on `POST /backup/prune` merged over the Base secret for one call; never written to disk. Optional vault admin escrow (`AdminAWS*` / `AdminB2*`) | Delete rights stay off the Base; the vault already holds crown-jewel material and is the natural place for the admin copy |
 | Restic password rotation | Two-phase `POST /backup/rekey` (add key → finalize swaps Base secret + removes old keys); client updates vault between phases | Restic multi-key makes every intermediate state recoverable; dual-write stays intentional rather than best-effort-only |
 | Dual-write drift check | `/status` exposes `backup_repo` + 8-hex `backup_cred_fingerprint`; checkup compares vault escrow | Stale vault password is a silent restore failure until the day it is needed |
+| Restic password framing | Recovery kit after setup/rekey; `backup recovery-kit`; opt-in `--generate`; warn on short passwords | Treat as root recovery secret (snapshots hold secrets + age key); vault escrow is convenience, not the only copy |
 
 ## Point-in-time recovery (`ownbasectl db`)
 
