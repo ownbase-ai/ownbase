@@ -99,9 +99,45 @@ pub enum StreamEvent {
     },
 }
 
+/// A streamed child we can still cancel after optionally closing its stdin.
+///
+/// `CommandChild` has no `close_stdin`. Dropping it closes the pipe (so CLI
+/// readers that `io.ReadAll(os.Stdin)` get EOF) without killing the process —
+/// there is no Drop kill. After a stdin write we therefore drop the handle and
+/// keep only the pid for cancel.
+enum TrackedChild {
+    Shell(CommandChild),
+    Pid(u32),
+}
+
+impl TrackedChild {
+    fn kill(self) -> Result<(), String> {
+        match self {
+            TrackedChild::Shell(child) => child
+                .kill()
+                .map_err(|e| format!("stop the command: {e}")),
+            TrackedChild::Pid(pid) => kill_pid(pid),
+        }
+    }
+}
+
+fn kill_pid(pid: u32) -> Result<(), String> {
+    // Desktop targets are macOS/Linux today; `kill` is enough for cancel.
+    let status = std::process::Command::new("kill")
+        .arg(pid.to_string())
+        .status()
+        .map_err(|e| format!("stop the command (pid {pid}): {e}"))?;
+    if !status.success() {
+        return Err(format!(
+            "stop the command (pid {pid}): kill exited {status}"
+        ));
+    }
+    Ok(())
+}
+
 /// Running streamed commands, so the UI can cancel one.
 #[derive(Default)]
-pub struct Running(Mutex<HashMap<String, CommandChild>>);
+pub struct Running(Mutex<HashMap<String, TrackedChild>>);
 
 fn check_allowed(args: &[String]) -> Result<(), String> {
     let first = args
@@ -201,16 +237,22 @@ pub async fn cli_stream(
         .spawn()
         .map_err(|e| format!("start ownbasectl {}: {e}", args.join(" ")))?;
 
-    // Same stdin rule as cli_run: secrets never in argv. Write then leave the
-    // child alive so stdout/stderr keep streaming (unlike cli_run, which drops
-    // the child handle after writing because it only needs the final result).
-    if let Some(input) = stdin {
+    // Same stdin rule as cli_run: secrets never in argv. Callers that pass
+    // --creds-stdin / --stdin use io.ReadAll, which blocks until EOF — so after
+    // writing we must close the pipe. CommandChild has no close_stdin; drop it
+    // (closes the writer, process keeps running) and track the pid for cancel.
+    let tracked = if let Some(input) = stdin {
         child
             .write(input.as_bytes())
             .map_err(|e| format!("send input to ownbasectl: {e}"))?;
-    }
+        let pid = child.pid();
+        drop(child);
+        TrackedChild::Pid(pid)
+    } else {
+        TrackedChild::Shell(child)
+    };
 
-    running.0.lock().unwrap().insert(id.clone(), child);
+    running.0.lock().unwrap().insert(id.clone(), tracked);
 
     while let Some(event) = rx.recv().await {
         let out = match event {
@@ -241,7 +283,7 @@ pub async fn cli_stream(
 #[tauri::command]
 pub fn cli_cancel(running: State<'_, Running>, id: String) -> Result<(), String> {
     if let Some(child) = running.0.lock().unwrap().remove(&id) {
-        child.kill().map_err(|e| format!("stop the command: {e}"))?;
+        child.kill()?;
     }
     Ok(())
 }

@@ -181,12 +181,13 @@ export interface CliVersion {
   string: string;
 }
 
-/** `ownbasectl backup recovery-kit <base> --json` */
+/** `ownbasectl backup recovery-kit <base> --json` — cmd/ownbasectl.recoveryKit */
 export interface RecoveryKit {
   repo: string;
   password: string;
   note?: string;
-  restic?: string;
+  /** Stock restic one-liner; JSON field is restic_command. */
+  restic_command?: string;
   fingerprint?: string;
   cloud_env_vars?: string[];
 }

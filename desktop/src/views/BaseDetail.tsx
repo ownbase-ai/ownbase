@@ -1804,7 +1804,9 @@ function BackupLifecycle({ base }: { base: string }) {
           <div className="flex gap-2 pt-1">
             <CopyButton value={kit.password} label="Copy password" />
             <CopyButton
-              value={[kit.repo, kit.password, kit.restic].filter(Boolean).join("\n")}
+              value={[kit.repo, kit.password, kit.restic_command]
+                .filter(Boolean)
+                .join("\n")}
               label="Copy kit"
             />
           </div>
