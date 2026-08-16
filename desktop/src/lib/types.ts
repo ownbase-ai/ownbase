@@ -181,6 +181,37 @@ export interface CliVersion {
   string: string;
 }
 
+/** One component in `ownbasectl version --check --json` — internal/release.Component */
+export type VersionStatus = "current" | "behind" | "ahead" | "dev" | "unknown";
+
+export interface VersionComponent {
+  name: string;
+  current: string;
+  latest?: string;
+  status: VersionStatus;
+  /** Human update command when status is behind (CLI/app). Empty for daemon. */
+  guide?: string;
+}
+
+/** CLI/daemon mismatch on one Base — internal/release.Skew */
+export interface VersionSkew {
+  direction: "cli_ahead" | "daemon_ahead";
+  cli: string;
+  daemon: string;
+  guide: string;
+  summary: string;
+}
+
+/** `ownbasectl version --check [--app-version] [base] --json` */
+export interface VersionCheck {
+  components: VersionComponent[];
+  skew?: VersionSkew;
+  manifest?: {
+    error?: string;
+    source?: string;
+  };
+}
+
 /** `ownbasectl backup recovery-kit <base> --json` — cmd/ownbasectl.recoveryKit */
 export interface RecoveryKit {
   repo: string;

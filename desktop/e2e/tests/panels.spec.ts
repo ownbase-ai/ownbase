@@ -138,9 +138,59 @@ test.describe("read-only panels", () => {
     await expect(page.getByText("ownbase-recovery-v1:e2e-fixture")).toBeVisible();
     expect(callMatched(await getCalls(page), ["vault", "recovery-string"])).toBeTruthy();
 
-    await page.getByRole("button", { name: "Show version" }).click();
-    await expect(page.getByText("0.1.0-e2e", { exact: true })).toBeVisible();
-    expect(callMatched(await getCalls(page), ["version"])).toBeTruthy();
+    await expect(page.getByText("About & updates")).toBeVisible();
+    await expect(page.getByText("ownbasectl", { exact: true })).toBeVisible();
+    // Shell loads version --check on unlock; Vault reuses that snapshot.
+    expect(
+      callMatched(await getCalls(page), ["version"], { includeFlags: ["--check"] }),
+    ).toBeTruthy();
+  });
+
+  test("Vault: behind versions show badge and Check again refreshes", async ({ page }) => {
+    await openApp(page, {
+      vault: "unlocked",
+      vaultPath: VAULT_PATH,
+      password: MASTER_PASSWORD,
+      bases: [demoBase],
+      checkup: { demo: healthyCheckup },
+      versionCheck: {
+        components: [
+          {
+            name: "cli",
+            current: "v0.4.0",
+            latest: "v0.5.0",
+            status: "behind",
+            guide: "brew upgrade --cask ownbase-ai/tap/ownbasectl",
+          },
+          {
+            name: "app",
+            current: "v0.4.0",
+            latest: "v0.5.0",
+            status: "behind",
+            guide: "brew upgrade --cask ownbase-ai/tap/ownbase",
+          },
+        ],
+      },
+    });
+
+    // Sidebar badge counts behind components.
+    const vaultNav = page.getByRole("navigation").getByRole("button", { name: /Vault/ });
+    await expect(vaultNav).toContainText("2");
+    await expect(page.getByText(/OwnBase updates available/)).toBeVisible();
+
+    await vaultNav.click();
+    await expect(page.getByText("About & updates")).toBeVisible();
+    await expect(page.getByText("brew upgrade --cask ownbase-ai/tap/ownbasectl")).toBeVisible();
+
+    const before = (await getCalls(page)).length;
+    await page.getByRole("button", { name: "Check again" }).click();
+    await expect
+      .poll(async () =>
+        callMatched((await getCalls(page)).slice(before), ["version"], {
+          includeFlags: ["--check", "--refresh"],
+        }),
+      )
+      .toBeTruthy();
   });
 
   test("Sessions replay path loads cast into the player", async ({ page }) => {

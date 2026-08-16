@@ -14,7 +14,7 @@ import {
 } from "../components/ui";
 import * as api from "../lib/api";
 import { absolute, ago, span, until } from "../lib/format";
-import type { BaseSummary } from "../lib/types";
+import type { BaseSummary, VersionCheck, VersionComponent, VersionStatus } from "../lib/types";
 import type { Vault } from "../lib/useVault";
 
 /**
@@ -25,7 +25,21 @@ import type { Vault } from "../lib/useVault";
  * secret, because it never has one — the private keys live in the agent's memory
  * and the app only ever asks the CLI to use them.
  */
-export function VaultView({ vault, bases }: { vault: Vault; bases: BaseSummary[] }) {
+export function VaultView({
+  vault,
+  bases,
+  versionCheck,
+  versionError,
+  versionRefreshing,
+  onRefreshVersions,
+}: {
+  vault: Vault;
+  bases: BaseSummary[];
+  versionCheck?: VersionCheck | null;
+  versionError?: string | null;
+  versionRefreshing?: boolean;
+  onRefreshVersions?: () => void;
+}) {
   const status = vault.status;
   const withKeys = bases.filter((b) => b.has_key);
 
@@ -131,7 +145,12 @@ export function VaultView({ vault, bases }: { vault: Vault; bases: BaseSummary[]
 
       <RecoveryStringPanel />
 
-      <AboutPanel />
+      <AboutPanel
+        check={versionCheck}
+        error={versionError}
+        refreshing={versionRefreshing}
+        onRefresh={onRefreshVersions}
+      />
 
       <Panel
         title="If OwnBase disappeared tomorrow"
@@ -213,44 +232,96 @@ function RecoveryStringPanel() {
   );
 }
 
-function AboutPanel() {
-  const [info, setInfo] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  async function load() {
-    setError(null);
-    try {
-      const v = await api.cliVersion();
-      setInfo(v.string || `${v.version} (${v.commit})`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }
+function AboutPanel({
+  check,
+  error,
+  refreshing,
+  onRefresh,
+}: {
+  check?: VersionCheck | null;
+  error?: string | null;
+  refreshing?: boolean;
+  onRefresh?: () => void;
+}) {
+  const components = check?.components ?? [];
 
   return (
     <Panel
-      title="About"
-      subtitle="The bundled ownbasectl this window runs."
+      title="About & updates"
+      subtitle="This app and the CLI bundled beside it. Client updates are guided, not applied."
       action={
-        !info && (
-          <Button variant="secondary" onClick={() => void load()}>
-            Show version
+        onRefresh ? (
+          <Button variant="secondary" busy={refreshing} onClick={() => onRefresh()}>
+            Check again
           </Button>
-        )
+        ) : undefined
       }
     >
-      {info ? (
-        <Row label="ownbasectl">
-          <span className="font-mono text-xs">{info}</span>
-        </Row>
+      {error && <p className="mb-3 text-xs text-red-300">{error}</p>}
+      {components.length === 0 && !error ? (
+        <p className="text-sm text-zinc-500">Checking versions…</p>
       ) : (
-        <p className="text-sm text-zinc-500">
-          Every action in this app is a call to the CLI bundled beside it.
+        <ul className="divide-y divide-zinc-800">
+          {components.map((c) => (
+            <VersionRow key={c.name} component={c} />
+          ))}
+        </ul>
+      )}
+      {check?.manifest?.error && (
+        <p className="mt-3 text-xs leading-relaxed text-zinc-500">
+          Could not reach the release channel: {check.manifest.error}
         </p>
       )}
-      {error && <p className="text-xs text-red-300">{error}</p>}
+      <p className="mt-3 text-xs leading-relaxed text-zinc-500">
+        Every action in this app is a call to the CLI bundled beside it. Base
+        daemon updates show on each Base&apos;s Overview when a checkup finds one.
+      </p>
     </Panel>
   );
+}
+
+function VersionRow({ component }: { component: VersionComponent }) {
+  const label =
+    component.name === "cli"
+      ? "ownbasectl"
+      : component.name === "app"
+        ? "App"
+        : component.name;
+  return (
+    <li className="flex flex-col gap-1.5 py-2.5 first:pt-0 last:pb-0">
+      <div className="flex items-center justify-between gap-3 text-sm">
+        <span className="text-zinc-200">{label}</span>
+        <span className="flex items-center gap-2">
+          <span className="font-mono text-xs text-zinc-400">{component.current}</span>
+          <VersionBadge status={component.status} />
+        </span>
+      </div>
+      {component.status === "behind" && component.latest && (
+        <p className="text-xs text-zinc-500">Latest {component.latest}</p>
+      )}
+      {component.guide && (
+        <div className="flex flex-wrap items-center gap-2">
+          <CommandLine>{component.guide}</CommandLine>
+          <CopyButton value={component.guide} label="Copy" />
+        </div>
+      )}
+    </li>
+  );
+}
+
+function VersionBadge({ status }: { status: VersionStatus }) {
+  switch (status) {
+    case "current":
+      return <Badge tone="good">current</Badge>;
+    case "behind":
+      return <Badge tone="warn">update</Badge>;
+    case "ahead":
+      return <Badge tone="info">ahead</Badge>;
+    case "dev":
+      return <Badge tone="unknown">dev</Badge>;
+    default:
+      return <Badge tone="unknown">unknown</Badge>;
+  }
 }
 
 function ChangePassword() {

@@ -6,6 +6,7 @@ import { ErrorNote, Spinner } from "./components/ui";
 import * as api from "./lib/api";
 import type { BaseSummary } from "./lib/types";
 import { useAsync } from "./lib/useAsync";
+import { behindCount, useVersionCheck } from "./lib/useVersionCheck";
 import { useVault } from "./lib/useVault";
 import type { Vault } from "./lib/useVault";
 import { BaseDetail } from "./views/BaseDetail";
@@ -62,6 +63,8 @@ function Shell({ vault }: { vault: Vault }) {
   const load = useCallback(() => api.listBases(), []);
   const bases = useAsync<BaseSummary[]>(load);
   const list = bases.data ?? [];
+  const versions = useVersionCheck();
+  const updatesBehind = behindCount(versions.data);
 
   // Null means "wherever makes sense", which is the first Base if there is one
   // and the wizard if there is not. Derived rather than stored, so a reload of
@@ -85,6 +88,7 @@ function Shell({ vault }: { vault: Vault }) {
         onNavigate={navigate}
         vault={vault.status}
         onLock={() => void vault.lock()}
+        updatesBehind={updatesBehind}
       />
 
       <main className="min-h-0 min-w-0 flex-1">
@@ -109,7 +113,14 @@ function Shell({ vault }: { vault: Vault }) {
         ) : route.view === "sessions" ? (
           <SessionsView />
         ) : route.view === "vault" ? (
-          <VaultView vault={vault} bases={list} />
+          <VaultView
+            vault={vault}
+            bases={list}
+            versionCheck={versions.data}
+            versionError={versions.error}
+            versionRefreshing={versions.refreshing}
+            onRefreshVersions={() => void versions.reload({ refresh: true })}
+          />
         ) : selected ? (
           <BaseDetail
             key={selected.name}

@@ -65,7 +65,12 @@ export function BaseDetail({
 
   return (
     <div className="flex h-full flex-col">
-      <Header base={base} findings={findings} state={state} />
+      <Header
+        base={base}
+        findings={findings}
+        state={state}
+        daemonVersion={status?.version}
+      />
 
       <div className="border-b border-zinc-800 px-8">
         <Tabs<Tab>
@@ -165,10 +170,12 @@ function Header({
   base,
   findings,
   state,
+  daemonVersion,
 }: {
   base: BaseSummary;
   findings: Finding[];
   state: { loading: boolean; refreshing: boolean; error: string | null; reload: () => void };
+  daemonVersion?: string;
 }) {
   const verdict: { tone: Tone; text: string } = state.error
     ? { tone: "unknown", text: "Not answering" }
@@ -194,6 +201,7 @@ function Header({
         <p className="selectable mt-1 truncate font-mono text-xs text-zinc-500">
           {base.ssh_user}@{base.host}
           {base.ssh_port && base.ssh_port !== 22 ? `:${base.ssh_port}` : ""}
+          {daemonVersion ? ` · ownbased ${daemonVersion}` : ""}
         </p>
       </div>
       <Button variant="secondary" busy={state.refreshing} onClick={state.reload}>

@@ -17,6 +17,7 @@ export function Sidebar({
   onNavigate,
   vault,
   onLock,
+  updatesBehind = 0,
 }: {
   bases: BaseSummary[];
   loading: boolean;
@@ -24,6 +25,8 @@ export function Sidebar({
   onNavigate: (route: Route) => void;
   vault: VaultStatus | null;
   onLock: () => void;
+  /** CLI/app components behind the newest release (from version --check). */
+  updatesBehind?: number;
 }) {
   return (
     <nav className="flex w-60 shrink-0 flex-col border-r border-zinc-800 bg-zinc-950">
@@ -83,12 +86,15 @@ export function Sidebar({
             onClick={() => onNavigate({ view: "vault" })}
           >
             <span aria-hidden className="w-2" />
-            Vault
+            <span className="flex min-w-0 flex-1 items-center justify-between gap-2">
+              <span>Vault</span>
+              {updatesBehind > 0 && <Badge tone="warn">{updatesBehind}</Badge>}
+            </span>
           </Item>
         </Group>
       </div>
 
-      <VaultFooter vault={vault} onLock={onLock} />
+      <VaultFooter vault={vault} onLock={onLock} updatesBehind={updatesBehind} />
     </nav>
   );
 }
@@ -146,9 +152,11 @@ function Item({
 function VaultFooter({
   vault,
   onLock,
+  updatesBehind,
 }: {
   vault: VaultStatus | null;
   onLock: () => void;
+  updatesBehind: number;
 }) {
   return (
     <div className="shrink-0 border-t border-zinc-800 px-3 py-3">
@@ -161,6 +169,13 @@ function VaultFooter({
           Lock
         </Button>
       </div>
+      {updatesBehind > 0 && (
+        <p className="mt-1.5 px-0.5 text-[0.6875rem] leading-relaxed text-amber-200/80">
+          {updatesBehind === 1
+            ? "1 OwnBase update available — open Vault."
+            : `${updatesBehind} OwnBase updates available — open Vault.`}
+        </p>
+      )}
       {vault?.locks_at && (
         <p className="mt-1.5 px-0.5 text-[0.6875rem] leading-relaxed text-zinc-600">
           Locks {until(vault.locks_at)} unless something uses it.

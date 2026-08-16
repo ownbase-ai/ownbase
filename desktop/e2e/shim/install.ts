@@ -71,6 +71,8 @@ export type Scenario = {
   servicePreview?: ConfigPreview;
   deployPreview?: ConfigPreview;
   upgradeCheck?: unknown;
+  /** Override for `version --check --json` (default is a dev CLI, no badge). */
+  versionCheck?: unknown;
   dbStatus?: unknown;
   dbRestore?: unknown;
   recoveryKit?: unknown;
@@ -443,6 +445,51 @@ function installMock(scenario: Scenario): void {
     }
 
     if (matches(args, ["version"])) {
+      // version --check --json [--app-version X] [--refresh] [base]
+      if (args.includes("--check")) {
+        // Match the real CLI: exit 1 when anything is behind/skewed, but still
+        // emit the JSON document on stdout so the app can render it.
+        const doc =
+          scenario.versionCheck ??
+          (() => {
+            const appIdx = args.indexOf("--app-version");
+            const appVer = appIdx >= 0 ? (args[appIdx + 1] ?? "0.1.0") : undefined;
+            const components: Array<{
+              name: string;
+              current: string;
+              latest?: string;
+              status: string;
+              guide?: string;
+            }> = [{ name: "cli", current: "v0.1.0-e2e", status: "dev" }];
+            if (appVer) {
+              components.push({
+                name: "app",
+                current: appVer.startsWith("v") ? appVer : `v${appVer}`,
+                status: "dev",
+              });
+            }
+            return { components };
+          })();
+        const body =
+          typeof doc === "string" ? doc : JSON.stringify(doc, null, 2) + "\n";
+        const parsed =
+          typeof doc === "object" && doc !== null
+            ? (doc as {
+                components?: Array<{ status?: string }>;
+                skew?: unknown;
+              })
+            : {};
+        const behind =
+          !!parsed.skew ||
+          (parsed.components ?? []).some((c) => c.status === "behind");
+        return {
+          code: behind ? 1 : 0,
+          stdout: body,
+          stderr: behind
+            ? "error: one or more OwnBase components are behind — see above\n"
+            : "",
+        };
+      }
       return ok({
         version: "0.1.0-e2e",
         commit: "deadbeef",

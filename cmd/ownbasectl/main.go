@@ -198,14 +198,38 @@ func versionString() string {
 }
 
 // newVersionCmd keeps `ownbasectl version` working alongside the standard
-// --version flag.
+// --version flag. With --check it compares running components against the
+// release manifest (and optionally a Base's daemon).
 func newVersionCmd() *cobra.Command {
 	var jsonOut bool
+	var check bool
+	var refresh bool
+	var appVersion string
 	cmd := &cobra.Command{
-		Use:   "version",
-		Short: "Print the ownbasectl version",
-		Args:  cobra.NoArgs,
+		Use:   "version [name]",
+		Short: "Print the ownbasectl version, or check for updates",
+		Long: `Print the ownbasectl version.
+
+With --check, compare running components against the newest release published
+at releases.ownbase.ai/latest.json (override origin with OWNBASE_RELEASE_URL):
+
+  ownbasectl version --check              CLI (and app, with --app-version)
+  ownbasectl version --check mybase       also the Base daemon + CLI/daemon skew
+
+Client updates are guided (brew upgrade), not applied. Daemon updates use
+ownbasectl self-update <name>. Dev builds never nag.`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if check {
+				base := ""
+				if len(args) == 1 {
+					base = args[0]
+				}
+				return runVersionCheck(base, appVersion, jsonOut, refresh)
+			}
+			if len(args) == 1 {
+				return fmt.Errorf("base name %q requires --check", args[0])
+			}
 			if jsonOut {
 				return printJSON(map[string]string{
 					"version": version,
@@ -219,5 +243,8 @@ func newVersionCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "print version fields as JSON")
+	cmd.Flags().BoolVar(&check, "check", false, "compare running versions against the newest release")
+	cmd.Flags().BoolVar(&refresh, "refresh", false, "with --check, bypass the 24h manifest cache")
+	cmd.Flags().StringVar(&appVersion, "app-version", "", "with --check, include the desktop app version (e.g. 0.5.0)")
 	return cmd
 }

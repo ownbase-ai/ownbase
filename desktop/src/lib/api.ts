@@ -24,6 +24,7 @@ import type {
   VaultInitResult,
   VaultRecoveryString,
   VaultStatus,
+  VersionCheck,
 } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -96,6 +97,48 @@ export function vaultOpen(
 /** Bundled ownbasectl version. */
 export function cliVersion(): Promise<CliVersion> {
   return cli.json<CliVersion>(["version"]);
+}
+
+/**
+ * Compare running components against the newest release.
+ *
+ * Pass `appVersion` (from `getVersion()`) so the app is included. Pass `base`
+ * to also check that Base's daemon and CLI/daemon skew.
+ *
+ * Uses `raw` rather than `json`: `version --check` exits non-zero when anything
+ * is behind or skewed, but still prints a complete JSON report on stdout. That
+ * exit is the verdict for scripts, not a failure to parse.
+ */
+export async function versionCheck(opts: {
+  appVersion?: string;
+  base?: string;
+  refresh?: boolean;
+} = {}): Promise<VersionCheck> {
+  const args = ["version", "--check", "--json"];
+  if (opts.refresh) args.push("--refresh");
+  if (opts.appVersion) args.push("--app-version", opts.appVersion);
+  if (opts.base) args.push(opts.base);
+  const result = await cli.raw(args);
+  const out = result.stdout.trim();
+  if (out) {
+    try {
+      return JSON.parse(out) as VersionCheck;
+    } catch {
+      // Fall through to a real error below.
+    }
+  }
+  if (result.code !== 0) {
+    throw new cli.CliError(args, result);
+  }
+  throw new Error(
+    `ownbasectl ${args.join(" ")} did not print JSON. It said:\n${out}`,
+  );
+}
+
+/** Desktop app version stamped into the bundle at release (Tauri). */
+export async function appVersion(): Promise<string> {
+  const { getVersion } = await import("@tauri-apps/api/app");
+  return getVersion();
 }
 
 // ---------------------------------------------------------------------------

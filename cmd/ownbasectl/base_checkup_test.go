@@ -9,8 +9,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
+
+	"github.com/ownbase/ownbase/internal/release"
 )
 
 // drillServer answers /backup/verify with a streamed drill and /status with an
@@ -33,6 +36,12 @@ func drillServer(passed bool) *httptest.Server {
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
+}
+
+func TestMain(m *testing.M) {
+	// Checkup integration tests must not hit the public release origin.
+	releaseSnapshot = func(bool) release.Snapshot { return release.Snapshot{} }
+	os.Exit(m.Run())
 }
 
 func TestCheckupVerify_FailedDrillIsAnErrorInBothModes(t *testing.T) {

@@ -121,6 +121,62 @@ describe("vault and agent", () => {
     await api.cliVersion();
     expect(json).toHaveBeenCalledWith(["version"]);
   });
+
+  it("versionCheck builds argv and accepts non-zero when JSON is present", async () => {
+    cover("versionCheck");
+    const report = {
+      components: [
+        {
+          name: "cli",
+          current: "v0.4.0",
+          latest: "v0.5.0",
+          status: "behind",
+          guide: "brew upgrade --cask ownbase-ai/tap/ownbasectl",
+        },
+      ],
+    };
+    // Behind → exit 1, but stdout is still the report (scriptable verdict).
+    raw.mockResolvedValueOnce({
+      code: 1,
+      stdout: JSON.stringify(report) + "\n",
+      stderr: "error: one or more OwnBase components are behind — see above\n",
+    });
+    await expect(api.versionCheck()).resolves.toEqual(report);
+    expect(raw).toHaveBeenCalledWith(["version", "--check", "--json"]);
+
+    raw.mockResolvedValueOnce({
+      code: 0,
+      stdout: JSON.stringify({ components: [] }) + "\n",
+      stderr: "",
+    });
+    await api.versionCheck({
+      appVersion: "0.5.0",
+      base: "demo",
+      refresh: true,
+    });
+    expect(raw).toHaveBeenCalledWith([
+      "version",
+      "--check",
+      "--json",
+      "--refresh",
+      "--app-version",
+      "0.5.0",
+      "demo",
+    ]);
+  });
+
+  it("appVersion returns the Tauri bundle version", async () => {
+    cover("appVersion");
+    vi.resetModules();
+    vi.doMock("@tauri-apps/api/app", () => ({
+      getVersion: async () => "0.5.0",
+    }));
+    // Re-import so the dynamic import inside appVersion sees the mock.
+    const fresh = await import("./api");
+    await expect(fresh.appVersion()).resolves.toBe("0.5.0");
+    // Keep the cover gate happy for the already-bound export.
+    covered.add("appVersion");
+  });
 });
 
 // ---------------------------------------------------------------------------
