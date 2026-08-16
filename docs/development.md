@@ -84,9 +84,32 @@ A cloud VPS is not part of the automated matrix: after create, VM and remote Bas
 
 ## Merge gate
 
-All changes must keep `go test ./...` and `golangci-lint run ./...` green, and `make app-check` if you touched `desktop/` or any `--json` output. Breaking a hard constraint (see [MISSION.md](../MISSION.md)) requires the user's explicit sign-off first, not a workaround.
+Breaking a hard constraint (see [MISSION.md](../MISSION.md)) requires the user's explicit sign-off first, not a workaround.
 
-**Every change lands through a pull request.** Do not push commits straight to `main`. Branch, open a PR, wait for CI, merge when green and reviewed. Releases are tagged from `main` only after that. (Same rule is in [AGENTS.md](../AGENTS.md) so agents cannot miss it.)
+**Every change lands through a pull request.** Do not push commits straight to `main`. Branch, open a PR, wait for the gate below, then merge. Releases are tagged from `main` only after that. (Same rule is in [AGENTS.md](../AGENTS.md) so agents cannot miss it.)
+
+| Layer | Requirement |
+|---|---|
+| **Local** | Always: `go test ./...` and `golangci-lint run ./...`. If you touched `desktop/` or any `--json` shape: `make app-check` **and** `make app-e2e`. (`app-check` alone does not run Playwright.) |
+| **CI on the PR** | Tier 1 · Desktop app (typecheck, lint, vitest, **Playwright e2e**, build, clippy) · Tier 2 · Tier 2 root — all green |
+| **Bugbot** | Every Cursor Bugbot finding is **fixed, or replied to with rationale**. Never silently dismiss. |
+| **Review** | User approved, or they explicitly tell you to merge |
+
+### Testing conventions (desktop)
+
+The desktop suite is self-enforcing in several places. Extend it when you change the surface it covers — do not work around a failing gate.
+
+| If you… | You must… | Enforced by |
+|---|---|---|
+| add an export to `api.ts` | add an argv test that calls `cover("name")` | `src/lib/api.test.ts` — "every exported api operation has an argv test" |
+| add a UI flow that calls the CLI | add an e2e spec **and** extend `e2e/shim/install.ts` for the new argv | fall-through guard in `e2e/fixtures/test.ts` (fails if the UI shows "e2e mock has no handler") |
+| add a confirm / destructive gate | assert **dismiss** (zero real mutations) **and** **accept** (exactly one) | review + existing confirm-gates / destructive specs |
+| pass a secret through the CLI | assert it is absent from argv and present on stdin | `api.test.ts` invariants |
+| change any `--json` shape | update `types.ts`, hand-written fixtures, and refresh `e2e/fixtures/captured/` together | `captured-shape.test.ts` (missing required fields **and** unknown top-level keys) |
+| add or reshape a fixture in `data.ts` | keep it congruent with `types.ts` | `fixtures-shape.test.ts` |
+| write a new Playwright spec under `e2e/tests/` | import `{ test, expect, waitForQuiet }` from `../fixtures/test` — never from `@playwright/test` | ESLint `no-restricted-imports` on `e2e/tests/**` |
+
+Hermetic e2e is a CI gate (`.github/workflows/ci.yml` desktop job). Locally: `make app-e2e`. Tier-B (`make app-e2e-real`) is optional and not a PR gate.
 
 ## Verifying a fresh install end-to-end
 

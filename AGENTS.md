@@ -18,7 +18,7 @@ When in doubt: does this make the user **more of an owner** and **less of a sysa
 
 **`ownbasectl` needs an unlocked vault.** If a command fails with "the vault is locked", tell the user to run `ownbasectl vault unlock` (or open the OwnBase app) — do not try to work around it, and never ask them to paste their master password to you. If it fails with "no vault configured", they have no Base set up yet: go to Job 1.
 
-**Never push commits straight to `main`.** Every code change lands through a pull request: branch off `main`, push the branch, open a PR, wait for CI green, and merge only after review (or the user's explicit go-ahead). Do not `git push origin main`, force-push `main`, or tag a release from unreviewed commits. Hotfixes follow the same path — a short PR is still a PR. See Job 3 and [docs/development.md](docs/development.md).
+**Never push commits straight to `main`.** Every code change lands through a pull request: branch off `main`, push the branch, open a PR, wait for **CI green + every Bugbot finding fixed or replied to with rationale**, and merge only after review (or the user's explicit go-ahead). Do not `git push origin main`, force-push `main`, or tag a release from unreviewed commits. Hotfixes follow the same path — a short PR is still a PR. See Job 3 and [docs/development.md](docs/development.md#merge-gate).
 
 ## Job 1: Setting up a new Base
 
@@ -63,16 +63,21 @@ You have CLI access to a running Base and are asked to change what is deployed, 
 
 You are changing `cmd/ownbased`, `cmd/ownbasectl`, `internal/`, `desktop/`, or docs that ship with the product.
 
-**Start with [docs/development.md](docs/development.md)** — build/test workflow (Tier-1 anywhere, Tier-2 on the Ubuntu VM), the invariants to preserve (idempotency, deterministic compiler, single writer to `runtime/`, taxonomy-audited actions, no plaintext secrets on disk, honest dry-runs), and the merge gate.
+**Start with [docs/development.md](docs/development.md)** — build/test workflow (Tier-1 anywhere, Tier-2 on the Ubuntu VM), the invariants to preserve (idempotency, deterministic compiler, single writer to `runtime/`, taxonomy-audited actions, no plaintext secrets on disk, honest dry-runs), the merge gate, and [testing conventions](docs/development.md#testing-conventions-desktop) for the desktop suite.
 
 **Ship through a pull request, never by pushing `main`.**
 
 1. `git checkout -b <topic> main` (or rebase your topic onto latest `main`).
-2. Make the change; keep `go test ./...` and `golangci-lint run ./...` green locally (and `make app-check` if you touched `desktop/` or any `--json` shape).
+2. Make the change; keep the local gate green:
+   - always: `go test ./...` and `golangci-lint run ./...`
+   - if you touched `desktop/` or any `--json` shape: `make app-check` **and** `make app-e2e` (CI runs both; `app-check` alone does **not** include Playwright)
 3. Commit on the branch only. **Do not** `git push origin main`.
 4. `git push -u origin HEAD` and open a PR (`gh pr create`).
 5. Wait for CI on the PR. Fix failures on the same branch with new commits (or an explicit amend only if the user asked).
-6. Merge only when CI is green and the user has approved — or when they explicitly tell you to merge.
+6. Merge only when **all three** hold:
+   - CI is green (Tier 1, Desktop app including Playwright e2e, Tier 2, Tier 2 root)
+   - every Cursor Bugbot finding is **fixed, or replied to with rationale** — never silently dismissed
+   - the user has approved, or they explicitly tell you to merge
 7. Cut releases (tags) from `main` only after the PR is merged.
 
 Operating a Base (Job 2) is unrelated: deploying config, running `ownbasectl` against a machine, and installing a released daemon on a Base are not source changes and do not go through this gate.
@@ -83,3 +88,4 @@ Operating a Base (Job 2) is unrelated: deploying config, running `ownbasectl` ag
 | The durable rules of how a Base works | [docs/foundation/](docs/foundation/) — read once, in order |
 | Canonical term definitions | [docs/foundation/lexicon.md](docs/foundation/lexicon.md) |
 | Install / fresh-install verification | [INSTALL.md](INSTALL.md) |
+| Desktop test conventions (api cover gate, shim, goldens) | [docs/development.md](docs/development.md#testing-conventions-desktop) |

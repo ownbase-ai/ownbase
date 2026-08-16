@@ -82,3 +82,7 @@ This matters because the app renders things that came off a Base: session transc
 - **`unknown` is a health state.** `Tone` has `unknown` so "we have not checked" never renders the same as "fine".
 - **Exit codes are information.** `CliError.code` carries the CLI's classification; 7 means the vault is locked and sends the user to the unlock screen, 3 means preflight failed and has a specific explanation. Do not collapse them into one error box.
 - **Passwords go over stdin.** Never in argv — `ps` can read argv for as long as the process lives. `api.ts` already does this; keep it that way.
+- **Specs import `test` from `e2e/fixtures/test`.** That is what arms the shim fall-through guard. Importing `@playwright/test` directly in `e2e/tests/` is an ESLint error.
+- **Use the shared `waitForQuiet`.** Do not copy a local polling loop into a new spec; import it from `fixtures/test`.
+- **Extend the shim, do not ignore fall-through.** A new CLI path the UI calls needs a handler (or a `fails` / `streams` rule) in `e2e/shim/install.ts`. The post-test guard fails the suite if "e2e mock has no handler" appears in the page.
+- **Confirm gates assert both halves.** Dismiss → zero real mutations; accept → exactly one. Secrets stay off argv.
