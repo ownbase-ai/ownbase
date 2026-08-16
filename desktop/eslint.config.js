@@ -10,7 +10,7 @@ import tseslint from "typescript-eslint";
 // places that deliberately opt out are the ones that would otherwise re-run a
 // `create` or reload on every render, and each is commented.
 export default tseslint.config(
-  { ignores: ["dist", "src-tauri/target"] },
+  { ignores: ["dist", "src-tauri/target", "e2e/**", "playwright*.ts", "playwright-report", "test-results"] },
   {
     files: ["**/*.{ts,tsx}"],
     extends: [js.configs.recommended, ...tseslint.configs.recommended],

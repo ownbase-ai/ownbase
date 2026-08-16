@@ -28,10 +28,30 @@ The [desktop app](../desktop/README.md) is also Tier-1 — no window is opened, 
 
 ```bash
 make app-check       # tsc, eslint, vitest, cargo fmt, cargo clippy
+make app-e2e         # Playwright hermetic e2e (mocked Tauri IPC, no Multipass)
 make app             # the app against a dev server, for looking at it
 ```
 
 What that guards is the seam: every screen renders `ownbasectl --json`, so a field that moved on the Go side has to fail there rather than in a shipped bundle. If you change the shape of any `--json` output, run it.
+
+### Desktop e2e (Playwright)
+
+The app is a thin window over `ownbasectl`. Tier-A e2e tests drive the React UI in Chromium with the three Tauri IPC commands (`cli_run` / `cli_stream` / `cli_cancel`) mocked in the browser — see `desktop/e2e/`. No native window, no Base, runs in CI on every push.
+
+```bash
+cd desktop && npm run e2e          # or: make app-e2e
+cd desktop && npm run e2e:ui       # interactive Playwright UI
+cd desktop && npm run e2e:capture -- <base>   # refresh JSON fixtures from a live Base
+```
+
+Tier-B (local only, not CI) forwards the same IPC surface to a tiny bridge that spawns a real `ownbasectl` against an isolated `HOME`. Optional Multipass coverage sits next to `make smoke-test`:
+
+```bash
+npm run sidecar
+make app-e2e-real                  # vault create via real CLI; extend for Multipass
+```
+
+A cloud VPS is not part of the automated matrix: after create, VM and remote Bases share the same SSH-tunnel code path, and the Multipass VM already exercises install + operate.
 
 `desktop/go.mod` exists only to keep `go test ./...` out of `node_modules`, which ships a stray Go package. There is no first-party Go code under `desktop/`.
 

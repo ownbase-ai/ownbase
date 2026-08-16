@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
 // Tauri serves the dev build over a fixed port and needs a strict failure if
@@ -19,5 +19,10 @@ export default defineConfig({
     // Matches the Rust/WebKit versions Tauri 2 ships against.
     target: "es2022",
     sourcemap: true,
+  },
+  // Unit tests only. Playwright owns e2e/ and must not be collected by vitest.
+  test: {
+    include: ["src/**/*.{test,spec}.{ts,tsx}"],
+    exclude: ["e2e/**", "node_modules/**", "src-tauri/**"],
   },
 });
