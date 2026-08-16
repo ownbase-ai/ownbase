@@ -168,9 +168,15 @@ test.describe("read-only panels", () => {
         ),
       )
       .toBeTruthy();
-    // asciinema player mounts a terminal host inside the cast container.
-    await expect(page.locator(".ap-wrapper, .asciinema-player, [class*='asciinema']").first()).toBeVisible({
-      timeout: 10_000,
-    });
+    // Real asciinema-player root is div.ap-wrapper (not .asciinema-player).
+    // Glyphs are canvas-drawn, so assert the terminal canvas mounted with a
+    // real size — empty/broken cast data leaves width 0.
+    const wrapper = page.locator("div.ap-wrapper").first();
+    await expect(wrapper).toBeVisible({ timeout: 10_000 });
+    const canvas = wrapper.locator("canvas").first();
+    await expect(canvas).toBeVisible();
+    await expect
+      .poll(async () => canvas.evaluate((el: HTMLCanvasElement) => el.width))
+      .toBeGreaterThan(0);
   });
 });

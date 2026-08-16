@@ -1,0 +1,15 @@
+[
+  {
+    "id": "20260815T120000Z-demo-abcd",
+    "base": "demo",
+    "host": "base.example.com",
+    "user": "ubuntu",
+    "interactive": true,
+    "started_at": "2026-08-15T11:30:00Z",
+    "ended_at": "2026-08-15T11:35:00Z",
+    "exit_code": 0,
+    "bytes": 4096,
+    "invoker": "cli",
+    "cast_path": "/tmp/ownbase-e2e/sessions/20260815T120000Z-demo-abcd.cast"
+  }
+]

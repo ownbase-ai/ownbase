@@ -4,27 +4,10 @@ import {
   dbRestoreOutcome,
   dbStatusFixture,
   recoveryKitFixture,
+  upgradeCheckFixture,
 } from "../fixtures/data";
-import { expect, test } from "../fixtures/test";
+import { expect, test, waitForQuiet } from "../fixtures/test";
 import { callMatched, getCalls, openApp, realMutations } from "../shim/install";
-
-async function waitForQuiet(
-  page: import("@playwright/test").Page,
-  stableMs = 300,
-): Promise<Awaited<ReturnType<typeof getCalls>>> {
-  let last = -1;
-  let stableSince = Date.now();
-  for (;;) {
-    const calls = await getCalls(page);
-    if (calls.length === last) {
-      if (Date.now() - stableSince >= stableMs) return calls;
-    } else {
-      last = calls.length;
-      stableSince = Date.now();
-    }
-    await page.waitForTimeout(50);
-  }
-}
 
 test.describe("destructive flows", () => {
   test("RemoveBase: type-to-confirm; keep-vm when destroy unchecked", async ({ page }) => {
@@ -207,5 +190,109 @@ test.describe("destructive flows", () => {
       .toBeTruthy();
     await expect(page.getByText("snapshot saved")).toBeVisible();
     expect(realMutations(await getCalls(page), ["backup", "run", "demo"])).toHaveLength(1);
+  });
+
+  test("verifyBackup restore drill: pass path streams checkup --verify", async ({ page }) => {
+    await openApp(page, {
+      vault: "unlocked",
+      bases: [demoBase],
+      checkup: { demo: backupsConfiguredCheckup },
+      streams: [
+        {
+          match: ["checkup", "demo"],
+          events: [
+            { kind: "stderr", line: "Restoring newest snapshot…" },
+            { kind: "stderr", line: "restore check passed" },
+            { kind: "finished", code: 0 },
+          ],
+        },
+      ],
+    });
+
+    await page.getByRole("tab", { name: "Backups" }).click();
+    await page.getByRole("button", { name: "Run the restore drill" }).click();
+    await expect
+      .poll(async () =>
+        callMatched(await getCalls(page), ["checkup", "demo"], {
+          cmd: "cli_stream",
+          includeFlags: ["--verify"],
+        }),
+      )
+      .toBeTruthy();
+    await expect(page.getByText("restore check passed")).toBeVisible();
+    await expect(
+      page.getByText(/The drill did not pass/i),
+    ).toHaveCount(0);
+  });
+
+  test("verifyBackup restore drill: fail path surfaces product copy", async ({ page }) => {
+    await openApp(page, {
+      vault: "unlocked",
+      bases: [demoBase],
+      checkup: { demo: backupsConfiguredCheckup },
+      streams: [
+        {
+          match: ["checkup", "demo"],
+          events: [
+            { kind: "stderr", line: "postgres recovery failed: connection refused" },
+            { kind: "finished", code: 1 },
+          ],
+        },
+      ],
+    });
+
+    await page.getByRole("tab", { name: "Backups" }).click();
+    await page.getByRole("button", { name: "Run the restore drill" }).click();
+    await expect(
+      page.getByText(/The drill did not pass.*not provably restorable/i),
+    ).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText(/connection refused/i)).toBeVisible();
+  });
+
+  test("CoreUpgrade Apply upgrade: dismiss/accept + streams --apply", async ({ page }) => {
+    await openApp(page, {
+      vault: "unlocked",
+      bases: [demoBase],
+      checkup: { demo: backupsConfiguredCheckup },
+      upgradeCheck: upgradeCheckFixture,
+      streams: [
+        {
+          match: ["upgrade", "demo"],
+          events: [
+            { kind: "stderr", line: "Pulling caddy…" },
+            { kind: "stderr", line: "Restarted reverse proxy." },
+            { kind: "finished", code: 0 },
+          ],
+        },
+      ],
+    });
+
+    await page.getByRole("tab", { name: "Updates" }).click();
+    await page.getByRole("button", { name: "Check" }).click();
+    await expect(page.getByText("caddy", { exact: true })).toBeVisible();
+
+    page.once("dialog", (d) => d.dismiss());
+    await page.getByRole("button", { name: "Apply upgrade" }).click();
+    expect(
+      callMatched(await waitForQuiet(page), ["upgrade", "demo"], {
+        cmd: "cli_stream",
+        includeFlags: ["--apply"],
+      }),
+    ).toBeFalsy();
+
+    page.once("dialog", async (d) => {
+      expect(d.message()).toMatch(/Caddy|reverse proxy/i);
+      await d.accept();
+    });
+    await page.getByRole("button", { name: "Apply upgrade" }).click();
+    await expect
+      .poll(async () =>
+        callMatched(await getCalls(page), ["upgrade", "demo"], {
+          cmd: "cli_stream",
+          includeFlags: ["--apply"],
+        }),
+      )
+      .toBeTruthy();
+    await expect(page.getByText("Restarted reverse proxy.")).toBeVisible();
   });
 });

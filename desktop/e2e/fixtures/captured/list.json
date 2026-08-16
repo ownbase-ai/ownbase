@@ -1,0 +1,15 @@
+[
+  {
+    "name": "demo",
+    "host": "base.example.com",
+    "kind": "vm",
+    "vm_state": "Running",
+    "registered": true,
+    "ssh_user": "ubuntu",
+    "ssh_port": 22,
+    "has_token": true,
+    "has_key": true,
+    "config_repo_url": "git@github.com:example/ownbase-config.git",
+    "config_ref": "main"
+  }
+]

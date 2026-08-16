@@ -1,5 +1,6 @@
 // Canned ownbasectl --json documents for Tier-A Playwright tests.
-// Shapes mirror desktop/src/lib/types.ts. Refresh from a live Base with:
+// Shapes mirror desktop/src/lib/types.ts. Live goldens live in captured/;
+// refresh both after a --json shape change:
 //   npm run e2e:capture -- <base>
 
 import type {
@@ -363,6 +364,42 @@ export const backupsConfiguredCheckup: Checkup = {
       ],
     },
   },
+};
+
+/**
+ * Config repo present but no snapshot yet — mounts BackupSetupForm on the
+ * Backups tab (configured = Boolean(last_backup)).
+ */
+export const backupsUnconfiguredCheckup: Checkup = {
+  ...healthyCheckup,
+  status: {
+    ...healthyCheckup.status,
+    security: {
+      ...healthyCheckup.status.security,
+      backup_restorable: false,
+      last_backup: undefined,
+      last_verified: undefined,
+    },
+  },
+};
+
+export const backupSetupPreview: ConfigPreview = {
+  status: "ok",
+  would_change: true,
+  commit_message: "backup: configure restic repo",
+  diff: `--- a/ownbase.yaml
++++ b/ownbase.yaml
+@@ -0,0 +1,3 @@
++backup:
++  repo: s3:s3.amazonaws.com/example/ownbase
+`,
+};
+
+export const backupSetupPreviewNoChange: ConfigPreview = {
+  status: "ok",
+  would_change: false,
+  commit_message: "already configured",
+  diff: "",
 };
 
 /** Findings covering every FindingRow action.kind=run dispatch entry. */

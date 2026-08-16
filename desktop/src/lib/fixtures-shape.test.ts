@@ -14,7 +14,9 @@ import type {
 
 // Import fixtures from the e2e tree — path is stable relative to src/.
 import {
+  backupSetupPreview,
   backupsConfiguredCheckup,
+  backupsUnconfiguredCheckup,
   demoBase,
   demoKeygen,
   demoSessions,
@@ -47,12 +49,24 @@ describe("e2e fixture shapes", () => {
   });
 
   it("checkup fixtures satisfy Checkup", () => {
-    for (const c of [healthyCheckup, findingsCheckup, backupsConfiguredCheckup]) {
+    for (const c of [
+      healthyCheckup,
+      findingsCheckup,
+      backupsConfiguredCheckup,
+      backupsUnconfiguredCheckup,
+    ]) {
       assertCheckup(c);
     }
     expect(findingsCheckup.findings.length).toBeGreaterThan(0);
     expect(healthyCheckup.findings).toHaveLength(0);
     expect(backupsConfiguredCheckup.status.security.last_backup).toBeTruthy();
+    expect(backupsUnconfiguredCheckup.status.security.last_backup).toBeFalsy();
+    expect(backupsUnconfiguredCheckup.status.config?.repo_url).toBeTruthy();
+  });
+
+  it("backup setup preview fixtures satisfy ConfigPreview", () => {
+    expect(typeof backupSetupPreview.would_change).toBe("boolean");
+    expect(backupSetupPreview.would_change).toBe(true);
   });
 
   it("preview fixtures satisfy ConfigPreview", () => {

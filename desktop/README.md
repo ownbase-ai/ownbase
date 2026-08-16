@@ -47,12 +47,14 @@ npm run app:build   # full platform bundle (.dmg/.app on macOS)
 npm run e2e         # Playwright hermetic e2e (mocked IPC, CI)
 npm run e2e:ui      # same, with the Playwright UI
 npm run e2e:real    # real ownbasectl via local bridge (dev machine)
-npm run e2e:capture -- <base>  # dump live --json docs into e2e/fixtures/captured/
+npm run e2e:capture -- <base>  # refresh redacted goldens in e2e/fixtures/captured/
 ```
 
 ## End-to-end tests
 
 The app never talks to a Base directly — only through the sidecar — so Playwright runs the Vite UI in a normal browser and injects a mock of `__TAURI_INTERNALS__` (`e2e/shim/install.ts`). Scenarios hand the mock canned `--json` documents from `e2e/fixtures/data.ts`. That is enough to cover unlock, the setup wizard, dashboard tabs, the dry-run→confirm service gate, sessions, and vault screens without Multipass or a VPS.
+
+`e2e/fixtures/captured/` holds redacted live CLI output. `src/lib/captured-shape.test.ts` decodes those goldens against `types.ts` and fails on unknown top-level keys — the rename signal hermetic fixtures alone cannot catch. Refresh with `npm run e2e:capture -- <base>` after any `--json` shape change (see the release checklist in [docs/development.md](../docs/development.md#desktop-e2e-playwright)).
 
 For a real CLI path, `e2e/bridge/server.mjs` spawns `ownbasectl` under an isolated `HOME`; `npm run e2e:real` drives it. See [docs/development.md](../docs/development.md#desktop-e2e-playwright).
 

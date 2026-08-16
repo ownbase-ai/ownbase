@@ -3,26 +3,8 @@ import {
   healthyCheckup,
   serviceAddPreview,
 } from "../fixtures/data";
-import { expect, test } from "../fixtures/test";
+import { expect, test, waitForQuiet } from "../fixtures/test";
 import { callMatched, getCalls, openApp, realMutations } from "../shim/install";
-
-async function waitForQuiet(
-  page: import("@playwright/test").Page,
-  stableMs = 300,
-): Promise<Awaited<ReturnType<typeof getCalls>>> {
-  let last = -1;
-  let stableSince = Date.now();
-  for (;;) {
-    const calls = await getCalls(page);
-    if (calls.length === last) {
-      if (Date.now() - stableSince >= stableMs) return calls;
-    } else {
-      last = calls.length;
-      stableSince = Date.now();
-    }
-    await page.waitForTimeout(50);
-  }
-}
 
 test.describe("services", () => {
   test("add service: dry-run preview before commit", async ({ page }) => {
@@ -86,13 +68,24 @@ test.describe("services", () => {
 
     await expect(page.getByText("DATABASE_URL")).toBeVisible();
     await expect(page.getByText("API_TOKEN")).toBeVisible();
-    await expect(page.getByText("super-secret-value")).toHaveCount(0);
+    await expect(page.getByText("secret-value-for-DATABASE_URL")).toHaveCount(0);
+    await expect(page.getByText("secret-value-for-API_TOKEN")).toHaveCount(0);
 
-    await page.getByRole("button", { name: "Reveal" }).first().click();
-    await expect(page.getByText("super-secret-value")).toBeVisible();
+    const dbRow = page
+      .locator("li")
+      .filter({ has: page.locator(":scope > span.font-mono", { hasText: "DATABASE_URL" }) });
+    await dbRow.getByRole("button", { name: "Reveal" }).click();
+    await expect(page.getByText("secret-value-for-DATABASE_URL")).toBeVisible();
+    await expect(page.getByText("secret-value-for-API_TOKEN")).toHaveCount(0);
 
     expect(
-      callMatched(await getCalls(page), ["secrets", "get", "demo", "web"]),
+      callMatched(await getCalls(page), [
+        "secrets",
+        "get",
+        "demo",
+        "web",
+        "DATABASE_URL",
+      ]),
     ).toBeTruthy();
   });
 });

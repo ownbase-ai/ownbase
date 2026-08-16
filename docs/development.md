@@ -41,8 +41,16 @@ The app is a thin window over `ownbasectl`. Tier-A e2e tests drive the React UI 
 ```bash
 cd desktop && npm run e2e          # or: make app-e2e
 cd desktop && npm run e2e:ui       # interactive Playwright UI
-cd desktop && npm run e2e:capture -- <base>   # refresh JSON fixtures from a live Base
+cd desktop && npm run e2e:capture -- <base>   # refresh golden --json from a live Base
 ```
+
+**Release checklist — refresh captured CLI JSON.** Both `desktop/src/lib/types.ts` and `desktop/e2e/fixtures/data.ts` are hand-written from the Go structs. A field renamed on the Go side can pass typecheck and hermetic e2e until the golden files move. Before cutting a release (or after any `--json` shape change):
+
+1. Provision a throwaway Base (`make smoke-test`), unlock the vault.
+2. `cd desktop && npm run e2e:capture -- ownbase-fresh` — writes redacted docs under `e2e/fixtures/captured/`.
+3. Review the redaction (no real IPs, hostnames, repo URLs, or key material).
+4. `npm run test` — `captured-shape.test.ts` fails on missing required fields **and** unknown top-level keys.
+5. Commit the refreshed goldens with the shape change.
 
 Tier-B (local only, not CI) forwards the same IPC surface to a tiny bridge that spawns a real `ownbasectl` against an isolated `HOME`. Optional Multipass coverage sits next to `make smoke-test`:
 
