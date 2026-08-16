@@ -74,25 +74,31 @@ func (f *serviceFieldFlags) register(cmd *cobra.Command) {
 
 func newServiceAddCmd() *cobra.Command {
 	var f serviceFieldFlags
-	var jsonOut bool
+	var jsonOut, dryRun bool
 	cmd := &cobra.Command{
 		Use:   "add <name> <service>",
 		Short: "Add a new service to a Base's ownbase.yaml",
 		Long: `Adds a new service entry. --repo is required: an external git URL
 that OwnBase clones read-only and builds from. Pin the exact ref with
-'ownbasectl deploy' (or --ref at add time).`,
-		Example: `  ownbasectl service add mybase crm --repo git@github.com:org/crm.git --ref main --port 3000 --domain crm.example.com`,
-		Args:    cobra.ExactArgs(2),
+'ownbasectl deploy' (or --ref at add time).
+
+With --dry-run, the edit is computed and printed (as JSON with --json) but
+nothing is committed or pushed. The desktop app uses this to show the diff
+before the operator confirms.`,
+		Example: `  ownbasectl service add mybase crm --repo git@github.com:org/crm.git --ref main --port 3000 --domain crm.example.com
+  ownbasectl service add mybase crm --repo git@github.com:org/crm.git --port 3000 --dry-run --json`,
+		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runServiceAdd(args[0], args[1], f, jsonOut)
+			return runServiceAdd(args[0], args[1], f, jsonOut, dryRun)
 		},
 	}
 	f.register(cmd)
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "print the result as JSON")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "compute the ownbase.yaml edit without committing or pushing")
 	return cmd
 }
 
-func runServiceAdd(base, name string, f serviceFieldFlags, jsonOut bool) error {
+func runServiceAdd(base, name string, f serviceFieldFlags, jsonOut, dryRun bool) error {
 	if f.repo == "" {
 		return fmt.Errorf("--repo is required")
 	}
@@ -105,7 +111,7 @@ func runServiceAdd(base, name string, f serviceFieldFlags, jsonOut bool) error {
 		return err
 	}
 
-	err = mutateConfig(base, func(current string) (string, string, error) {
+	edit := func(current string) (string, string, error) {
 		cfg, err := schema.ParseConfig(strings.NewReader(current))
 		if err != nil {
 			return "", "", fmt.Errorf("parse current ownbase.yaml: %w", err)
@@ -142,11 +148,15 @@ func runServiceAdd(base, name string, f serviceFieldFlags, jsonOut bool) error {
 			return "", "", fmt.Errorf("encode ownbase.yaml: %w", err)
 		}
 		return string(content), fmt.Sprintf("feat(service): add %s", name), nil
-	})
-	if err != nil {
-		return err
 	}
 
+	if dryRun {
+		return printServicePreview(base, name, "add", edit, jsonOut)
+	}
+
+	if err := mutateConfig(base, edit); err != nil {
+		return err
+	}
 	if jsonOut {
 		return printJSON(map[string]any{"status": "added", "service": name})
 	}
@@ -155,21 +165,26 @@ func runServiceAdd(base, name string, f serviceFieldFlags, jsonOut bool) error {
 }
 
 func newServiceRemoveCmd() *cobra.Command {
-	var jsonOut bool
+	var jsonOut, dryRun bool
 	cmd := &cobra.Command{
 		Use:   "remove <name> <service>",
 		Short: "Remove a service from a Base's ownbase.yaml",
-		Args:  cobra.ExactArgs(2),
+		Long: `Removes a service entry from ownbase.yaml and pushes the change.
+
+With --dry-run, the edit is computed and printed (as JSON with --json) but
+nothing is committed or pushed.`,
+		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runServiceRemove(args[0], args[1], jsonOut)
+			return runServiceRemove(args[0], args[1], jsonOut, dryRun)
 		},
 	}
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "print the result as JSON")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "compute the ownbase.yaml edit without committing or pushing")
 	return cmd
 }
 
-func runServiceRemove(base, name string, jsonOut bool) error {
-	err := mutateConfig(base, func(current string) (string, string, error) {
+func runServiceRemove(base, name string, jsonOut, dryRun bool) error {
+	edit := func(current string) (string, string, error) {
 		cfg, err := schema.ParseConfig(strings.NewReader(current))
 		if err != nil {
 			return "", "", fmt.Errorf("parse current ownbase.yaml: %w", err)
@@ -183,11 +198,15 @@ func runServiceRemove(base, name string, jsonOut bool) error {
 			return "", "", fmt.Errorf("encode ownbase.yaml: %w", err)
 		}
 		return string(content), fmt.Sprintf("feat(service): remove %s", name), nil
-	})
-	if err != nil {
-		return err
 	}
 
+	if dryRun {
+		return printServicePreview(base, name, "remove", edit, jsonOut)
+	}
+
+	if err := mutateConfig(base, edit); err != nil {
+		return err
+	}
 	if jsonOut {
 		return printJSON(map[string]any{"status": "removed", "service": name})
 	}
@@ -197,7 +216,7 @@ func runServiceRemove(base, name string, jsonOut bool) error {
 
 func newServiceUpdateCmd() *cobra.Command {
 	var f serviceFieldFlags
-	var jsonOut bool
+	var jsonOut, dryRun bool
 	cmd := &cobra.Command{
 		Use:   "update <name> <service>",
 		Short: "Update fields of an existing service in a Base's ownbase.yaml",
@@ -208,20 +227,26 @@ the existing capability list entirely when passed.
 
 This is how a ref bump is done: the new ref is fetched into the service's
 local bare repo automatically on the next reconcile if it isn't already
-present locally (see internal/repos).`,
+present locally (see internal/repos).
+
+With --dry-run, the edit is computed and printed (as JSON with --json) but
+nothing is committed or pushed. The desktop app uses this to show the diff
+before the operator confirms.`,
 		Example: `  ownbasectl service update mybase crm --ref v2.3.0
-  ownbasectl service update mybase crm --port 4000 --domain crm.example.com`,
+  ownbasectl service update mybase crm --port 4000 --domain crm.example.com
+  ownbasectl service update mybase crm --port 4000 --dry-run --json`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runServiceUpdate(cmd, args[0], args[1], f, jsonOut)
+			return runServiceUpdate(cmd, args[0], args[1], f, jsonOut, dryRun)
 		},
 	}
 	f.register(cmd)
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "print the result as JSON")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "compute the ownbase.yaml edit without committing or pushing")
 	return cmd
 }
 
-func runServiceUpdate(cmd *cobra.Command, base, name string, f serviceFieldFlags, jsonOut bool) error {
+func runServiceUpdate(cmd *cobra.Command, base, name string, f serviceFieldFlags, jsonOut, dryRun bool) error {
 	changed := cmd.Flags().Changed
 	// Validate scopes before mutateConfig clones the config repo.
 	var access []string
@@ -232,7 +257,7 @@ func runServiceUpdate(cmd *cobra.Command, base, name string, f serviceFieldFlags
 			return err
 		}
 	}
-	err := mutateConfig(base, func(current string) (string, string, error) {
+	edit := func(current string) (string, string, error) {
 		cfg, err := schema.ParseConfig(strings.NewReader(current))
 		if err != nil {
 			return "", "", fmt.Errorf("parse current ownbase.yaml: %w", err)
@@ -301,15 +326,48 @@ func runServiceUpdate(cmd *cobra.Command, base, name string, f serviceFieldFlags
 			return "", "", fmt.Errorf("encode ownbase.yaml: %w", err)
 		}
 		return string(content), fmt.Sprintf("chore(service): update %s", name), nil
-	})
-	if err != nil {
-		return err
 	}
 
+	if dryRun {
+		return printServicePreview(base, name, "update", edit, jsonOut)
+	}
+
+	if err := mutateConfig(base, edit); err != nil {
+		return err
+	}
 	if jsonOut {
 		return printJSON(map[string]any{"status": "updated", "service": name})
 	}
 	fmt.Printf("Updated service %q on %q — reconcile triggered.\n", name, base)
+	return nil
+}
+
+// printServicePreview runs edit as a dry-run and prints the would-be config
+// change. JSON shape matches deploy/backup setup so the desktop app can reuse
+// DiffPreview (status/would_change/commit_message/diff/current/proposed).
+func printServicePreview(base, name, action string, edit func(string) (string, string, error), jsonOut bool) error {
+	preview, err := previewConfig(base, edit)
+	if err != nil {
+		return err
+	}
+	if jsonOut {
+		return printJSON(map[string]any{
+			"status":         "preview",
+			"service":        name,
+			"action":         action,
+			"would_change":   preview.WouldChange,
+			"commit_message": preview.CommitMessage,
+			"diff":           preview.Diff,
+			"current":        preview.Current,
+			"proposed":       preview.Proposed,
+		})
+	}
+	if !preview.WouldChange {
+		fmt.Printf("service %q on %q — nothing would change.\n", name, base)
+		return nil
+	}
+	fmt.Printf("Would %s service %q on %q:\n\n%s\ncommit: %s\n",
+		action, name, base, preview.Diff, preview.CommitMessage)
 	return nil
 }
 

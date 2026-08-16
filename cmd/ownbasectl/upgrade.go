@@ -24,7 +24,7 @@ import (
 )
 
 func newUpgradeCmd() *cobra.Command {
-	var apply bool
+	var apply, jsonOut bool
 	cmd := &cobra.Command{
 		Use:   "upgrade <name>",
 		Short: "Check or apply updates to the OwnBase core package (Caddy)",
@@ -38,20 +38,30 @@ User services are updated by editing ref: in ownbase.yaml and committing
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !apply {
-				return runUpgradeCheck(args[0])
+				return runUpgradeCheck(args[0], jsonOut)
 			}
 			return runUpgradeApply(args[0])
 		},
 	}
 	cmd.Flags().BoolVar(&apply, "apply", false,
 		"apply the upgrade (pull new images and restart core containers via the Base daemon); default is check-only")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "print check-mode status as JSON (ignored with --apply)")
 	return cmd
+}
+
+// corePackage is one entry from GET /core/status — the JSON shape ownbasectl
+// upgrade --json emits so the desktop app never parses human check output.
+type corePackage struct {
+	Name    string `json:"name"`
+	Image   string `json:"image"`
+	Digest  string `json:"digest"`
+	Running bool   `json:"running"`
 }
 
 // runUpgradeCheck asks the Base's daemon for the state of the core packages
 // (GET /core/status) and prints one line per package. This runs on the Base
 // over the SSH tunnel — never against the local machine's Podman.
-func runUpgradeCheck(base string) error {
+func runUpgradeCheck(base string, jsonOut bool) error {
 	conn, err := connectToServer(base)
 	if err != nil {
 		return err
@@ -63,15 +73,20 @@ func runUpgradeCheck(base string) error {
 	}
 
 	var resp struct {
-		Packages []struct {
-			Name    string `json:"name"`
-			Image   string `json:"image"`
-			Digest  string `json:"digest"`
-			Running bool   `json:"running"`
-		} `json:"packages"`
+		Packages []corePackage `json:"packages"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return fmt.Errorf("parse response: %w", err)
+	}
+	if resp.Packages == nil {
+		resp.Packages = []corePackage{}
+	}
+
+	if jsonOut {
+		return printJSON(map[string]any{
+			"status":   "ok",
+			"packages": resp.Packages,
+		})
 	}
 
 	fmt.Println("OwnBase core package status")

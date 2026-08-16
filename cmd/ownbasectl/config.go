@@ -288,6 +288,7 @@ func runConfigGet(base string, jsonOut bool) error {
 
 func newConfigSetCmd() *cobra.Command {
 	var file, message string
+	var jsonOut, dryRun bool
 	cmd := &cobra.Command{
 		Use:   "set <name>",
 		Short: "Atomically replace the Base's ownbase.yaml",
@@ -295,21 +296,28 @@ func newConfigSetCmd() *cobra.Command {
 omitted or "-"), validates it locally, commits it to the external config repo
 (with your own git credentials), pushes, and asks the Base to reconcile.
 
+With --dry-run, the edit is computed and printed (as JSON with --json) but
+nothing is committed or pushed. The desktop app uses this to show the diff
+before the operator confirms.
+
 Exit code is non-zero on validation failure or transport error, so this is
 safe to call unattended from a script or an AI agent.`,
 		Example: `  ownbasectl config set mybase --file ./ownbase.yaml
-  cat ownbase.yaml | ownbasectl config set mybase`,
+  cat ownbase.yaml | ownbasectl config set mybase
+  ownbasectl config set mybase --file ./ownbase.yaml --dry-run --json`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runConfigSet(args[0], file, message)
+			return runConfigSet(args[0], file, message, jsonOut, dryRun)
 		},
 	}
 	cmd.Flags().StringVar(&file, "file", "", "path to the new ownbase.yaml (default: read from stdin)")
 	cmd.Flags().StringVar(&message, "message", "", "commit message (default: a generic ownbasectl message)")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "print the result as JSON")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "compute the ownbase.yaml edit without committing or pushing")
 	return cmd
 }
 
-func runConfigSet(base, file, message string) error {
+func runConfigSet(base, file, message string, jsonOut, dryRun bool) error {
 	content, err := readConfigInput(file)
 	if err != nil {
 		return err
@@ -321,15 +329,47 @@ func runConfigSet(base, file, message string) error {
 		message = "chore(config): update ownbase.yaml via ownbasectl"
 	}
 
-	err = mutateConfig(base, func(_ string) (string, string, error) {
+	edit := func(_ string) (string, string, error) {
 		return string(content), message, nil
-	})
+	}
+
+	if dryRun {
+		preview, err := previewConfig(base, edit)
+		if err != nil {
+			return err
+		}
+		if jsonOut {
+			return printJSON(map[string]any{
+				"status":         "preview",
+				"would_change":   preview.WouldChange,
+				"commit_message": preview.CommitMessage,
+				"diff":           preview.Diff,
+				"current":        preview.Current,
+				"proposed":       preview.Proposed,
+			})
+		}
+		if !preview.WouldChange {
+			fmt.Printf("Config on %q is already up to date — nothing would change.\n", base)
+			return nil
+		}
+		fmt.Printf("Would replace ownbase.yaml on %q:\n\n%s\ncommit: %s\n",
+			base, preview.Diff, preview.CommitMessage)
+		return nil
+	}
+
+	err = mutateConfig(base, edit)
 	if err == errNoConfigChange {
+		if jsonOut {
+			return printJSON(map[string]any{"status": "unchanged"})
+		}
 		fmt.Printf("Config on %q is already up to date — nothing to do.\n", base)
 		return nil
 	}
 	if err != nil {
 		return err
+	}
+	if jsonOut {
+		return printJSON(map[string]any{"status": "updated"})
 	}
 	fmt.Printf("Config updated on %q — reconcile triggered.\n", base)
 	return nil

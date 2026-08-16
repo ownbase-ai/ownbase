@@ -34,7 +34,8 @@ inside the SSH tunnel and is never written to disk on your machine.`,
 }
 
 func newSecretsListCmd() *cobra.Command {
-	return &cobra.Command{
+	var jsonOut bool
+	cmd := &cobra.Command{
 		Use:   "list <name> [service]",
 		Short: "List services with secrets, or the key names for one service",
 		Args:  cobra.RangeArgs(1, 2),
@@ -43,14 +44,16 @@ func newSecretsListCmd() *cobra.Command {
 			if len(args) == 2 {
 				service = args[1]
 			}
-			return runSecretsList(args[0], service)
+			return runSecretsList(args[0], service, jsonOut)
 		},
 	}
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "print the result as JSON")
+	return cmd
 }
 
 // runSecretsList prints either all services that have secrets (no arg) or the
 // key names for a specific service.
-func runSecretsList(base, service string) error {
+func runSecretsList(base, service string, jsonOut bool) error {
 	conn, err := connectToServer(base)
 	if err != nil {
 		return err
@@ -68,6 +71,12 @@ func runSecretsList(base, service string) error {
 		}
 		if err := json.Unmarshal(body, &resp); err != nil {
 			return fmt.Errorf("parse response: %w", err)
+		}
+		if resp.Services == nil {
+			resp.Services = []string{}
+		}
+		if jsonOut {
+			return printJSON(map[string]any{"services": resp.Services})
 		}
 		if len(resp.Services) == 0 {
 			fmt.Println("No secrets configured on this Base.")
@@ -91,6 +100,15 @@ func runSecretsList(base, service string) error {
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return fmt.Errorf("parse response: %w", err)
 	}
+	if resp.Keys == nil {
+		resp.Keys = []string{}
+	}
+	if resp.Service == "" {
+		resp.Service = service
+	}
+	if jsonOut {
+		return printJSON(map[string]any{"service": resp.Service, "keys": resp.Keys})
+	}
 	if len(resp.Keys) == 0 {
 		fmt.Printf("No secrets configured for service %q.\n", service)
 		return nil
@@ -102,18 +120,21 @@ func runSecretsList(base, service string) error {
 }
 
 func newSecretsGetCmd() *cobra.Command {
-	return &cobra.Command{
+	var jsonOut bool
+	cmd := &cobra.Command{
 		Use:   "get <name> <service> <key>",
 		Short: "Print the decrypted value of one secret",
 		Args:  cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSecretsGet(args[0], args[1], args[2])
+			return runSecretsGet(args[0], args[1], args[2], jsonOut)
 		},
 	}
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "print {service,key,value} as JSON")
+	return cmd
 }
 
 // runSecretsGet prints the decrypted value for a single secret key.
-func runSecretsGet(base, service, key string) error {
+func runSecretsGet(base, service, key string, jsonOut bool) error {
 	conn, err := connectToServer(base)
 	if err != nil {
 		return err
@@ -132,6 +153,16 @@ func runSecretsGet(base, service, key string) error {
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return fmt.Errorf("parse response: %w", err)
 	}
+	if resp.Key == "" {
+		resp.Key = key
+	}
+	if jsonOut {
+		return printJSON(map[string]any{
+			"service": service,
+			"key":     resp.Key,
+			"value":   resp.Value,
+		})
+	}
 	fmt.Print(resp.Value)
 	// Trailing newline only on a terminal — piped output (e.g.
 	// `secrets get svc KEY | pbcopy`) gets the exact value, nothing more.
@@ -142,7 +173,7 @@ func runSecretsGet(base, service, key string) error {
 }
 
 func newSecretsSetCmd() *cobra.Command {
-	var stdin bool
+	var stdin, jsonOut bool
 	cmd := &cobra.Command{
 		Use:   "set <name> <service> [KEY=VALUE...]",
 		Short: "Set one or more secrets for a service",
@@ -154,15 +185,16 @@ ps and shell history — prefer --stdin for anything sensitive:
 KEY=VALUE arguments and --stdin JSON may be combined; argv wins on conflict.`,
 		Args: cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSecretsSet(args[0], args[1], args[2:], stdin)
+			return runSecretsSet(args[0], args[1], args[2:], stdin, jsonOut)
 		},
 	}
 	cmd.Flags().BoolVar(&stdin, "stdin", false, "read a JSON object of secrets from stdin (avoids secrets in argv)")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "print the result as JSON")
 	return cmd
 }
 
 // runSecretsSet sets one or more secret key=value pairs for a service.
-func runSecretsSet(base, service string, kvArgs []string, fromStdin bool) error {
+func runSecretsSet(base, service string, kvArgs []string, fromStdin, jsonOut bool) error {
 	updates := make(map[string]string)
 	if fromStdin {
 		data, err := io.ReadAll(os.Stdin)
@@ -211,32 +243,51 @@ func runSecretsSet(base, service string, kvArgs []string, fromStdin bool) error 
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return fmt.Errorf("parse response: %w", err)
 	}
-	fmt.Printf("Updated %d secret(s) for service %q.\n", resp.Updated, resp.Service)
 
 	// Keep vault cloud-key escrow in lockstep. RESTIC_PASSWORD is refused
 	// above — changing it without restic key add would dual-write a password
 	// that does not open the repository.
+	var escrowWarning string
 	if service == "backup" {
 		if err := syncBackupCloudEscrow(base, updates); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: Base secrets updated but vault cloud-key escrow was not: %v\n", err)
+			escrowWarning = err.Error()
+			if !jsonOut {
+				fmt.Fprintf(os.Stderr, "warning: Base secrets updated but vault cloud-key escrow was not: %v\n", err)
+			}
 		}
 	}
+
+	if jsonOut {
+		out := map[string]any{
+			"status":  "updated",
+			"service": resp.Service,
+			"updated": resp.Updated,
+		}
+		if escrowWarning != "" {
+			out["escrow_warning"] = escrowWarning
+		}
+		return printJSON(out)
+	}
+	fmt.Printf("Updated %d secret(s) for service %q.\n", resp.Updated, resp.Service)
 	return nil
 }
 
 func newSecretsDeleteCmd() *cobra.Command {
-	return &cobra.Command{
+	var jsonOut bool
+	cmd := &cobra.Command{
 		Use:   "delete <name> <service> <key>",
 		Short: "Remove one secret from a service",
 		Args:  cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSecretsDelete(args[0], args[1], args[2])
+			return runSecretsDelete(args[0], args[1], args[2], jsonOut)
 		},
 	}
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "print the result as JSON")
+	return cmd
 }
 
 // runSecretsDelete removes a single secret key from a service.
-func runSecretsDelete(base, service, key string) error {
+func runSecretsDelete(base, service, key string, jsonOut bool) error {
 	conn, err := connectToServer(base)
 	if err != nil {
 		return err
@@ -255,13 +306,29 @@ func runSecretsDelete(base, service, key string) error {
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return fmt.Errorf("parse response: %w", err)
 	}
-	fmt.Printf("Deleted secret %q from service %q.\n", resp.Deleted, resp.Service)
 
+	// Vault MergeSecretsFrom preserves empty fields, so a delete cannot
+	// clear the escrow. Tell the operator rather than pretend.
+	escrowNote := ""
 	if service == "backup" {
-		// Vault MergeSecretsFrom preserves empty fields, so a delete cannot
-		// clear the escrow. Tell the operator rather than pretend.
-		fmt.Fprintf(os.Stderr, "note: vault escrow still holds any prior %s — clear it in KeePassXC or run backup rekey/setup if restore must not use it\n", key)
+		escrowNote = fmt.Sprintf("vault escrow still holds any prior %s — clear it in KeePassXC or run backup rekey/setup if restore must not use it", key)
+		if !jsonOut {
+			fmt.Fprintf(os.Stderr, "note: %s\n", escrowNote)
+		}
 	}
+
+	if jsonOut {
+		out := map[string]any{
+			"status":  "deleted",
+			"service": resp.Service,
+			"deleted": resp.Deleted,
+		}
+		if escrowNote != "" {
+			out["escrow_note"] = escrowNote
+		}
+		return printJSON(out)
+	}
+	fmt.Printf("Deleted secret %q from service %q.\n", resp.Deleted, resp.Service)
 	return nil
 }
 
