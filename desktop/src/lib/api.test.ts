@@ -122,17 +122,39 @@ describe("vault and agent", () => {
     expect(json).toHaveBeenCalledWith(["version"]);
   });
 
-  it("versionCheck builds argv", async () => {
+  it("versionCheck builds argv and accepts non-zero when JSON is present", async () => {
     cover("versionCheck");
-    await api.versionCheck();
-    expect(json).toHaveBeenCalledWith(["version", "--check", "--json"]);
-    json.mockClear();
+    const report = {
+      components: [
+        {
+          name: "cli",
+          current: "v0.4.0",
+          latest: "v0.5.0",
+          status: "behind",
+          guide: "brew upgrade --cask ownbase-ai/tap/ownbasectl",
+        },
+      ],
+    };
+    // Behind → exit 1, but stdout is still the report (scriptable verdict).
+    raw.mockResolvedValueOnce({
+      code: 1,
+      stdout: JSON.stringify(report) + "\n",
+      stderr: "error: one or more OwnBase components are behind — see above\n",
+    });
+    await expect(api.versionCheck()).resolves.toEqual(report);
+    expect(raw).toHaveBeenCalledWith(["version", "--check", "--json"]);
+
+    raw.mockResolvedValueOnce({
+      code: 0,
+      stdout: JSON.stringify({ components: [] }) + "\n",
+      stderr: "",
+    });
     await api.versionCheck({
       appVersion: "0.5.0",
       base: "demo",
       refresh: true,
     });
-    expect(json).toHaveBeenCalledWith([
+    expect(raw).toHaveBeenCalledWith([
       "version",
       "--check",
       "--json",
