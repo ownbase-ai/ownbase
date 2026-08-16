@@ -183,6 +183,7 @@ export function restoreBase(
     remote?: string;
     sshUser?: string;
     sshPort?: number;
+    caddyEmail?: string;
     cpus?: number;
     memory?: number;
     disk?: number;
@@ -199,6 +200,7 @@ export function restoreBase(
   if (opts.remote) args.push("--remote", opts.remote);
   if (opts.sshUser) args.push("--ssh-user", opts.sshUser);
   if (opts.sshPort) args.push("--ssh-port", String(opts.sshPort));
+  if (opts.caddyEmail) args.push("--caddy-email", opts.caddyEmail);
   if (opts.cpus) args.push("--cpus", String(opts.cpus));
   if (opts.memory) args.push("--memory", String(opts.memory));
   if (opts.disk) args.push("--disk", String(opts.disk));
