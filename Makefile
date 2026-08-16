@@ -1,5 +1,5 @@
 .PHONY: all build build-linux test test-vm test-integration sync-vm smoke-test connect-vm lint fmt fmt-fix vet tidy clean \
-        app app-build app-check app-sidecar
+        app app-build app-check app-sidecar app-e2e app-e2e-real
 
 VM      ?= ownbase-test
 VM_NAME ?= ownbase-fresh

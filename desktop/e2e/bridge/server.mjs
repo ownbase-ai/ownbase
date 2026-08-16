@@ -72,16 +72,26 @@ function streamCtl(id, args, stdin, send) {
   });
   running.set(id, child);
 
-  const flush = (kind, buf) => {
-    for (const line of buf.toString().split(/\r?\n/)) {
+  // Carry partial lines across chunks so a progress line split mid-write is
+  // not emitted as two truncated events.
+  const carry = { stdout: "", stderr: "" };
+  const onChunk = (kind, buf) => {
+    const text = carry[kind] + buf.toString();
+    const parts = text.split(/\r?\n/);
+    carry[kind] = parts.pop() ?? "";
+    for (const line of parts) {
       if (line.length) send({ kind, line });
     }
   };
-  child.stdout.on("data", (d) => flush("stdout", d));
-  child.stderr.on("data", (d) => flush("stderr", d));
+  child.stdout.on("data", (d) => onChunk("stdout", d));
+  child.stderr.on("data", (d) => onChunk("stderr", d));
   if (stdin != null) child.stdin.write(stdin);
   child.stdin.end();
   child.on("close", (code) => {
+    for (const kind of ["stdout", "stderr"]) {
+      const tail = carry[kind].trim();
+      if (tail) send({ kind, line: tail });
+    }
     running.delete(id);
     send({ kind: "finished", code: code ?? 1 });
   });
