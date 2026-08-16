@@ -72,7 +72,11 @@ For a machine someone else provisioned, or one you're registering on a second co
 
 ### How big a machine
 
-The floor is set by building, not by running: each service is built from source on the Base, and a build peaks far above the container it produces. [Sizing guidance](../README.md#how-big-a-machine) has the numbers.
+The floor is set by building, not by running: each service is built from source on the Base, and a build peaks far above the container it produces. [Sizing guidance](../README.md#how-big-a-machine) has the numbers. The local-VM path exposes CPU / memory / disk before create.
+
+### Restore from backups
+
+The wizard also has **Restore from backups** (local VM or remote server). Same path as `ownbasectl restore`: fresh machine, rebuild install, restic restore, then normal reconcile. Credentials default from the vault escrow for that Base name; you can override repo / password / cloud keys. Remote restore still needs the owner public key authorized on the fresh server first.
 
 ## The dashboard
 

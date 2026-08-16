@@ -28,8 +28,13 @@ import type { KeygenResult } from "../lib/types";
  * that already runs OwnBase needs none of that — it already has a key it
  * trusts, so the whole thing is a connectivity check.
  */
-type Mode = "create-remote" | "create-local" | "adopt";
-type Step = "path" | "name" | "key" | "server" | "finish" | "done";
+type Mode =
+  | "create-remote"
+  | "create-local"
+  | "adopt"
+  | "restore-local"
+  | "restore-remote";
+type Step = "path" | "name" | "key" | "creds" | "server" | "finish" | "done";
 
 function stepsFor(mode: Mode): Array<{ id: Step; label: string }> {
   if (mode === "create-local") {
@@ -37,6 +42,22 @@ function stepsFor(mode: Mode): Array<{ id: Step; label: string }> {
       { id: "name", label: "Name" },
       { id: "key", label: "SSH key" },
       { id: "finish", label: "Install" },
+    ];
+  }
+  if (mode === "restore-local") {
+    return [
+      { id: "name", label: "Name" },
+      { id: "creds", label: "Backup" },
+      { id: "finish", label: "Restore" },
+    ];
+  }
+  if (mode === "restore-remote") {
+    return [
+      { id: "name", label: "Name" },
+      { id: "key", label: "SSH key" },
+      { id: "creds", label: "Backup" },
+      { id: "server", label: "Server" },
+      { id: "finish", label: "Restore" },
     ];
   }
   return [
@@ -49,6 +70,10 @@ function stepsFor(mode: Mode): Array<{ id: Step; label: string }> {
 
 function isCreate(mode: Mode): boolean {
   return mode === "create-remote" || mode === "create-local";
+}
+
+function isRestore(mode: Mode): boolean {
+  return mode === "restore-local" || mode === "restore-remote";
 }
 
 export function SetupWizard({
@@ -75,6 +100,26 @@ export function SetupWizard({
   const [cpus, setCpus] = useState(2);
   const [memory, setMemory] = useState(2);
   const [disk, setDisk] = useState(20);
+  const [backupRepo, setBackupRepo] = useState("");
+  const [backupPassword, setBackupPassword] = useState("");
+  const [awsKey, setAwsKey] = useState("");
+  const [awsSecret, setAwsSecret] = useState("");
+  const [b2Id, setB2Id] = useState("");
+  const [b2Key, setB2Key] = useState("");
+  const [forceRebuild, setForceRebuild] = useState(false);
+
+  const modeBlurb =
+    step === "path"
+      ? "A remote server, a local VM, one that already runs OwnBase, or a rebuild from backups."
+      : mode === "create-remote"
+        ? "About ten minutes, most of it waiting. One step needs you to visit your server provider; the rest happens here."
+        : mode === "create-local"
+          ? "A Multipass VM on this computer. Needs Multipass installed; no provider, no public IP."
+          : mode === "restore-local"
+            ? "Rebuild this Base onto a fresh local VM from its restic repository."
+            : mode === "restore-remote"
+              ? "Rebuild this Base onto a fresh remote server from its restic repository."
+              : "A few seconds — verify the connection, and it's registered.";
 
   return (
     // Scroll the full main pane so the scrollbar sits on the window edge,
@@ -83,15 +128,7 @@ export function SetupWizard({
       <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-8 py-10">
       <header>
         <h1 className="text-lg font-medium text-zinc-100">Set up a Base</h1>
-        <p className="mt-1 text-sm leading-relaxed text-zinc-500">
-          {step === "path"
-            ? "A remote server, a local VM on this computer, or one that already runs OwnBase."
-            : mode === "create-remote"
-              ? "About ten minutes, most of it waiting. One step needs you to visit your server provider; the rest happens here."
-              : mode === "create-local"
-                ? "A Multipass VM on this computer. Needs Multipass installed; no provider, no public IP."
-                : "A few seconds — verify the connection, and it's registered."}
-        </p>
+        <p className="mt-1 text-sm leading-relaxed text-zinc-500">{modeBlurb}</p>
       </header>
 
       {step !== "path" && <Progress steps={stepsFor(mode)} step={step} />}
@@ -111,12 +148,54 @@ export function SetupWizard({
           existingNames={existingNames}
           name={name}
           onName={setName}
-          onNext={() => setStep("key")}
+          allowExisting={isRestore(mode)}
+          onNext={() =>
+            setStep(
+              mode === "restore-local"
+                ? "creds"
+                : mode === "restore-remote" || isCreate(mode)
+                  ? "key"
+                  : "key",
+            )
+          }
           onBack={() => setStep("path")}
         />
       )}
 
-      {step === "key" && isCreate(mode) && (
+      {step === "creds" && isRestore(mode) && (
+        <RestoreCredsStep
+          base={name}
+          repo={backupRepo}
+          onRepo={setBackupRepo}
+          password={backupPassword}
+          onPassword={setBackupPassword}
+          awsKey={awsKey}
+          onAwsKey={setAwsKey}
+          awsSecret={awsSecret}
+          onAwsSecret={setAwsSecret}
+          b2Id={b2Id}
+          onB2Id={setB2Id}
+          b2Key={b2Key}
+          onB2Key={setB2Key}
+          forceRebuild={forceRebuild}
+          onForceRebuild={setForceRebuild}
+          cpus={cpus}
+          memory={memory}
+          disk={disk}
+          onCpus={setCpus}
+          onMemory={setMemory}
+          onDisk={setDisk}
+          local={mode === "restore-local"}
+          onBack={() =>
+            setStep(mode === "restore-remote" ? "key" : "name")
+          }
+          onNext={() =>
+            setStep(mode === "restore-local" ? "finish" : "server")
+          }
+        />
+      )}
+
+      {step === "key" && (isCreate(mode) || mode === "restore-remote") && (
         <KeyStep
           base={name}
           local={mode === "create-local"}
@@ -133,7 +212,15 @@ export function SetupWizard({
             setKeySource(source);
           }}
           onBack={() => setStep("name")}
-          onNext={() => setStep(mode === "create-local" ? "finish" : "server")}
+          onNext={() =>
+            setStep(
+              mode === "create-local"
+                ? "finish"
+                : mode === "restore-remote"
+                  ? "creds"
+                  : "server",
+            )
+          }
         />
       )}
 
@@ -146,7 +233,7 @@ export function SetupWizard({
         />
       )}
 
-      {step === "server" && mode === "create-remote" && (
+      {step === "server" && (mode === "create-remote" || mode === "restore-remote") && (
         <ServerStep
           publicKey={key?.public_key ?? ""}
           address={address}
@@ -155,7 +242,8 @@ export function SetupWizard({
           onSSHUser={setSSHUser}
           caddyEmail={caddyEmail}
           onCaddyEmail={setCaddyEmail}
-          onBack={() => setStep("key")}
+          restore={mode === "restore-remote"}
+          onBack={() => setStep(mode === "restore-remote" ? "creds" : "key")}
           onNext={() => setStep("finish")}
         />
       )}
@@ -186,6 +274,29 @@ export function SetupWizard({
           memory={memory}
           disk={disk}
           onBack={() => setStep(mode === "create-local" ? "key" : "server")}
+          onDone={() => setStep("done")}
+        />
+      )}
+
+      {step === "finish" && isRestore(mode) && (
+        <RestoreStep
+          base={name}
+          local={mode === "restore-local"}
+          address={address}
+          sshUser={sshUser}
+          cpus={cpus}
+          memory={memory}
+          disk={disk}
+          repo={backupRepo}
+          password={backupPassword}
+          awsKey={awsKey}
+          awsSecret={awsSecret}
+          b2Id={b2Id}
+          b2Key={b2Key}
+          forceRebuild={forceRebuild}
+          onBack={() =>
+            setStep(mode === "restore-local" ? "creds" : "server")
+          }
           onDone={() => setStep("done")}
         />
       )}
@@ -272,6 +383,16 @@ function PathStep({
           description="Someone else provisioned it, or it's already known to another copy of your vault. You'll point at it with the key it already trusts — nothing to install."
           onClick={() => onChoose("adopt")}
         />
+        <PathOption
+          title="Restore from backups (local VM)"
+          description="Rebuild a Base onto a fresh Multipass VM from its restic repository. Uses credentials from your vault when this Base was backed up from here."
+          onClick={() => onChoose("restore-local")}
+        />
+        <PathOption
+          title="Restore from backups (remote server)"
+          description="Rebuild a Base onto a fresh Ubuntu server. Same restic path as the CLI: provision empty, restore snapshot, resume reconcile."
+          onClick={() => onChoose("restore-remote")}
+        />
       </div>
 
       <Footer>
@@ -315,21 +436,25 @@ function NameStep({
   onName,
   onNext,
   onBack,
+  allowExisting = false,
 }: {
   existingNames: string[];
   name: string;
   onName: (value: string) => void;
   onNext: () => void;
   onBack: () => void;
+  /** Restore may reuse a vault profile name so escrowed backup creds apply. */
+  allowExisting?: boolean;
 }) {
   const trimmed = name.trim();
   const taken = existingNames.includes(trimmed);
   const shape = /^[a-z0-9][a-z0-9-]*$/.test(trimmed);
-  const error = taken
-    ? "You already have a Base with this name."
-    : trimmed && !shape
-      ? "Lowercase letters, numbers, and hyphens."
-      : null;
+  const error =
+    taken && !allowExisting
+      ? "You already have a Base with this name."
+      : trimmed && !shape
+        ? "Lowercase letters, numbers, and hyphens."
+        : null;
 
   return (
     <Card>
@@ -618,6 +743,7 @@ function ServerStep({
   onCaddyEmail,
   onBack,
   onNext,
+  restore = false,
 }: {
   publicKey: string;
   address: string;
@@ -628,17 +754,20 @@ function ServerStep({
   onCaddyEmail: (value: string) => void;
   onBack: () => void;
   onNext: () => void;
+  restore?: boolean;
 }) {
   const [showOptions, setShowOptions] = useState(false);
   const ready = address.trim().length > 0;
 
   return (
     <Card>
-      <h2 className="text-base font-medium text-zinc-100">Create the server</h2>
+      <h2 className="text-base font-medium text-zinc-100">
+        {restore ? "Point at the fresh server" : "Create the server"}
+      </h2>
       <p className="mt-1.5 text-sm leading-relaxed text-zinc-500">
-        This is the one step OwnBase cannot do for you — providers require a human
-        with a payment method. Any provider works; OwnBase has no provider
-        integration and needs none.
+        {restore
+          ? "A fresh Ubuntu machine with your owner key authorized. OwnBase will install in rebuild mode and restore from the restic repository before reconciling."
+          : "This is the one step OwnBase cannot do for you — providers require a human with a payment method. Any provider works; OwnBase has no provider integration and needs none."}
       </p>
 
       <ul className="mt-4 space-y-2.5 text-sm leading-relaxed text-zinc-300">
@@ -901,6 +1030,341 @@ const localPhases: Array<{ label: string; match: RegExp }> = [
   { label: "Registering the Base in your vault", match: /registered/i },
   { label: "Hardening the host", match: /hardening/i },
 ];
+
+const restorePhases: Array<{ label: string; match: RegExp }> = [
+  { label: "Provisioning the target", match: /provisioning|waiting for ssh|vm launched/i },
+  { label: "Installing in rebuild mode", match: /installing|rebuild|running the installer/i },
+  { label: "Restoring from restic", match: /restic|restor|snapshot/i },
+  { label: "Registering the Base", match: /registered|api token/i },
+  { label: "Hardening / reconciling", match: /hardening|reconcil/i },
+];
+
+function RestoreCredsStep({
+  base,
+  repo,
+  onRepo,
+  password,
+  onPassword,
+  awsKey,
+  onAwsKey,
+  awsSecret,
+  onAwsSecret,
+  b2Id,
+  onB2Id,
+  b2Key,
+  onB2Key,
+  forceRebuild,
+  onForceRebuild,
+  cpus,
+  memory,
+  disk,
+  onCpus,
+  onMemory,
+  onDisk,
+  local,
+  onBack,
+  onNext,
+}: {
+  base: string;
+  repo: string;
+  onRepo: (v: string) => void;
+  password: string;
+  onPassword: (v: string) => void;
+  awsKey: string;
+  onAwsKey: (v: string) => void;
+  awsSecret: string;
+  onAwsSecret: (v: string) => void;
+  b2Id: string;
+  onB2Id: (v: string) => void;
+  b2Key: string;
+  onB2Key: (v: string) => void;
+  forceRebuild: boolean;
+  onForceRebuild: (v: boolean) => void;
+  cpus: number;
+  memory: number;
+  disk: number;
+  onCpus: (n: number) => void;
+  onMemory: (n: number) => void;
+  onDisk: (n: number) => void;
+  local: boolean;
+  onBack: () => void;
+  onNext: () => void;
+}) {
+  const isB2 = repo.trim().toLowerCase().startsWith("b2:");
+  const isS3 = repo.trim().toLowerCase().startsWith("s3:");
+
+  return (
+    <Card>
+      <h2 className="text-base font-medium text-zinc-100">Backup credentials</h2>
+      <p className="mt-1.5 text-sm leading-relaxed text-zinc-500">
+        Repo URL and restic password for <span className="font-mono">{base}</span>.
+        Leave blank to use the copy stored in your vault from a previous backup
+        setup on this computer. Credentials travel over stdin, never in argv.
+      </p>
+      <div className="mt-5 space-y-4">
+        <Field label="Restic repo" hint="s3:… / b2:… / rest:… — or empty for vault escrow.">
+          <Input
+            value={repo}
+            onChange={(e) => onRepo(e.target.value)}
+            placeholder="(from vault)"
+            spellCheck={false}
+          />
+        </Field>
+        <Field label="Restic password" hint="Empty = vault escrow for this Base name.">
+          <Input
+            type="password"
+            value={password}
+            onChange={(e) => onPassword(e.target.value)}
+            autoComplete="off"
+          />
+        </Field>
+        {(isS3 || (!repo.trim() && !isB2)) && (
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="AWS access key">
+              <Input value={awsKey} onChange={(e) => onAwsKey(e.target.value)} spellCheck={false} />
+            </Field>
+            <Field label="AWS secret key">
+              <Input
+                type="password"
+                value={awsSecret}
+                onChange={(e) => onAwsSecret(e.target.value)}
+                autoComplete="off"
+              />
+            </Field>
+          </div>
+        )}
+        {(isB2 || (!repo.trim() && !isS3)) && (
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="B2 account id">
+              <Input value={b2Id} onChange={(e) => onB2Id(e.target.value)} spellCheck={false} />
+            </Field>
+            <Field label="B2 account key">
+              <Input
+                type="password"
+                value={b2Key}
+                onChange={(e) => onB2Key(e.target.value)}
+                autoComplete="off"
+              />
+            </Field>
+          </div>
+        )}
+        {local && (
+          <div className="grid gap-3 sm:grid-cols-3">
+            <Field label="CPUs">
+              <Input
+                type="number"
+                min={1}
+                value={cpus}
+                onChange={(e) => onCpus(Number(e.target.value) || 2)}
+              />
+            </Field>
+            <Field label="Memory (GB)">
+              <Input
+                type="number"
+                min={1}
+                value={memory}
+                onChange={(e) => onMemory(Number(e.target.value) || 2)}
+              />
+            </Field>
+            <Field label="Disk (GB)">
+              <Input
+                type="number"
+                min={10}
+                value={disk}
+                onChange={(e) => onDisk(Number(e.target.value) || 20)}
+              />
+            </Field>
+          </div>
+        )}
+        <label className="flex cursor-pointer items-start gap-3 text-sm text-zinc-300">
+          <input
+            type="checkbox"
+            className="mt-1"
+            checked={forceRebuild}
+            onChange={(e) => onForceRebuild(e.target.checked)}
+          />
+          <span>
+            Force restore even if the latest snapshot was never verified restorable
+            <span className="mt-0.5 block text-xs text-zinc-500">
+              Prefer a verified snapshot. Only check this if you know why the drill
+              never passed.
+            </span>
+          </span>
+        </label>
+      </div>
+      <Footer>
+        <Button variant="ghost" onClick={onBack}>
+          Back
+        </Button>
+        <Button variant="primary" onClick={onNext}>
+          {local ? "Start restore" : "Continue"}
+        </Button>
+      </Footer>
+    </Card>
+  );
+}
+
+function RestoreStep({
+  base,
+  local,
+  address,
+  sshUser,
+  cpus,
+  memory,
+  disk,
+  repo,
+  password,
+  awsKey,
+  awsSecret,
+  b2Id,
+  b2Key,
+  forceRebuild,
+  onBack,
+  onDone,
+}: {
+  base: string;
+  local: boolean;
+  address: string;
+  sshUser: string;
+  cpus: number;
+  memory: number;
+  disk: number;
+  repo: string;
+  password: string;
+  awsKey: string;
+  awsSecret: string;
+  b2Id: string;
+  b2Key: string;
+  forceRebuild: boolean;
+  onBack: () => void;
+  onDone: () => void;
+}) {
+  const [lines, setLines] = useState<string[]>([]);
+  const [reached, setReached] = useState(-1);
+  const [error, setError] = useState<string | null>(null);
+  const [running, setRunning] = useState(true);
+  const handle = useRef<StreamHandle | null>(null);
+  const phases = restorePhases;
+
+  useEffect(() => {
+    let cancelled = false;
+    let stream: StreamHandle | null = null;
+    const timer = window.setTimeout(() => {
+      if (cancelled) return;
+      const onEvent = (event: StreamEvent) => {
+        if (event.kind === "stdout" || event.kind === "stderr") {
+          const line = event.line;
+          setLines((prev) => [...prev, line]);
+          setReached((prev) => {
+            const hit = phases.findIndex((p) => p.match.test(line));
+            return hit > prev ? hit : prev;
+          });
+        }
+      };
+      stream = api.restoreBase(
+        base.trim(),
+        {
+          repo: repo.trim() || undefined,
+          password: password || undefined,
+          remote: local ? undefined : `${sshUser}@${address.trim()}`,
+          sshUser: local ? undefined : sshUser,
+          cpus: local ? cpus : undefined,
+          memory: local ? memory : undefined,
+          disk: local ? disk : undefined,
+          forceRebuild,
+          aws_access_key_id: awsKey || undefined,
+          aws_secret_access_key: awsSecret || undefined,
+          b2_account_id: b2Id || undefined,
+          b2_account_key: b2Key || undefined,
+        },
+        onEvent,
+      );
+      handle.current = stream;
+      stream.done
+        .then((code) => {
+          if (cancelled) return;
+          setRunning(false);
+          if (code === 0) {
+            setReached(phases.length);
+            onDone();
+          } else {
+            setError(
+              "Restore did not finish cleanly. The log below names the step that failed.",
+            );
+          }
+        })
+        .catch((err: unknown) => {
+          if (cancelled) return;
+          setRunning(false);
+          setError(err instanceof Error ? err.message : String(err));
+        });
+    }, 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      void stream?.cancel();
+      handle.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <Card>
+      <h2 className="text-base font-medium text-zinc-100">
+        {running ? "Restoring from backup" : error ? "Restore failed" : "Restored"}
+      </h2>
+      <p className="mt-1.5 text-sm leading-relaxed text-zinc-500">
+        Fresh machine, rebuild install, restic restore, then normal reconcile. This
+        takes several minutes.
+      </p>
+      <ol className="mt-4 space-y-1.5 text-sm">
+        {phases.map((p, i) => (
+          <li
+            key={p.label}
+            className={cx(
+              "flex items-center gap-2",
+              i < reached && "text-emerald-400",
+              i === reached && running && "text-zinc-100",
+              i > reached && "text-zinc-600",
+            )}
+          >
+            <span className="font-mono text-xs w-4">
+              {i < reached ? "✓" : i === reached && running ? "…" : "·"}
+            </span>
+            {p.label}
+          </li>
+        ))}
+      </ol>
+      {error && (
+        <div className="mt-4">
+          <ErrorNote title="Restore failed" detail={error} />
+        </div>
+      )}
+      {lines.length > 0 && (
+        <LogView lines={lines} className="mt-4 max-h-64 w-full" />
+      )}
+      <Footer>
+        {running ? (
+          <Button
+            variant="ghost"
+            onClick={() => {
+              void handle.current?.cancel();
+              setRunning(false);
+              setError("Cancelled.");
+            }}
+          >
+            Cancel
+          </Button>
+        ) : (
+          <Button variant="ghost" onClick={onBack}>
+            Back
+          </Button>
+        )}
+        <span />
+      </Footer>
+    </Card>
+  );
+}
 
 function InstallStep({
   base,
@@ -1211,39 +1675,50 @@ function adoptFailure(code: number): string {
 
 function DoneStep({ base, mode, onOpen }: { base: string; mode: Mode; onOpen: () => void }) {
   const [configDone, setConfigDone] = useState(false);
+  const restored = isRestore(mode);
 
   return (
     <Card>
       <h2 className="text-base font-medium text-zinc-100">
-        {isCreate(mode) ? `${base} is up and hardened` : `${base} is registered`}
+        {restored
+          ? `${base} was restored`
+          : isCreate(mode)
+            ? `${base} is up and hardened`
+            : `${base} is registered`}
       </h2>
       <p className="mt-1.5 text-sm leading-relaxed text-zinc-500">
-        {mode === "create-local"
-          ? "A Multipass VM on this computer. Nothing is exposed on the public internet."
-          : isCreate(mode)
-            ? "Nothing but SSH is exposed."
-            : "It's in your vault now."}{" "}
-        One more step makes it a real Base: point it at a config repo you own.
-        That is where what runs is decided.
+        {restored
+          ? "The snapshot is back on a fresh machine and the daemon is reconciling. Confirm services and run a restore drill when you are ready."
+          : mode === "create-local"
+            ? "A Multipass VM on this computer. Nothing is exposed on the public internet."
+            : isCreate(mode)
+              ? "Nothing but SSH is exposed."
+              : "It's in your vault now."}{" "}
+        {!restored &&
+          "One more step makes it a real Base: point it at a config repo you own. That is where what runs is decided."}
       </p>
 
-      <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-950/40 p-4">
-        <h3 className="text-sm font-medium text-zinc-100">Config repo</h3>
-        {configDone ? (
-          <p className="mt-2 text-sm text-emerald-300">
-            Config source set. Open the Base to set up backups when you are ready.
-          </p>
-        ) : (
-          <div className="mt-3">
-            <ConfigSetupForm base={base} onDone={() => setConfigDone(true)} />
-          </div>
-        )}
-      </div>
+      {!restored && (
+        <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-950/40 p-4">
+          <h3 className="text-sm font-medium text-zinc-100">Config repo</h3>
+          {configDone ? (
+            <p className="mt-2 text-sm text-emerald-300">
+              Config source set. Open the Base to set up backups when you are ready.
+            </p>
+          ) : (
+            <div className="mt-3">
+              <ConfigSetupForm base={base} onDone={() => setConfigDone(true)} />
+            </div>
+          )}
+        </div>
+      )}
 
-      <p className="mt-4 text-xs leading-relaxed text-zinc-500">
-        Backups are next — until you turn them on, this Base has no proven way
-        back from a lost disk. You can do that from the Base&apos;s Backups tab.
-      </p>
+      {!restored && (
+        <p className="mt-4 text-xs leading-relaxed text-zinc-500">
+          Backups are next — until you turn them on, this Base has no proven way
+          back from a lost disk. You can do that from the Base&apos;s Backups tab.
+        </p>
+      )}
 
       <Footer>
         <span />
