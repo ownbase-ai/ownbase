@@ -1,118 +1,70 @@
-name: Release
+name: Finish release
 
-# Tag-triggered release: builds ownbasectl (darwin/linux × amd64/arm64) and
-# ownbased (linux × amd64/arm64), signs the daemon binaries with minisign,
-# publishes a GitHub Release + Homebrew formula via GoReleaser, and uploads
-# the signed daemon binaries to the releases.ownbase.ai/daemon layout that
-# install.sh downloads from.
+# Completes a tag whose GitHub Release already exists but whose follow-on
+# steps (bucket publish, app bundles, Homebrew) did not run — e.g. when
+# GoReleaser published the release then failed on a soft dependency.
 #
-# A second job then builds the desktop app for macOS and Linux and attaches the
-# bundles to the same release.
-#
-# Required repository secrets:
-#   MINISIGN_SECRET_KEY        — contents of the minisign secret key file
-#   MINISIGN_PASSWORD          — passphrase for that key
-#   HOMEBREW_TAP_GITHUB_TOKEN  — token with push access to ownbase-ai/homebrew-tap
-#   RELEASES_BUCKET_*          — credentials for the releases.ownbase.ai origin
-#                                (see the "Publish daemon binaries" step)
-#
-# Optional, for signing the macOS app (without them it still builds, but the
-# first launch needs a right-click → Open):
-#   APPLE_CERTIFICATE           — base64 of a Developer ID Application .p12
-#   APPLE_CERTIFICATE_PASSWORD  — its password
-#   APPLE_SIGNING_IDENTITY      — e.g. "Developer ID Application: Name (TEAMID)"
-#   APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID — for notarization
+# Run from the Actions UI: workflow_dispatch → tag vX.Y.Z.
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.5.0)"
+        required: true
+        type: string
 
 permissions:
   contents: write
 
 jobs:
-  release:
-    name: GoReleaser
+  publish-bucket:
+    name: Publish daemon bucket + latest.json
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0 # changelog needs full history
 
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Run tests
-        run: go test ./...
-
-      - name: Install minisign
-        run: sudo apt-get update -q && sudo apt-get install -y -q minisign
-
-      - name: Write minisign secret key
+      - name: Publish to releases.ownbase.ai
         env:
-          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
-        run: |
-          umask 077
-          printf '%s\n' "$MINISIGN_SECRET_KEY" > /tmp/minisign.key
-          echo "MINISIGN_SECRET_KEY_PATH=/tmp/minisign.key" >> "$GITHUB_ENV"
-
-      # Homebrew is skipped here on purpose: a bad HOMEBREW_TAP_GITHUB_TOKEN
-      # must not abort the job after the GitHub Release is already published
-      # (that left v0.5.0 without bucket publish or app builds). The cask is
-      # pushed in a separate step that can fail soft.
-      - name: GoReleaser
-        uses: goreleaser/goreleaser-action@v6
-        with:
-          distribution: goreleaser
-          version: "~> v2"
-          args: release --clean --skip=homebrew
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
-
-      - name: Publish daemon binaries to releases.ownbase.ai
-        env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.tag }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           AWS_ACCESS_KEY_ID: ${{ secrets.RELEASES_BUCKET_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.RELEASES_BUCKET_SECRET_ACCESS_KEY }}
           RELEASES_BUCKET: ${{ secrets.RELEASES_BUCKET_NAME }}
           RELEASES_BUCKET_ENDPOINT: ${{ secrets.RELEASES_BUCKET_ENDPOINT }}
         run: |
+          set -euo pipefail
           if [ -z "${RELEASES_BUCKET:-}" ]; then
-            echo "RELEASES_BUCKET_NAME secret not set — skipping daemon publish."
+            echo "RELEASES_BUCKET_NAME secret not set — nothing to publish."
             exit 0
           fi
           chmod +x .github/scripts/publish-daemon-bucket.sh
           .github/scripts/publish-daemon-bucket.sh
 
-      - name: Publish ownbasectl Homebrew cask
-        continue-on-error: true
+  publish-cli-cask:
+    name: Homebrew cask (CLI)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Publish ownbasectl cask
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.tag }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           if [ -z "${HOMEBREW_TAP_GITHUB_TOKEN:-}" ]; then
-            echo "HOMEBREW_TAP_GITHUB_TOKEN not set — skipping CLI cask."
+            echo "HOMEBREW_TAP_GITHUB_TOKEN not set — skipping."
             exit 0
           fi
           chmod +x .github/scripts/publish-ownbasectl-cask.sh
           .github/scripts/publish-ownbasectl-cask.sh
 
-  # The desktop app, attached to the release GoReleaser just created.
-  #
-  # This runs after `release` rather than beside it because it uploads to that
-  # release: starting both at once is a race in which the upload can lose. The
-  # app bundles are additive, so a failure here leaves a usable CLI release.
   app:
     name: App (${{ matrix.label }})
-    needs: release
     runs-on: ${{ matrix.runner }}
-    # At job level, not on the step: a step's own `env:` is not readable from its
-    # `if:`, and the `secrets` context is not available there at all.
     env:
       APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
     strategy:
@@ -123,13 +75,15 @@ jobs:
             runner: macos-14
             target: aarch64-apple-darwin
           - label: macOS (Intel)
-            runner: macos-15-intel # macos-13 (the last plain Intel label) retired December 2025
+            runner: macos-15-intel
             target: x86_64-apple-darwin
           - label: Linux (x86_64)
-            runner: ubuntu-22.04 # oldest glibc we support; newer would not run on it
+            runner: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
 
       - uses: actions/setup-go@v5
         with:
@@ -162,13 +116,11 @@ jobs:
         working-directory: desktop
         run: npm ci
 
-      # The real CLI, not a stub: this is the binary users will run, and it is
-      # stamped with the tag so the app and the daemon it installs stay in step.
       - name: Build the bundled ownbasectl
         working-directory: desktop
         env:
           OWNBASE_SIDECAR_TARGET: ${{ matrix.target }}
-          OWNBASE_VERSION: ${{ github.ref_name }}
+          OWNBASE_VERSION: ${{ inputs.tag }}
         run: npm run sidecar
 
       - name: Import the Apple signing certificate
@@ -176,8 +128,6 @@ jobs:
         env:
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
-          # A throwaway keychain, unlocked for this job only, so the certificate
-          # never lands in the runner's login keychain.
           keychain=/tmp/build.keychain
           password=$(uuidgen)
           security create-keychain -p "$password" "$keychain"
@@ -191,26 +141,21 @@ jobs:
           security list-keychain -d user -s "$keychain" login.keychain
           rm -f /tmp/cert.p12
 
-      # The committed version is a placeholder; the tag is the real one. Without
-      # this the About box and the bundle filename would both claim 0.1.0 forever.
       - name: Stamp the bundle version from the tag
         working-directory: desktop
         shell: bash
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
+          version="${TAG#v}"
           jq --arg v "$version" '.version = $v' src-tauri/tauri.conf.json > /tmp/conf.json
           mv /tmp/conf.json src-tauri/tauri.conf.json
           jq -r '"bundling version " + .version' src-tauri/tauri.conf.json
+        env:
+          TAG: ${{ inputs.tag }}
 
       - name: Build the bundle
         working-directory: desktop
         env:
-          # Present only when the Apple secrets are configured. An *empty*
-          # APPLE_SIGNING_IDENTITY is not "skip signing" in Tauri — it is
-          # `codesign -s ""`, which fails the keychain lookup and aborts the
-          # bundle. Unset blanks below so a release without certs still ships
-          # an unsigned .app/.dmg (right-click → Open on first launch).
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
@@ -225,25 +170,16 @@ jobs:
           done
           npm run tauri -- build --target ${{ matrix.target }}
 
-      # Uploaded by explicit path rather than by a release-creating action: the
-      # release already exists, and `--clobber` makes a re-run of this job
-      # replace its own artifacts instead of failing on a name that is taken.
       - name: Attach the bundle to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ inputs.tag }}
           TARGET: ${{ matrix.target }}
         shell: bash
         run: |
           set -euo pipefail
           bundle="desktop/src-tauri/target/${TARGET}/release/bundle"
           shopt -s nullglob
-          # Renamed on the way out: three runners upload into one release, and
-          # Tauri's own filenames collide across targets.
-          #
-          # Staged into a directory and counted with `find` rather than collected
-          # into an array, because the macOS runners ship bash 3.2, where reading
-          # an empty array under `set -u` is itself an error.
           stage=$(mktemp -d)
           for f in "$bundle"/dmg/*.dmg "$bundle"/appimage/*.AppImage "$bundle"/deb/*.deb; do
             ext="${f##*.}"
@@ -257,20 +193,17 @@ jobs:
           ls -la "$stage"
           gh release upload "$VERSION" "$stage"/* --clobber
 
-  # Homebrew cask for the desktop app. Runs after every app matrix cell so both
-  # macOS DMGs are on the release; GoReleaser already pushed the CLI cask.
   homebrew-app:
     name: Homebrew cask (app)
     needs: app
     runs-on: ubuntu-latest
-    # Skip cleanly when the tap token is not configured (forks, dry runs).
     if: ${{ success() }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Publish ownbase cask to homebrew-tap
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.tag }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
