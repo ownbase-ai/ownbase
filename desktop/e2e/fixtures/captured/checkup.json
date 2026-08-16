@@ -1,0 +1,92 @@
+{
+  "findings": [],
+  "status": {
+    "generated_at": "2026-08-15T12:00:00Z",
+    "schema_version": "1",
+    "version": "v0.4.0",
+    "config": {
+      "repo_url": "git@github.com:example/ownbase-config.git",
+      "ref": "main"
+    },
+    "services": [
+      {
+        "name": "web",
+        "running": true,
+        "healthy": true,
+        "health_probe_result": "ok",
+        "repo": "git@github.com:example/web.git",
+        "ref": "main",
+        "domain": "web.example.com",
+        "port": 8080
+      }
+    ],
+    "jobs": [],
+    "security": {
+      "backup_restorable": true,
+      "last_verified": "2026-08-14T12:00:00Z",
+      "last_backup": "2026-08-15T06:00:00Z",
+      "drift_detected": false,
+      "cert_expiry_days": 60,
+      "disk_used_percent": 22,
+      "exposure": {
+        "available": true,
+        "firewall_active": true,
+        "unexpected_count": 0,
+        "listeners": [
+          {
+            "port": 22,
+            "proto": "tcp",
+            "bind": "0.0.0.0",
+            "process": "sshd",
+            "internet_reachable": true,
+            "expected": true
+          }
+        ]
+      },
+      "access": {
+        "available": true,
+        "fail2ban_available": true,
+        "fail2ban_active": true,
+        "banned_ips": [],
+        "failed_attempts": 0,
+        "recent_logins": []
+      },
+      "vulns": {
+        "available": true,
+        "trivy_installed": true,
+        "scanned_at": "2026-08-15T08:00:00Z",
+        "host": {
+          "critical": 0,
+          "high": 0,
+          "medium": 2,
+          "low": 5
+        },
+        "images": []
+      }
+    },
+    "updates": {
+      "drift": []
+    },
+    "audit": {
+      "total_seen": 3,
+      "recent_actions": [
+        {
+          "time": "2026-08-15T11:00:00Z",
+          "action": "reconcile.apply",
+          "target": "web",
+          "outcome": "applied"
+        }
+      ]
+    }
+  },
+  "verify": {
+    "passed": true,
+    "checks": [
+      {
+        "name": "restore",
+        "passed": true,
+        "detail": "ok"
+      }
+    ]
+  }
+}

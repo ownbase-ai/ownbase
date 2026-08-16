@@ -1,0 +1,13 @@
+{
+  "running": true,
+  "unlocked": true,
+  "vault_path": "/tmp/ownbase-e2e/vault.kdbx",
+  "bases": 1,
+  "keys": 1,
+  "unlocked_at": "2026-08-15T12:00:00Z",
+  "idle_timeout_seconds": 900,
+  "locks_at": "2026-08-15T12:15:00Z",
+  "pid": 12345,
+  "ssh_agent_socket": "/tmp/ownbase-e2e/agent.sock",
+  "version": "dev"
+}

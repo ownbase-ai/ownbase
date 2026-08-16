@@ -37,7 +37,7 @@ test.describe("setup wizard", () => {
     await expect(page.getByText(/ssh-ed25519/)).toBeVisible();
     await page.getByRole("button", { name: "Create the VM" }).click();
 
-    await expect(page.getByText("Creating the local VM")).toBeVisible();
+    // Stream can finish before the intermediate "Creating…" heading paints.
     await expect(
       page.getByRole("heading", { name: "fresh is up and hardened" }),
     ).toBeVisible({ timeout: 10_000 });
@@ -103,7 +103,12 @@ test.describe("setup wizard", () => {
 
     await expect(page.getByText("Install failed")).toBeVisible({ timeout: 10_000 });
     await expect(page.getByText("The install did not finish")).toBeVisible();
-    await expect(page.getByText(/did not pass|checked before install/i).first()).toBeVisible();
+    // Exit 3 local copy — must not match the generic default branch.
+    await expect(
+      page.getByText(
+        /The local VM was checked before install finished, and something did not pass/i,
+      ),
+    ).toBeVisible();
     await expect(page.getByText(/disk too small/i)).toBeVisible();
   });
 
@@ -171,7 +176,7 @@ test.describe("setup wizard", () => {
     await page.getByRole("button", { name: "Continue" }).click();
 
     await page.getByRole("textbox", { name: "Restic repo" }).fill("s3:bucket/path");
-    await page.locator('input[type="password"]').first().fill("restic-secret-password");
+    await page.getByLabel("Restic password").fill("restic-secret-password");
     await page.getByRole("button", { name: "Start restore" }).click();
 
     await expect
@@ -218,6 +223,44 @@ test.describe("setup wizard", () => {
     await expect(page.getByText("Creating the local VM")).toBeVisible();
     await page.getByRole("button", { name: "Stop" }).click();
 
+    await expect
+      .poll(async () => (await getCalls(page)).some((c) => c.cmd === "cli_cancel"))
+      .toBeTruthy();
+  });
+
+  test("restore local Cancel: userCancelled guard + Cancelled. copy", async ({ page }) => {
+    await openApp(page, {
+      vault: "unlocked",
+      bases: [],
+      streams: [
+        {
+          match: ["restore", "slowrest"],
+          delayMs: 250,
+          events: [
+            { kind: "stderr", line: "Provisioning…" },
+            { kind: "stderr", line: "Restoring from restic…" },
+            { kind: "stderr", line: "still restoring…" },
+            { kind: "finished", code: 0 },
+          ],
+        },
+      ],
+    });
+
+    await page.getByText("Restore from backups (local VM)").click();
+    await page.getByPlaceholder("mybase").fill("slowrest");
+    await page.getByRole("button", { name: "Continue" }).click();
+
+    await page.getByRole("textbox", { name: "Restic repo" }).fill("s3:bucket/path");
+    await page.getByLabel("Restic password").fill("restic-secret-password");
+    await page.getByRole("button", { name: "Start restore" }).click();
+
+    await expect(page.getByText("Restoring from backup")).toBeVisible();
+    await page.getByRole("button", { name: "Cancel" }).click();
+
+    await expect(page.getByRole("heading", { name: "Restore cancelled" })).toBeVisible();
+    await expect(page.getByText("Cancelled.", { exact: true })).toBeVisible();
+    // Must not flip to the success "Restored" path after cancel (PR #51 regression).
+    await expect(page.getByRole("heading", { name: "Restored" })).toHaveCount(0);
     await expect
       .poll(async () => (await getCalls(page)).some((c) => c.cmd === "cli_cancel"))
       .toBeTruthy();

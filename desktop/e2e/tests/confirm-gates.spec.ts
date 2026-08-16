@@ -1,5 +1,8 @@
 import {
+  backupSetupPreview,
+  backupSetupPreviewNoChange,
   backupsConfiguredCheckup,
+  backupsUnconfiguredCheckup,
   demoBase,
   deployFormFindingCheckup,
   deployPreview,
@@ -8,27 +11,8 @@ import {
   serviceAddPreview,
   serviceRemovePreview,
 } from "../fixtures/data";
-import { expect, test } from "../fixtures/test";
+import { expect, test, waitForQuiet } from "../fixtures/test";
 import { callMatched, getCalls, openApp, realMutations } from "../shim/install";
-
-/** Poll until call count is stable for `stableMs`, then return calls. */
-async function waitForQuiet(
-  page: import("@playwright/test").Page,
-  stableMs = 300,
-): Promise<Awaited<ReturnType<typeof getCalls>>> {
-  let last = -1;
-  let stableSince = Date.now();
-  for (;;) {
-    const calls = await getCalls(page);
-    if (calls.length === last) {
-      if (Date.now() - stableSince >= stableMs) return calls;
-    } else {
-      last = calls.length;
-      stableSince = Date.now();
-    }
-    await page.waitForTimeout(50);
-  }
-}
 
 test.describe("confirm gates", () => {
   test("deploy: dismiss keeps dry-run only; accept applies once", async ({ page }) => {
@@ -158,7 +142,7 @@ test.describe("confirm gates", () => {
     );
   });
 
-  test("secrets delete requires confirm", async ({ page }) => {
+  test("secrets delete requires confirm and targets the key", async ({ page }) => {
     await openApp(page, {
       vault: "unlocked",
       bases: [demoBase],
@@ -169,21 +153,118 @@ test.describe("confirm gates", () => {
     await page.getByRole("button", { name: "Manage" }).click();
     await page.getByRole("button", { name: "Secrets" }).click();
     await expect(page.getByText("DATABASE_URL")).toBeVisible();
+    await expect(page.getByText("API_TOKEN")).toBeVisible();
 
+    // Direct child span so the outer service <li> (which contains the secrets
+    // panel) does not match — wrong-key delete used to pass with .first().
+    const dbRow = page
+      .locator("li")
+      .filter({ has: page.locator(":scope > span.font-mono", { hasText: "DATABASE_URL" }) });
     page.once("dialog", (d) => d.dismiss());
-    await page.getByRole("button", { name: "Delete" }).first().click();
-    await expect(page.getByText("DATABASE_URL")).toBeVisible();
+    await dbRow.getByRole("button", { name: "Delete" }).click();
+    await expect(page.getByText("DATABASE_URL", { exact: true })).toBeVisible();
     expect(
-      callMatched(await waitForQuiet(page), ["secrets", "delete", "demo", "web"]),
+      callMatched(await waitForQuiet(page), [
+        "secrets",
+        "delete",
+        "demo",
+        "web",
+        "DATABASE_URL",
+      ]),
     ).toBeFalsy();
 
     page.once("dialog", (d) => d.accept());
-    await page.getByRole("button", { name: "Delete" }).first().click();
+    await dbRow.getByRole("button", { name: "Delete" }).click();
     await expect
       .poll(async () =>
-        callMatched(await getCalls(page), ["secrets", "delete", "demo", "web"]),
+        callMatched(await getCalls(page), [
+          "secrets",
+          "delete",
+          "demo",
+          "web",
+          "DATABASE_URL",
+        ]),
       )
       .toBeTruthy();
+    await expect(page.getByText("DATABASE_URL", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("API_TOKEN", { exact: true })).toBeVisible();
+  });
+
+  test("backup setup: dismiss keeps dry-run only; accept puts creds on stdin", async ({
+    page,
+  }) => {
+    await openApp(page, {
+      vault: "unlocked",
+      bases: [demoBase],
+      checkup: { demo: backupsUnconfiguredCheckup },
+      backupSetupPreview,
+    });
+
+    await page.getByRole("tab", { name: "Backups" }).click();
+    await expect(page.getByText(/No snapshot has ever been taken/i)).toBeVisible();
+    await page
+      .getByLabel("Restic repository URL")
+      .fill("s3:s3.amazonaws.com/example/ownbase");
+    await page.getByLabel("Restic password").fill("restic-setup-secret");
+    await page.getByLabel("AWS access key (for s3: repos)").fill("AKIAEXAMPLE");
+    await page.getByLabel("AWS secret key (for s3: repos)").fill("aws-secret-value");
+
+    await page.getByRole("button", { name: "Preview change" }).click();
+    await expect(page.getByText("backup: configure restic repo")).toBeVisible();
+
+    page.once("dialog", async (d) => {
+      // The unrecoverable-password warning lives only in this confirm.
+      expect(d.message()).toMatch(/never recoverable/i);
+      await d.dismiss();
+    });
+    await page.getByRole("button", { name: "Confirm and set up" }).click();
+    await expect(page.getByRole("button", { name: "Confirm and set up" })).toBeVisible();
+    expect(
+      realMutations(await waitForQuiet(page), ["backup", "setup", "demo"]),
+    ).toHaveLength(0);
+
+    page.once("dialog", (d) => d.accept());
+    await page.getByRole("button", { name: "Confirm and set up" }).click();
+    await expect
+      .poll(
+        async () => realMutations(await getCalls(page), ["backup", "setup", "demo"]).length,
+      )
+      .toBe(1);
+
+    const apply = realMutations(await getCalls(page), ["backup", "setup", "demo"])[0];
+    expect(apply?.args).toContain("--creds-stdin");
+    expect(apply?.args?.join(" ")).not.toContain("restic-setup-secret");
+    expect(apply?.stdin).toContain("restic-setup-secret");
+  });
+
+  test("backup setup already-configured path uses store-credentials confirm", async ({
+    page,
+  }) => {
+    await openApp(page, {
+      vault: "unlocked",
+      bases: [demoBase],
+      checkup: { demo: backupsUnconfiguredCheckup },
+      backupSetupPreview: backupSetupPreviewNoChange,
+    });
+
+    await page.getByRole("tab", { name: "Backups" }).click();
+    await page
+      .getByLabel("Restic repository URL")
+      .fill("s3:s3.amazonaws.com/example/ownbase");
+    await page.getByLabel("Restic password").fill("pw");
+    await page.getByRole("button", { name: "Preview change" }).click();
+    await expect(
+      page.getByRole("button", { name: "Store credentials and back up" }),
+    ).toBeVisible();
+
+    page.once("dialog", async (d) => {
+      expect(d.message()).toMatch(/already has this backup configuration/i);
+      await d.dismiss();
+    });
+    await page.getByRole("button", { name: "Store credentials and back up" }).click();
+    expect(
+      realMutations(await waitForQuiet(page), ["backup", "setup", "demo"]),
+    ).toHaveLength(0);
   });
 
   test("secrets set posts values on stdin", async ({ page }) => {

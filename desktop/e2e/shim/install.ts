@@ -75,6 +75,8 @@ export type Scenario = {
   dbRestore?: unknown;
   recoveryKit?: unknown;
   configYaml?: string;
+  /** Dry-run body for `backup setup --dry-run`. */
+  backupSetupPreview?: ConfigPreview;
   fails?: FailRule[];
   streams?: StreamRule[];
   /** Path returned by the folder picker (plugin:dialog|open). */
@@ -600,10 +602,11 @@ function installMock(scenario: Scenario): void {
     if (matches(args, ["secrets", "get"])) {
       const clean = stripMeta(args);
       const key = clean[clean.length - 1] ?? "KEY";
+      // Per-key values so a wrong-key reveal fails the assertion.
       return ok({
         service: clean[clean.length - 2] ?? "web",
         key,
-        value: "super-secret-value",
+        value: `secret-value-for-${key}`,
       });
     }
 
@@ -686,12 +689,14 @@ function installMock(scenario: Scenario): void {
     }
 
     if (matches(args, ["backup", "setup"]) && args.includes("--dry-run")) {
-      return ok({
-        status: "ok",
-        would_change: true,
-        commit_message: "backup: setup",
-        diff: "+ backup\n",
-      });
+      return ok(
+        scenario.backupSetupPreview ?? {
+          status: "ok",
+          would_change: true,
+          commit_message: "backup: setup",
+          diff: "+ backup\n",
+        },
+      );
     }
 
     if (matches(args, ["backup", "setup"])) {
