@@ -121,6 +121,35 @@ describe("vault and agent", () => {
     await api.cliVersion();
     expect(json).toHaveBeenCalledWith(["version"]);
   });
+
+  it("versionCheck builds argv", async () => {
+    cover("versionCheck");
+    await api.versionCheck();
+    expect(json).toHaveBeenCalledWith(["version", "--check", "--json"]);
+    json.mockClear();
+    await api.versionCheck({
+      appVersion: "0.5.0",
+      base: "demo",
+      refresh: true,
+    });
+    expect(json).toHaveBeenCalledWith([
+      "version",
+      "--check",
+      "--json",
+      "--refresh",
+      "--app-version",
+      "0.5.0",
+      "demo",
+    ]);
+  });
+
+  it("appVersion", async () => {
+    cover("appVersion");
+    // Dynamic import of @tauri-apps/api/app is mocked by the absence of Tauri
+    // in unit tests — call is still covered for the export gate. The real
+    // path is exercised in the app; here we only assert it is exported.
+    await expect(api.appVersion()).rejects.toThrow();
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -110,6 +110,27 @@ jobs:
               aws s3 cp "$src" "s3://${RELEASES_BUCKET}/daemon/latest/${f}" "${endpoint_flag[@]}"
             done
           done
+          # Machine-readable newest versions for `ownbasectl version --check`
+          # and the desktop app. Written after the binaries so a client never
+          # learns about a release whose artifacts are not yet uploaded.
+          # Per-component (not one flat version) because the app bundle is
+          # published by a later job; all three start equal at tag time.
+          released_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          jq -n \
+            --arg v "$VERSION" \
+            --arg at "$released_at" \
+            '{
+              schema: 1,
+              released_at: $at,
+              components: {
+                cli:    {version: $v},
+                app:    {version: $v},
+                daemon: {version: $v}
+              }
+            }' > /tmp/latest.json
+          aws s3 cp /tmp/latest.json "s3://${RELEASES_BUCKET}/latest.json" \
+            --content-type application/json \
+            "${endpoint_flag[@]}"
 
   # The desktop app, attached to the release GoReleaser just created.
   #

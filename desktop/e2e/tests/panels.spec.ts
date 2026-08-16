@@ -138,9 +138,12 @@ test.describe("read-only panels", () => {
     await expect(page.getByText("ownbase-recovery-v1:e2e-fixture")).toBeVisible();
     expect(callMatched(await getCalls(page), ["vault", "recovery-string"])).toBeTruthy();
 
-    await page.getByRole("button", { name: "Show version" }).click();
-    await expect(page.getByText("0.1.0-e2e", { exact: true })).toBeVisible();
-    expect(callMatched(await getCalls(page), ["version"])).toBeTruthy();
+    await expect(page.getByText("About & updates")).toBeVisible();
+    await expect(page.getByText("ownbasectl", { exact: true })).toBeVisible();
+    // Shell loads version --check on unlock; Vault reuses that snapshot.
+    expect(
+      callMatched(await getCalls(page), ["version"], { includeFlags: ["--check"] }),
+    ).toBeTruthy();
   });
 
   test("Sessions replay path loads cast into the player", async ({ page }) => {

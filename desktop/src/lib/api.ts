@@ -24,6 +24,7 @@ import type {
   VaultInitResult,
   VaultRecoveryString,
   VaultStatus,
+  VersionCheck,
 } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -96,6 +97,30 @@ export function vaultOpen(
 /** Bundled ownbasectl version. */
 export function cliVersion(): Promise<CliVersion> {
   return cli.json<CliVersion>(["version"]);
+}
+
+/**
+ * Compare running components against the newest release.
+ *
+ * Pass `appVersion` (from `getVersion()`) so the app is included. Pass `base`
+ * to also check that Base's daemon and CLI/daemon skew.
+ */
+export function versionCheck(opts: {
+  appVersion?: string;
+  base?: string;
+  refresh?: boolean;
+} = {}): Promise<VersionCheck> {
+  const args = ["version", "--check", "--json"];
+  if (opts.refresh) args.push("--refresh");
+  if (opts.appVersion) args.push("--app-version", opts.appVersion);
+  if (opts.base) args.push(opts.base);
+  return cli.json<VersionCheck>(args);
+}
+
+/** Desktop app version stamped into the bundle at release (Tauri). */
+export async function appVersion(): Promise<string> {
+  const { getVersion } = await import("@tauri-apps/api/app");
+  return getVersion();
 }
 
 // ---------------------------------------------------------------------------

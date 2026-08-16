@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ownbase/ownbase/internal/backup"
+	"github.com/ownbase/ownbase/internal/release"
 )
 
 func newCheckupCmd() *cobra.Command {
@@ -82,8 +83,13 @@ func checkup(conn *connection, base string, jsonOut, doVerify bool) error {
 	// a real repo. Same path as fetchStatusBody.
 	body = ensureConfigKnown(base, body)
 
+	// Version findings need the release manifest. Soft-fail: unreachable
+	// origin yields no "behind latest" rows; skew still works offline.
+	snap := releaseSnapshot(false)
+	daemonVer := statusVersion(body)
+
 	if jsonOut {
-		printCheckupJSON(base, body, verifyResult)
+		printCheckupJSON(base, body, verifyResult, snap, daemonVer)
 		// Same verdict as the formatted path below: a failed drill exits
 		// non-zero. Its message goes to stderr rather than into the payload,
 		// which is what keeps stdout a document rather than a report.
@@ -95,7 +101,7 @@ func checkup(conn *connection, base string, jsonOut, doVerify bool) error {
 	fmt.Println("╚════════════════════════════════════════════════════════════════════╝")
 	fmt.Println()
 
-	findings := checkupFindings(base, body)
+	findings := checkupFindings(base, body, snap, daemonVer)
 	if len(findings) == 0 {
 		fmt.Println("  ✓ All clear — no issues found.")
 	} else {
@@ -132,13 +138,13 @@ func checkup(conn *connection, base string, jsonOut, doVerify bool) error {
 // — the desktop app most of all — to reimplement checkupFindings and slowly
 // disagree with it about whether a Base is healthy. `status --json` is still
 // the bare /status body for anything that only wants the machine's own words.
-func printCheckupJSON(base string, status []byte, verifyResult string) {
+func printCheckupJSON(base string, status []byte, verifyResult string, snap release.Snapshot, daemonVer string) {
 	doc := struct {
 		Findings []checkupFinding `json:"findings"`
 		Verify   json.RawMessage  `json:"verify,omitempty"`
 		Status   json.RawMessage  `json:"status"`
 	}{
-		Findings: checkupFindings(base, status),
+		Findings: checkupFindings(base, status, snap, daemonVer),
 		Status:   json.RawMessage(status),
 	}
 	if v := strings.TrimSpace(verifyResult); v != "" {
@@ -273,9 +279,9 @@ const (
 	// that still ends in a CLI call. Preview=true means dry-run the edit
 	// and show the diff before committing.
 	actionForm = "form"
-	// "manual" is also a valid kind (genuine dead-end, plain text only) but
-	// no finding emits it today — every case is run/open/form. The app still
-	// knows how to render it if one appears.
+	// actionManual: genuine dead-end — plain text only (e.g. brew upgrade).
+	// The app renders Fix as the instruction.
+	actionManual = "manual"
 )
 
 // checkupAction tells a reader (terminal or desktop app) how to address a
@@ -327,12 +333,23 @@ const scanStaleAfter = 48 * time.Hour
 // the top of the report. The panel's contract: only things a person can
 // finish. Unfixed CVEs and "banned IPs" (fail2ban working) are readings on
 // the Security tab, not to-dos.
-func checkupFindings(base string, body []byte) []checkupFinding {
+//
+// snap/daemonVer drive OwnBase version findings. Pass a zero Snapshot (and
+// empty daemonVer) from tests that only exercise non-version checks — that
+// keeps their exact finding counts stable.
+func checkupFindings(base string, body []byte, snap release.Snapshot, daemonVer string) []checkupFinding {
 	var s map[string]any
 	if err := json.Unmarshal(body, &s); err != nil {
 		return nil
 	}
 	var findings []checkupFinding
+
+	// Version drift first — same rationale as reboot among host-patch rows:
+	// an outdated OwnBase is the thing that unblocks other fixes.
+	if daemonVer == "" {
+		daemonVer = statusVersion(body)
+	}
+	findings = append(findings, versionFindings(base, daemonVer, snap)...)
 
 	// Config source is the first thing a fresh Base needs. Without it the
 	// daemon has nothing to reconcile and services cannot be declared.
@@ -699,6 +716,18 @@ func checkupFindings(base string, body []byte) []checkupFinding {
 	}
 
 	return findings
+}
+
+// statusVersion reads status.version from a raw /status body.
+func statusVersion(body []byte) string {
+	var s map[string]any
+	if err := json.Unmarshal(body, &s); err != nil {
+		return ""
+	}
+	if v, ok := s["version"].(string); ok {
+		return strings.TrimSpace(v)
+	}
+	return ""
 }
 
 // pickDeployRef chooses a --ref that advances the service.

@@ -443,6 +443,32 @@ function installMock(scenario: Scenario): void {
     }
 
     if (matches(args, ["version"])) {
+      // version --check --json [--app-version X] [base]
+      if (args.includes("--check")) {
+        const appIdx = args.indexOf("--app-version");
+        const appVer = appIdx >= 0 ? (args[appIdx + 1] ?? "0.1.0") : undefined;
+        const components: Array<{
+          name: string;
+          current: string;
+          latest?: string;
+          status: string;
+          guide?: string;
+        }> = [
+          {
+            name: "cli",
+            current: "v0.1.0-e2e",
+            status: "dev",
+          },
+        ];
+        if (appVer) {
+          components.push({
+            name: "app",
+            current: appVer.startsWith("v") ? appVer : `v${appVer}`,
+            status: "dev",
+          });
+        }
+        return ok({ components });
+      }
       return ok({
         version: "0.1.0-e2e",
         commit: "deadbeef",

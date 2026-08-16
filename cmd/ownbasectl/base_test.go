@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ownbase/ownbase/internal/release"
 )
 
 func TestSplitUserHost(t *testing.T) {
@@ -196,7 +198,7 @@ func TestCheckupFindings_AllClear(t *testing.T) {
 		},
 		"updates": {"drift": [{"service": "crm", "up_to_date": true}]}
 	}`)
-	findings := checkupFindings("mybase", body)
+	findings := checkupFindings("mybase", body, release.Snapshot{}, "")
 	if len(findings) != 0 {
 		t.Errorf("expected no findings, got %+v", findings)
 	}
@@ -221,7 +223,7 @@ func TestCheckupFindings_UnfixedCVEsAreNotFindings(t *testing.T) {
 			}
 		}
 	}`)
-	findings := checkupFindings("mybase", body)
+	findings := checkupFindings("mybase", body, release.Snapshot{}, "")
 	if len(findings) != 0 {
 		t.Errorf("unfixed CVEs must not raise a finding, got %+v", findings)
 	}
@@ -243,7 +245,7 @@ func TestCheckupFindings_BannedIPsAreNotFindings(t *testing.T) {
 			}
 		}
 	}`)
-	findings := checkupFindings("mybase", body)
+	findings := checkupFindings("mybase", body, release.Snapshot{}, "")
 	if len(findings) != 0 {
 		t.Errorf("banned IPs must not raise a finding, got %+v", findings)
 	}
@@ -280,7 +282,7 @@ func TestCheckupFindings_FlagsIssues(t *testing.T) {
 		},
 		"updates": {"drift": [{"service": "crm", "up_to_date": false}, {"service": "worker", "up_to_date": true}]}
 	}`)
-	findings := checkupFindings("mybase", body)
+	findings := checkupFindings("mybase", body, release.Snapshot{}, "")
 
 	// Expected:
 	// 1. backups not configured → form
@@ -368,7 +370,7 @@ func TestCheckupFindings_BackupConfiguredButNotYetVerified(t *testing.T) {
 		},
 		"updates": {"drift": [{"service": "crm", "up_to_date": true}]}
 	}`)
-	findings := checkupFindings("mybase", body)
+	findings := checkupFindings("mybase", body, release.Snapshot{}, "")
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding, got %d: %+v", len(findings), findings)
 	}
@@ -407,7 +409,7 @@ func TestCheckupFindings_AppendOnlyNeverPrunedAgesFromFirstBackup(t *testing.T) 
 		},
 		"updates": {"drift": []}
 	}`)
-	findings := checkupFindings("mybase", body)
+	findings := checkupFindings("mybase", body, release.Snapshot{}, "")
 	var found bool
 	for _, f := range findings {
 		if strings.Contains(f.Fix, "backup prune") {
@@ -441,7 +443,7 @@ func TestCheckupFindings_AppendOnlyNeverPrunedAgesFromFirstBackup(t *testing.T) 
 		},
 		"updates": {"drift": []}
 	}`)
-	for _, f := range checkupFindings("mybase", bodyFresh) {
+	for _, f := range checkupFindings("mybase", bodyFresh, release.Snapshot{}, "") {
 		if strings.Contains(f.Fix, "backup prune") {
 			t.Fatalf("should not nag prune when first_backup is fresh, got %+v", f)
 		}
@@ -456,7 +458,7 @@ func TestCheckupFindings_NoSecuritySection_StillScansUpdates(t *testing.T) {
 		"config": {"repo_url": "git@example.com/x.git"},
 		"updates": {"drift": [{"service": "crm", "up_to_date": false}]}
 	}`)
-	findings := checkupFindings("mybase", body)
+	findings := checkupFindings("mybase", body, release.Snapshot{}, "")
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding (update drift) despite missing security section, got %d: %+v", len(findings), findings)
 	}
@@ -479,7 +481,7 @@ func TestCheckupFindings_StaleScan(t *testing.T) {
 			}
 		}
 	}`)
-	findings := checkupFindings("mybase", body)
+	findings := checkupFindings("mybase", body, release.Snapshot{}, "")
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 stale-scan finding, got %d: %+v", len(findings), findings)
 	}
@@ -508,7 +510,7 @@ func TestCheckupFindings_StaleScanStillSurfacesFixableHostCVEs(t *testing.T) {
 			}
 		}
 	}`)
-	findings := checkupFindings("mybase", body)
+	findings := checkupFindings("mybase", body, release.Snapshot{}, "")
 	if len(findings) != 2 {
 		t.Fatalf("expected stale + fixable findings, got %d: %+v", len(findings), findings)
 	}
@@ -540,7 +542,7 @@ func TestCheckupFindings_RebootSuppressesApplyPatches(t *testing.T) {
 			}
 		}
 	}`)
-	findings := checkupFindings("mybase", body)
+	findings := checkupFindings("mybase", body, release.Snapshot{}, "")
 	var sawReboot, sawApply bool
 	for _, f := range findings {
 		if strings.Contains(f.Action.Run, "security reboot") {
@@ -573,7 +575,7 @@ func TestCheckupFindings_StaleAfterPatchSuppressesApply(t *testing.T) {
 			}
 		}
 	}`)
-	findings := checkupFindings("mybase", body)
+	findings := checkupFindings("mybase", body, release.Snapshot{}, "")
 	for _, f := range findings {
 		if strings.Contains(f.Action.Run, "security fix") {
 			t.Fatalf("pre-patch counts must not raise Apply patches: %+v", f)
@@ -605,7 +607,7 @@ func TestCheckupFindings_ScanUnavailable(t *testing.T) {
 			}
 		}
 	}`)
-	findings := checkupFindings("mybase", body)
+	findings := checkupFindings("mybase", body, release.Snapshot{}, "")
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 unavailable-scan finding, got %d: %+v", len(findings), findings)
 	}
@@ -625,7 +627,7 @@ func TestCheckupFindings_TrivyMissing(t *testing.T) {
 			}
 		}
 	}`)
-	findings := checkupFindings("mybase", body)
+	findings := checkupFindings("mybase", body, release.Snapshot{}, "")
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 missing-scanner finding, got %d: %+v", len(findings), findings)
 	}
@@ -688,7 +690,7 @@ func TestCheckupFindings_ConfigNotSetUp(t *testing.T) {
 			}
 		}
 	}`)
-	findings := checkupFindings("mybase", body)
+	findings := checkupFindings("mybase", body, release.Snapshot{}, "")
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 config finding, got %d: %+v", len(findings), findings)
 	}
@@ -711,7 +713,7 @@ func TestCheckupFindings_BackupRequiresConfig(t *testing.T) {
 			}
 		}
 	}`)
-	findings := checkupFindings("mybase", body)
+	findings := checkupFindings("mybase", body, release.Snapshot{}, "")
 	for _, f := range findings {
 		if f.Action.Form == "backup-setup" {
 			t.Fatalf("backup-setup must not appear without config, got %+v", findings)
@@ -742,7 +744,7 @@ func TestCheckupFindings_CoreLocalImageUsesUpgrade(t *testing.T) {
 			}
 		}
 	}`)
-	findings := checkupFindings("mybase", body)
+	findings := checkupFindings("mybase", body, release.Snapshot{}, "")
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding, got %d: %+v", len(findings), findings)
 	}
@@ -774,7 +776,7 @@ func TestCheckupFindings_CoreRegistryImageWithVersionUsesUpgrade(t *testing.T) {
 			}
 		}
 	}`)
-	findings := checkupFindings("mybase", body)
+	findings := checkupFindings("mybase", body, release.Snapshot{}, "")
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding, got %d: %+v", len(findings), findings)
 	}
@@ -803,7 +805,7 @@ func TestCheckupFindings_CoreOldDaemonNeedsSelfUpdate(t *testing.T) {
 			}
 		}
 	}`)
-	findings := checkupFindings("mybase", body)
+	findings := checkupFindings("mybase", body, release.Snapshot{}, "")
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding, got %d: %+v", len(findings), findings)
 	}
@@ -832,7 +834,7 @@ func TestCheckupFindings_ImageCVESkippedWhenUpToDate(t *testing.T) {
 		},
 		"updates": {"drift": [{"service": "crm", "ref": "abc", "up_to_date": true, "newest_tag": "v1.0.0"}]}
 	}`)
-	findings := checkupFindings("mybase", body)
+	findings := checkupFindings("mybase", body, release.Snapshot{}, "")
 	for _, f := range findings {
 		if strings.Contains(f.Summary, "crm") || f.Action.Form == "deploy" {
 			t.Fatalf("up_to_date service must not get a deploy finding: %+v", findings)
@@ -870,7 +872,7 @@ func TestCheckupFindings_ReplicaImageCVEMapsToServiceKey(t *testing.T) {
 		"updates": {"drift": [{"service": "worker", "ref": "aaa", "branch": "main", "commits_behind": 3, "up_to_date": false}]},
 		"services": [{"name": "worker", "replicas": 2}]
 	}`)
-	findings := checkupFindings("mybase", body)
+	findings := checkupFindings("mybase", body, release.Snapshot{}, "")
 	var cveDeploy int
 	for i := range findings {
 		f := findings[i]
@@ -970,7 +972,7 @@ func TestCheckupFindings_SkipsUnfinishableUpdate(t *testing.T) {
 			"up_to_date": false
 		}]}
 	}`)
-	findings := checkupFindings("mybase", body)
+	findings := checkupFindings("mybase", body, release.Snapshot{}, "")
 	for _, f := range findings {
 		if f.Action.Form == "deploy" && f.Action.Service == "crm" {
 			t.Fatalf("unfinishable update must not emit deploy finding: %+v", f)

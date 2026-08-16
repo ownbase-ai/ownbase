@@ -96,9 +96,11 @@ The exposure list is the machine's own view. It cannot see a firewall your provi
 
 **Activity** is the Base's own audit log: every governed action it took, newest first.
 
+**Vault → About & updates** compares this app and the bundled CLI against `releases.ownbase.ai/latest.json`. When either is behind, the panel shows the brew upgrade command to copy. A sidebar badge on Vault counts those stale components. Base daemon staleness is a checkup finding on that Base's Overview (with an Update OwnBase button), not a global badge — each Base costs a tunnel.
+
 ### What the app will not do
 
-It will not make a commit you did not ask for. Config changes (`deploy`, `backup setup`, `service add|update|remove`, `config set`) always show the YAML diff and commit message first, and require an explicit confirm before pushing. Host actions (apply patches, rescan, reboot, install the CVE scanner, self-update OwnBase, upgrade Caddy) do not touch git.
+It will not make a commit you did not ask for. Config changes (`deploy`, `backup setup`, `service add|update|remove`, `config set`) always show the YAML diff and commit message first, and require an explicit confirm before pushing. Host actions (apply patches, rescan, reboot, install the CVE scanner, self-update OwnBase, upgrade Caddy) do not touch git. It will not overwrite Homebrew-managed or app-bundled binaries — client updates are guided.
 
 It will not open an unrecorded shell. Sessions are always audited. `ssh` and `tunnel` stay terminal-only.
 

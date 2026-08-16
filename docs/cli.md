@@ -401,6 +401,10 @@ signature, atomically replaces `/opt/ownbase/bin/ownbased`, and lets systemd
 `Restart=always` boot the new process. This is how a Base picks up a newer
 Caddy pin — `core.Current` is compiled into the daemon.
 
+To learn whether an update is needed: `ownbasectl version --check <name>` (or
+`checkup`, which surfaces the same finding). CLI and app updates are guided
+(`brew upgrade --cask …`), not applied by OwnBase.
+
 ### `upgrade <name>`
 
 Check or apply updates to the OwnBase core package (Caddy) — the one package managed outside `ownbase.yaml`.
@@ -588,7 +592,7 @@ These operate on a checkout of a config repo and take no Base name. Mostly for d
 | `compile` | Compile `ownbase.yaml` into `runtime/` (Quadlet units, Caddyfile, docker-compose.yml) | `--dir` (default `.`), `--out` (default `<dir>`) |
 | `plan` | Show the diff between compiled desired state and what is running | `--dir`, `--fake-current` |
 | `apply` | Apply the plan. A real apply needs Ubuntu + Podman | `--dir`, `--dry-run`, `--fake-current`, `--audit-log` |
-| `version` | Print version, commit, and build date | — |
+| `version` | Print version, commit, and build date. With `--check`, compare CLI (and optional app/Base daemon) against `releases.ownbase.ai/latest.json` | `--json`, `--check`, `--refresh`, `--app-version`, optional `[name]` Base |
 
 ```
 + start  ownbase-auth

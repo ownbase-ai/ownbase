@@ -186,7 +186,8 @@ test.describe("FindingRow action dispatch", () => {
         callMatched([c], ["checkup"]) ||
         callMatched([c], ["list"]) ||
         callMatched([c], ["vault", "status"]) ||
-        callMatched([c], ["db", "status"])
+        callMatched([c], ["db", "status"]) ||
+        callMatched([c], ["version"])
       );
     };
     const offenders = extra.filter((c) => !allowed(c));

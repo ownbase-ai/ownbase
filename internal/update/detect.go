@@ -140,6 +140,14 @@ func highestVersionTag(names []string) string {
 	return sorted[len(sorted)-1]
 }
 
+// CompareVersionTags returns -1, 0, or +1 for a semver-aware tag comparison.
+// Strips a leading "v" then compares dot-separated numeric segments as integers.
+// Falls back to lexicographic comparison for non-numeric segments.
+// Not full semver — prerelease/build metadata are compared lexicographically.
+func CompareVersionTags(a, b string) int {
+	return compareVersionTags(a, b)
+}
+
 // compareVersionTags returns -1, 0, or +1 for a semver-aware tag comparison.
 // Strips a leading "v" then compares dot-separated numeric segments as integers.
 // Falls back to lexicographic comparison for non-numeric segments.
