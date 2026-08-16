@@ -55,6 +55,26 @@ export default tseslint.config(
       globals: { ...globals.node, ...globals.browser },
     },
   },
+  // Specs must use the shared test object so the shim fall-through guard runs
+  // after every test. fixtures/test.ts, the shim, configs, and Tier-B specs
+  // (tests-real/) may still import @playwright/test directly.
+  {
+    files: ["e2e/tests/**/*.{ts,tsx}"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "@playwright/test",
+              message:
+                "Import { test, expect, waitForQuiet } from ../fixtures/test — that is what arms the shim fall-through guard.",
+            },
+          ],
+        },
+      ],
+    },
+  },
   {
     files: ["**/*.{js,mjs}"],
     extends: [js.configs.recommended],
