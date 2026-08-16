@@ -116,13 +116,15 @@ export interface StreamHandle {
 /**
  * Run a long command, calling `onEvent` as output arrives.
  *
- * This is for `create --wait`, which spends several minutes waiting for SSH,
- * running preflight, installing, and hardening. Streaming it is the difference
- * between a wizard that looks like it has hung and one that shows its work.
+ * This is for `create --wait` and `restore`, which spend several minutes of
+ * real work. Streaming is the difference between a wizard that looks hung and
+ * one that shows its work. Optional `stdin` is for secrets (never in argv) —
+ * same rule as `raw`/`text`/`json`.
  */
 export function stream(
   args: string[],
   onEvent: (event: StreamEvent) => void,
+  stdin?: string,
 ): StreamHandle {
   const id = crypto.randomUUID();
   let settle: (code: number) => void;
@@ -139,7 +141,12 @@ export function stream(
     if (event.kind === "failed") fail(new Error(event.message));
   };
 
-  invoke("cli_stream", { id, args, onEvent: channel }).catch(fail!);
+  invoke("cli_stream", {
+    id,
+    args,
+    stdin: stdin ?? null,
+    onEvent: channel,
+  }).catch(fail!);
 
   return {
     done,

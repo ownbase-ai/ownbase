@@ -36,10 +36,9 @@ const SIDECAR: &str = "ownbasectl";
 ///
 /// This is exactly the set [desktop/src/lib/api.ts](../../src/lib/api.ts)
 /// calls today, not everything `ownbasectl` can do. The allowlist is the
-/// stated XSS boundary, so a subcommand the UI does not use yet — `deploy`,
-/// `restore`, `secrets`, and the rest — stays out until some screen actually
-/// calls it; adding one here is one line, at the point a caller in `api.ts`
-/// needs it.
+/// stated XSS boundary, so a subcommand the UI does not use yet stays out
+/// until some screen actually calls it; adding one here is one line, at the
+/// point a caller in `api.ts` needs it.
 ///
 /// `ssh` and `tunnel` are absent for a second reason on top of that: both take
 /// an arbitrary command or hold an interactive session open, which is exactly
@@ -52,16 +51,21 @@ const ALLOWED: &[&str] = &[
     "checkup",
     "config",
     "create",
+    "db",
     "delete",
     "deploy",
     "keygen",
     "list",
+    "restore",
+    "secrets",
     "security",
     "self-update",
+    "service",
     "sessions",
     "ssh-key",
     "upgrade",
     "vault",
+    "version",
 ];
 
 /// What one `ownbasectl` invocation produced.
@@ -95,9 +99,45 @@ pub enum StreamEvent {
     },
 }
 
+/// A streamed child we can still cancel after optionally closing its stdin.
+///
+/// `CommandChild` has no `close_stdin`. Dropping it closes the pipe (so CLI
+/// readers that `io.ReadAll(os.Stdin)` get EOF) without killing the process —
+/// there is no Drop kill. After a stdin write we therefore drop the handle and
+/// keep only the pid for cancel.
+enum TrackedChild {
+    Shell(CommandChild),
+    Pid(u32),
+}
+
+impl TrackedChild {
+    fn kill(self) -> Result<(), String> {
+        match self {
+            TrackedChild::Shell(child) => {
+                child.kill().map_err(|e| format!("stop the command: {e}"))
+            }
+            TrackedChild::Pid(pid) => kill_pid(pid),
+        }
+    }
+}
+
+fn kill_pid(pid: u32) -> Result<(), String> {
+    // Desktop targets are macOS/Linux today; `kill` is enough for cancel.
+    let status = std::process::Command::new("kill")
+        .arg(pid.to_string())
+        .status()
+        .map_err(|e| format!("stop the command (pid {pid}): {e}"))?;
+    if !status.success() {
+        return Err(format!(
+            "stop the command (pid {pid}): kill exited {status}"
+        ));
+    }
+    Ok(())
+}
+
 /// Running streamed commands, so the UI can cancel one.
 #[derive(Default)]
-pub struct Running(Mutex<HashMap<String, CommandChild>>);
+pub struct Running(Mutex<HashMap<String, TrackedChild>>);
 
 fn check_allowed(args: &[String]) -> Result<(), String> {
     let first = args
@@ -184,11 +224,12 @@ pub async fn cli_stream(
     running: State<'_, Running>,
     id: String,
     args: Vec<String>,
+    stdin: Option<String>,
     on_event: Channel<StreamEvent>,
 ) -> Result<(), String> {
     check_allowed(&args)?;
 
-    let (mut rx, child) = app
+    let (mut rx, mut child) = app
         .shell()
         .sidecar(SIDECAR)
         .map_err(|e| format!("locate the bundled ownbasectl: {e}"))?
@@ -196,7 +237,22 @@ pub async fn cli_stream(
         .spawn()
         .map_err(|e| format!("start ownbasectl {}: {e}", args.join(" ")))?;
 
-    running.0.lock().unwrap().insert(id.clone(), child);
+    // Same stdin rule as cli_run: secrets never in argv. Callers that pass
+    // --creds-stdin / --stdin use io.ReadAll, which blocks until EOF — so after
+    // writing we must close the pipe. CommandChild has no close_stdin; drop it
+    // (closes the writer, process keeps running) and track the pid for cancel.
+    let tracked = if let Some(input) = stdin {
+        child
+            .write(input.as_bytes())
+            .map_err(|e| format!("send input to ownbasectl: {e}"))?;
+        let pid = child.pid();
+        drop(child);
+        TrackedChild::Pid(pid)
+    } else {
+        TrackedChild::Shell(child)
+    };
+
+    running.0.lock().unwrap().insert(id.clone(), tracked);
 
     while let Some(event) = rx.recv().await {
         let out = match event {
@@ -227,7 +283,7 @@ pub async fn cli_stream(
 #[tauri::command]
 pub fn cli_cancel(running: State<'_, Running>, id: String) -> Result<(), String> {
     if let Some(child) = running.0.lock().unwrap().remove(&id) {
-        child.kill().map_err(|e| format!("stop the command: {e}"))?;
+        child.kill()?;
     }
     Ok(())
 }
@@ -249,16 +305,21 @@ mod tests {
             "checkup",
             "config",
             "create",
+            "db",
             "delete",
             "deploy",
             "keygen",
             "list",
+            "restore",
+            "secrets",
             "security",
             "self-update",
+            "service",
             "sessions",
             "ssh-key",
             "upgrade",
             "vault",
+            "version",
         ] {
             assert!(
                 check_allowed(&args(&[cmd])).is_ok(),
@@ -271,10 +332,9 @@ mod tests {
     fn refuses_high_impact_commands_the_ui_never_calls() {
         // These exist in ownbasectl but no screen in the app calls them today;
         // the allowlist is the XSS boundary, so they must stay out until one
-        // does — see the ALLOWED doc comment.
-        for cmd in [
-            "secrets", "restore", "service", "status", "updates", "db", "version",
-        ] {
+        // does — see the ALLOWED doc comment. status/updates remain CLI-only
+        // (their data arrives via checkup); compile/plan/apply are local-repo.
+        for cmd in ["status", "updates", "compile", "plan", "apply"] {
             assert!(
                 check_allowed(&args(&[cmd])).is_err(),
                 "{cmd} should be refused"

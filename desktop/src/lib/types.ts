@@ -112,7 +112,7 @@ export interface FindingAction {
   confirm?: string;
 }
 
-/** Dry-run preview from deploy / backup setup --dry-run --json. */
+/** Dry-run preview from deploy / backup setup / service / config set --dry-run --json. */
 export interface ConfigPreview {
   status: string;
   would_change: boolean;
@@ -121,8 +121,122 @@ export interface ConfigPreview {
   current?: string;
   proposed?: string;
   service?: string;
+  action?: string;
   ref?: string;
   repo?: string;
+}
+
+/** `ownbasectl secrets list <base> --json` */
+export interface SecretsServicesList {
+  services: string[];
+}
+
+/** `ownbasectl secrets list <base> <service> --json` */
+export interface SecretsKeysList {
+  service: string;
+  keys: string[];
+}
+
+/** `ownbasectl secrets get <base> <service> <key> --json` */
+export interface SecretValue {
+  service: string;
+  key: string;
+  value: string;
+}
+
+/** `ownbasectl secrets set … --json` */
+export interface SecretsSetResult {
+  status: string;
+  service: string;
+  updated: number;
+  escrow_warning?: string;
+}
+
+/** `ownbasectl secrets delete … --json` */
+export interface SecretsDeleteResult {
+  status: string;
+  service: string;
+  deleted: string;
+  escrow_note?: string;
+}
+
+/** `ownbasectl upgrade <base> --json` (check-mode) — cmd/ownbasectl.corePackage */
+export interface CorePackage {
+  name: string;
+  image: string;
+  digest: string;
+  running: boolean;
+}
+
+export interface UpgradeCheck {
+  status: string;
+  packages: CorePackage[];
+}
+
+/** `ownbasectl version --json` */
+export interface CliVersion {
+  version: string;
+  commit: string;
+  date: string;
+  string: string;
+}
+
+/** `ownbasectl backup recovery-kit <base> --json` — cmd/ownbasectl.recoveryKit */
+export interface RecoveryKit {
+  repo: string;
+  password: string;
+  note?: string;
+  /** Stock restic one-liner; JSON field is restic_command. */
+  restic_command?: string;
+  fingerprint?: string;
+  cloud_env_vars?: string[];
+}
+
+/** `ownbasectl db status <base> --json` — cmd/ownbasectl.dbStatus */
+export interface DBStatus {
+  stanza?: string;
+  stanza_ok?: boolean;
+  stanza_message?: string;
+  postgres_version?: string;
+  backups?: Array<{
+    label: string;
+    type: string;
+    size_bytes?: number;
+    repo_size_bytes?: number;
+    started?: string;
+    stopped?: string;
+    error?: boolean;
+  }>;
+  archive_min_wal?: string;
+  archive_max_wal?: string;
+  archiver?: {
+    archived_count?: number;
+    last_archived_wal?: string;
+    last_archived_time?: string;
+    failed_count?: number;
+    last_failed_wal?: string;
+    last_failed_time?: string;
+  };
+  earliest_recovery?: string;
+  latest_recovery?: string;
+}
+
+/** `ownbasectl db restore … --json` — cmd/ownbasectl.dbRestoreOutcome */
+export interface DBRestoreOutcome {
+  into: string;
+  target?: string;
+  timeline?: string;
+  databases?: number;
+  relations?: number;
+  last_transaction?: string;
+  scratch_endpoint?: string;
+  backup_after_promote?: boolean;
+}
+
+/** `ownbasectl vault recovery-string --json` */
+export interface VaultRecoveryString {
+  recovery_string: string;
+  location: string;
 }
 
 /** One problem and how to address it — cmd/ownbasectl.checkupFinding */

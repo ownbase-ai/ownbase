@@ -2,6 +2,7 @@ import { useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 
 import { Button, Card, ErrorNote, Field, Input } from "../components/ui";
+import * as api from "../lib/api";
 import type { Vault } from "../lib/useVault";
 
 /**
@@ -13,14 +14,21 @@ import type { Vault } from "../lib/useVault";
  * different things: a location and a new password, or just the password.
  */
 export function UnlockView({ vault }: { vault: Vault }) {
+  const [mode, setMode] = useState<"default" | "recover">("default");
+
   return (
     <div className="flex h-full items-center justify-center bg-zinc-950 p-8">
       <div className="w-full max-w-md animate-fade-in">
         <Wordmark />
-        {vault.phase === "absent" ? (
-          <CreateVault vault={vault} />
+        {mode === "recover" ? (
+          <RecoverVault
+            onDone={() => void vault.refresh()}
+            onCancel={() => setMode("default")}
+          />
+        ) : vault.phase === "absent" ? (
+          <CreateVault vault={vault} onRecover={() => setMode("recover")} />
         ) : (
-          <UnlockVault vault={vault} />
+          <UnlockVault vault={vault} onRecover={() => setMode("recover")} />
         )}
       </div>
     </div>
@@ -40,7 +48,13 @@ function Wordmark() {
 // Unlocking an existing vault
 // ---------------------------------------------------------------------------
 
-function UnlockVault({ vault }: { vault: Vault }) {
+function UnlockVault({
+  vault,
+  onRecover,
+}: {
+  vault: Vault;
+  onRecover: () => void;
+}) {
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -92,6 +106,89 @@ function UnlockVault({ vault }: { vault: Vault }) {
           {vault.status.vault_path}
         </p>
       )}
+      <button
+        type="button"
+        onClick={onRecover}
+        className="mt-4 text-xs text-zinc-500 underline-offset-2 hover:text-zinc-300 hover:underline"
+      >
+        Restore from recovery string…
+      </button>
+    </Card>
+  );
+}
+
+function RecoverVault({
+  onDone,
+  onCancel,
+}: {
+  onDone: () => void;
+  onCancel: () => void;
+}) {
+  const [recovery, setRecovery] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!recovery.trim() || !password) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.vaultOpen(recovery.trim(), password);
+      onDone();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+      setPassword("");
+    }
+  }
+
+  return (
+    <Card>
+      <h2 className="text-base font-medium text-zinc-100">
+        Restore from recovery string
+      </h2>
+      <p className="mt-1.5 text-sm leading-relaxed text-zinc-500">
+        Paste the recovery string printed when the vault was created (or from Vault
+        → Recovery string), then your master password. This machine will point at
+        the same remote vault and unlock it.
+      </p>
+      <form onSubmit={submit} className="mt-5 space-y-4">
+        <Field label="Recovery string">
+          <Input
+            value={recovery}
+            onChange={(e) => setRecovery(e.target.value)}
+            placeholder="ownbase-recovery-v1:…"
+            spellCheck={false}
+            autoFocus
+          />
+        </Field>
+        <Field label="Master password">
+          <Input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="current-password"
+          />
+        </Field>
+        {error && <ErrorNote title="Could not open vault" detail={error} />}
+        <div className="flex gap-2">
+          <Button type="button" variant="ghost" onClick={onCancel} className="flex-1">
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            variant="primary"
+            busy={busy}
+            disabled={!recovery.trim() || !password}
+            className="flex-1"
+          >
+            Open vault
+          </Button>
+        </div>
+      </form>
     </Card>
   );
 }
@@ -100,7 +197,13 @@ function UnlockVault({ vault }: { vault: Vault }) {
 // Creating (or adopting) a vault
 // ---------------------------------------------------------------------------
 
-function CreateVault({ vault }: { vault: Vault }) {
+function CreateVault({
+  vault,
+  onRecover,
+}: {
+  vault: Vault;
+  onRecover: () => void;
+}) {
   const [path, setPath] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -200,8 +303,16 @@ function CreateVault({ vault }: { vault: Vault }) {
 
       <p className="mt-4 text-xs leading-relaxed text-zinc-600">
         Already have a vault on another machine? Point this at the same file and
-        OwnBase will use it instead of creating a new one.
+        OwnBase will use it instead of creating a new one. For a remote vault,
+        use the recovery string instead.
       </p>
+      <button
+        type="button"
+        onClick={onRecover}
+        className="mt-3 text-xs text-zinc-500 underline-offset-2 hover:text-zinc-300 hover:underline"
+      >
+        Restore from recovery string…
+      </button>
     </Card>
   );
 }
