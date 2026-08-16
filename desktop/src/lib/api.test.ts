@@ -857,36 +857,24 @@ describe("invariants", () => {
 
     let inspected = 0;
     let stdinHits = 0;
-    for (const mock of [json, text, stream]) {
-      for (const call of mock.mock.calls) {
-        const args = call[0] as string[] | undefined;
-        if (!Array.isArray(args)) continue;
-        inspected++;
-        expect(args.join("\0")).not.toContain(SECRET);
-        const stdin = call[1] ?? call[2]; // json/text: [args, stdin]; stream: [args, onEvent, stdin]
-        if (typeof stdin === "string" && stdin.includes(SECRET)) stdinHits++;
-      }
-    }
-    // stream puts stdin as 3rd arg
-    for (const call of stream.mock.calls) {
-      const stdin = call[2];
-      if (typeof stdin === "string" && stdin.includes(SECRET)) {
-        /* already counted if we walked stream above with call[1] wrong */
-      }
-    }
-    // Recount stdin properly
-    stdinHits = 0;
-    for (const call of json.mock.calls) {
-      if (typeof call[1] === "string" && (call[1] as string).includes(SECRET)) stdinHits++;
-    }
-    for (const call of text.mock.calls) {
+    // json/text: (args, stdin?); stream: (args, onEvent, stdin?)
+    for (const call of [...json.mock.calls, ...text.mock.calls]) {
+      const args = call[0] as string[] | undefined;
+      if (!Array.isArray(args)) continue;
+      inspected++;
+      expect(args.join("\0")).not.toContain(SECRET);
       if (typeof call[1] === "string" && (call[1] as string).includes(SECRET)) stdinHits++;
     }
     for (const call of stream.mock.calls) {
+      const args = call[0] as string[] | undefined;
+      if (!Array.isArray(args)) continue;
+      inspected++;
+      expect(args.join("\0")).not.toContain(SECRET);
       if (typeof call[2] === "string" && (call[2] as string).includes(SECRET)) stdinHits++;
     }
     expect(inspected).toBeGreaterThan(0);
-    expect(stdinHits).toBeGreaterThanOrEqual(7);
+    // vaultInit, unlock, passwd, open, secretsSet, backupSetupRun, restoreBase
+    expect(stdinHits).toBe(7);
   });
 
   it("every exported api operation has an argv test", () => {

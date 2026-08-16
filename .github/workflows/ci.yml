@@ -4,6 +4,7 @@ on:
   push:
     branches: ["**"]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   # Tier 1 — host-portable: runs on every push, no Linux VM required.
