@@ -407,6 +407,7 @@ Check or apply updates to the OwnBase core package (Caddy) — the one package m
 
 ```bash
 ownbasectl upgrade mybase             # check: image, digest, running state
+ownbasectl upgrade mybase --json      # {"status","packages":[{name,image,digest,running},…]}
 ownbasectl upgrade mybase --apply     # pull and restart, streaming progress
 ```
 
@@ -450,9 +451,10 @@ ownbasectl config get mybase --json                # same, decoded to JSON
 ownbasectl config set mybase --file ./ownbase.yaml # validate, commit, push
 cat ownbase.yaml | ownbasectl config set mybase    # or from stdin
 ownbasectl config set mybase --file x.yaml --message "add worker"
+ownbasectl config set mybase --file x.yaml --dry-run --json  # preview only
 ```
 
-`set` validates the whole document locally before committing. Non-zero exit on validation failure or transport error, so it is safe to call from a script.
+`set` validates the whole document locally before committing. Non-zero exit on validation failure or transport error, so it is safe to call from a script. With `--dry-run` (and `--json`), it returns the same preview shape as `deploy --dry-run --json` (`status`, `would_change`, `commit_message`, `diff`, `current`, `proposed`) and touches neither the config repo nor the Base.
 
 ### `deploy <name> <service> [--ref <sha|tag|branch>]`
 
@@ -468,13 +470,15 @@ Because the committed ref is always a concrete SHA, a branch-named ref never sil
 
 ### `service add|remove|update <name> <service> ...`
 
-Structured, non-interactive edits to the `services:` map — a scriptable layer over the same client-side commit path. All three accept `--json`.
+Structured, non-interactive edits to the `services:` map — a scriptable layer over the same client-side commit path. All three accept `--json` and `--dry-run` (same preview shape as `deploy --dry-run --json`, plus `action` and `service`).
 
 ```bash
 ownbasectl service add mybase crm --repo git@github.com:org/crm.git --port 3000 --domain crm.example.com
+ownbasectl service add mybase crm --repo git@github.com:org/crm.git --port 3000 --dry-run --json
 ownbasectl service update mybase crm --port 4000
 ownbasectl service update mybase crm --domains crm.example.com,crm.example.org
 ownbasectl service remove mybase crm
+ownbasectl service remove mybase crm --dry-run --json
 ```
 
 | Flag | Meaning |
@@ -562,9 +566,16 @@ ownbasectl secrets get  mybase myapp DB_URL     # value; no trailing newline whe
 ownbasectl secrets set  mybase myapp DB_URL=postgres://... API_KEY=abc
 echo '{"API_KEY":"…"}' | ownbasectl secrets set mybase myapp --stdin
 ownbasectl secrets delete mybase myapp DB_URL
+
+# --json on every subcommand (desktop app / automation):
+ownbasectl secrets list mybase --json                     # {"services":[…]}
+ownbasectl secrets list mybase myapp --json               # {"service","keys":[…]}
+ownbasectl secrets get  mybase myapp DB_URL --json        # {"service","key","value"}
+ownbasectl secrets set  mybase myapp --stdin --json       # {"status","service","updated"}
+ownbasectl secrets delete mybase myapp DB_URL --json      # {"status","service","deleted"}
 ```
 
-Plaintext travels only inside the SSH tunnel; the age private key never leaves the Base.
+Plaintext travels only inside the SSH tunnel; the age private key never leaves the Base. Empty lists print as `[]`, never `null`.
 
 ---
 

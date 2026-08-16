@@ -95,6 +95,26 @@ func TestServiceUpdate_OwnbaseAccessChanged(t *testing.T) {
 	}
 }
 
+// TestServiceCmds_DryRunAndJSONFlags documents that add/remove/update all
+// accept --dry-run and --json so the desktop app can preview a config-repo
+// commit before the operator confirms (same contract as deploy).
+func TestServiceCmds_DryRunAndJSONFlags(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		has  func(flag string) bool
+	}{
+		{"add", func(f string) bool { return newServiceAddCmd().Flags().Lookup(f) != nil }},
+		{"remove", func(f string) bool { return newServiceRemoveCmd().Flags().Lookup(f) != nil }},
+		{"update", func(f string) bool { return newServiceUpdateCmd().Flags().Lookup(f) != nil }},
+	} {
+		for _, flag := range []string{"json", "dry-run"} {
+			if !tc.has(flag) {
+				t.Errorf("service %s missing --%s flag", tc.name, flag)
+			}
+		}
+	}
+}
+
 func TestNormalizeOwnbaseAccess(t *testing.T) {
 	got, err := normalizeOwnbaseAccess("web", []string{" status:read ", "", "config:write"})
 	if err != nil {

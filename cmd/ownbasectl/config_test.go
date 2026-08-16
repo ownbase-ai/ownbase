@@ -1,11 +1,41 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/ownbase/ownbase/internal/schema"
 )
+
+// TestConfigSet_DryRunAndJSONFlags documents that config set accepts the same
+// --dry-run/--json pair as deploy so the app can show a DiffPreview.
+func TestConfigSet_DryRunAndJSONFlags(t *testing.T) {
+	cmd := newConfigSetCmd()
+	for _, flag := range []string{"json", "dry-run", "file", "message"} {
+		if cmd.Flags().Lookup(flag) == nil {
+			t.Errorf("config set missing --%s flag", flag)
+		}
+	}
+}
+
+// TestConfigSet_InvalidYAMLFailsBeforeNetwork ensures validation rejects a
+// bad document without needing a Base — dry-run and apply share this gate.
+func TestConfigSet_InvalidYAMLFailsBeforeNetwork(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bad.yaml")
+	if err := os.WriteFile(path, []byte("not: valid: yaml: [[["), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := runConfigSet("anybase", path, "", false, true)
+	if err == nil {
+		t.Fatal("expected invalid ownbase.yaml to fail")
+	}
+	if !strings.Contains(err.Error(), "invalid") {
+		t.Errorf("error should mention invalid config, got: %v", err)
+	}
+}
 
 // TestDefaultOwnbaseYAML_IsValid guards the seed written by
 // `config setup --init`: it must parse and validate as an ownbase.yaml so the
