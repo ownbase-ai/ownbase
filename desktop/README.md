@@ -44,7 +44,17 @@ Other scripts:
 npm run typecheck   # tsc --noEmit
 npm run build       # typecheck + production frontend bundle
 npm run app:build   # full platform bundle (.dmg/.app on macOS)
+npm run e2e         # Playwright hermetic e2e (mocked IPC, CI)
+npm run e2e:ui      # same, with the Playwright UI
+npm run e2e:real    # real ownbasectl via local bridge (dev machine)
+npm run e2e:capture -- <base>  # dump live --json docs into e2e/fixtures/captured/
 ```
+
+## End-to-end tests
+
+The app never talks to a Base directly — only through the sidecar — so Playwright runs the Vite UI in a normal browser and injects a mock of `__TAURI_INTERNALS__` (`e2e/shim/install.ts`). Scenarios hand the mock canned `--json` documents from `e2e/fixtures/data.ts`. That is enough to cover unlock, the setup wizard, dashboard tabs, the dry-run→confirm service gate, sessions, and vault screens without Multipass or a VPS.
+
+For a real CLI path, `e2e/bridge/server.mjs` spawns `ownbasectl` under an isolated `HOME`; `npm run e2e:real` drives it. See [docs/development.md](../docs/development.md#desktop-e2e-playwright).
 
 ## The sidecar
 

@@ -1,5 +1,5 @@
 .PHONY: all build build-linux test test-vm test-integration sync-vm smoke-test connect-vm lint fmt fmt-fix vet tidy clean \
-        app app-build app-check app-sidecar
+        app app-build app-check app-sidecar app-e2e app-e2e-real
 
 VM      ?= ownbase-test
 VM_NAME ?= ownbase-fresh
@@ -108,6 +108,16 @@ app-build: app-sidecar
 app-check:
 	cd $(DESKTOP) && npm run typecheck && npm run lint && npm run test
 	cd $(DESKTOP)/src-tauri && cargo fmt --check && cargo clippy --all-targets -- -D warnings
+
+# Hermetic Playwright e2e (Tier A): Vite + mocked Tauri IPC. No Multipass, no
+# window. Safe for CI and for a quick local check before a PR.
+app-e2e:
+	cd $(DESKTOP) && npx playwright install chromium && npm run e2e
+
+# Real-CLI Playwright e2e (Tier B): spawns ownbasectl against a temp vault and
+# (optionally) a Multipass Base. Local only — not wired into CI.
+app-e2e-real:
+	cd $(DESKTOP) && npm run e2e:real
 
 # ---------------------------------------------------------------------------
 # Code quality

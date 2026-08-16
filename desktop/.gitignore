@@ -14,3 +14,9 @@ src-tauri/binaries/
 # pipeline, and the geometry that produced them is in the script. The 1024px
 # source it feeds to `tauri icon` is only an intermediate.
 src-tauri/icon-source.png
+
+# Playwright
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
