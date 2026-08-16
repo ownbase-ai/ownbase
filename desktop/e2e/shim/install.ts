@@ -70,15 +70,11 @@ export type Scenario = {
   keygen?: KeygenResult;
   servicePreview?: ConfigPreview;
   deployPreview?: ConfigPreview;
-  backupSetupPreview?: ConfigPreview;
   upgradeCheck?: unknown;
   dbStatus?: unknown;
   dbRestore?: unknown;
   recoveryKit?: unknown;
-  sshPublicKey?: string;
   configYaml?: string;
-  /** Override vault status fields after unlock. */
-  unlockedStatus?: Partial<VaultStatus>;
   fails?: FailRule[];
   streams?: StreamRule[];
   /** Path returned by the folder picker (plugin:dialog|open). */
@@ -94,6 +90,7 @@ declare global {
       scenario: Scenario;
       vault: VaultStatus;
       bases: BaseSummary[];
+      clearFails: () => void;
     };
   }
 }
@@ -112,45 +109,73 @@ export async function getCalls(page: Page): Promise<CliCall[]> {
   return page.evaluate(() => window.__E2E__?.calls ?? []);
 }
 
-/** True when any recorded call's argv contains every token in `match` in order. */
-/** True when any recorded call's argv has `match` as a subcommand prefix. */
-export function callMatched(calls: CliCall[], match: string[]): boolean {
-  return calls.some((c) => c.args && argsPrefixed(c.args, match));
-}
-
-export function argsPrefixed(args: string[], match: string[]): boolean {
-  const clean = args.filter(
-    (a) =>
-      a !== "--json" &&
-      a !== "--yes" &&
-      a !== "--wait" &&
-      a !== "--password-stdin" &&
-      a !== "--creds-stdin" &&
-      a !== "--dry-run" &&
-      !a.startsWith("--"),
-  );
-  // Allow flags interleaved: fall back to ordered subsequence of non-flag tokens.
-  const tokens = args.filter((a) => !a.startsWith("--") || match.includes(a));
-  const haystack = tokens.length >= match.length ? tokens : clean;
-  for (let start = 0; start <= haystack.length - match.length; start++) {
-    let ok = true;
-    for (let i = 0; i < match.length; i++) {
-      if (haystack[start + i] !== match[i]) {
-        ok = false;
-        break;
+/**
+ * True when a recorded call's non-flag argv starts with `match` (anchored
+ * prefix). Same semantics as the shim's own routing matcher — no subsequence
+ * fallback, no scanning mid-argv. Optional `cmd` filters cli_run vs cli_stream.
+ */
+export function callMatched(
+  calls: CliCall[],
+  match: string[],
+  opts?: { cmd?: CliCall["cmd"]; includeFlags?: string[] },
+): boolean {
+  return calls.some((c) => {
+    if (opts?.cmd && c.cmd !== opts.cmd) return false;
+    if (!c.args) return false;
+    if (!argsPrefixed(c.args, match)) return false;
+    if (opts?.includeFlags) {
+      for (const f of opts.includeFlags) {
+        if (!c.args.includes(f)) return false;
       }
     }
-    if (ok) return true;
-  }
-  // Ordered subsequence (for ["service","add","demo","api"] amid flags).
-  let i = 0;
-  for (const a of args) {
-    if (a === match[i]) {
-      i++;
-      if (i === match.length) return true;
+    return true;
+  });
+}
+
+/** Non-flag tokens from an argv (flags and their values stay out). */
+export function nonFlagTokens(args: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a.startsWith("--")) {
+      // Skip a following value unless the next token is also a flag / absent.
+      const next = args[i + 1];
+      if (next !== undefined && !next.startsWith("-") && !a.includes("=")) i++;
+      continue;
     }
+    if (a.startsWith("-") && a.length === 2) {
+      const next = args[i + 1];
+      if (next !== undefined && !next.startsWith("-")) i++;
+      continue;
+    }
+    out.push(a);
   }
-  return false;
+  return out;
+}
+
+/** True when `match` is an anchored prefix of the non-flag tokens in `args`. */
+export function argsPrefixed(args: string[], match: string[]): boolean {
+  const tokens = nonFlagTokens(args);
+  if (tokens.length < match.length) return false;
+  for (let i = 0; i < match.length; i++) {
+    if (tokens[i] !== match[i]) return false;
+  }
+  return true;
+}
+
+/** Calls whose non-flag argv is prefixed by `match` and that are not dry-runs. */
+export function realMutations(
+  calls: CliCall[],
+  match: string[],
+  opts?: { cmd?: CliCall["cmd"] },
+): CliCall[] {
+  return calls.filter(
+    (c) =>
+      c.args &&
+      (!opts?.cmd || c.cmd === opts.cmd) &&
+      argsPrefixed(c.args, match) &&
+      !c.args.includes("--dry-run"),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -210,7 +235,6 @@ function installMock(scenario: Scenario): void {
         pid: 0,
       };
     }
-    const extra = unlocked ? (scenario.unlockedStatus ?? {}) : {};
     return {
       running: true,
       unlocked,
@@ -223,7 +247,6 @@ function installMock(scenario: Scenario): void {
       locks_at: unlocked ? "2026-08-15T13:00:00Z" : undefined,
       ssh_agent_socket: "/tmp/ownbase-e2e/agent.sock",
       version: "0.1.0-e2e",
-      ...extra,
     };
   }
 
@@ -243,6 +266,12 @@ function installMock(scenario: Scenario): void {
     }>,
     streams: new Map<string, { cancelled: boolean }>(),
     secretKeys: ["DATABASE_URL", "API_TOKEN"] as string[],
+    fails: [...(scenario.fails ?? [])] as Array<{
+      match: string[];
+      code: number;
+      stderr: string;
+      stdout?: string;
+    }>,
   };
 
   const e2e = {
@@ -255,6 +284,10 @@ function installMock(scenario: Scenario): void {
     },
     get bases() {
       return state.bases;
+    },
+    /** Tests call this before retrying a path that previously failed. */
+    clearFails() {
+      state.fails = [];
     },
   };
   (window as unknown as { __E2E__: typeof e2e }).__E2E__ = e2e;
@@ -328,7 +361,7 @@ function installMock(scenario: Scenario): void {
   }
 
   function findFail(args: string[]) {
-    return (scenario.fails ?? []).find((f) => matches(args, f.match));
+    return state.fails.find((f) => matches(args, f.match));
   }
 
   function findStream(args: string[]) {
@@ -601,15 +634,12 @@ function installMock(scenario: Scenario): void {
       return ok("");
     }
 
-    if (matches(args, ["config", "show"]) || matches(args, ["config", "get"])) {
-      if (args.includes("--json") || matches(args, ["config", "get"])) {
-        // text path for configGetYAML has no --json; json path has it appended by cli.json
-        if (!args.includes("--json")) {
-          return ok(scenario.configYaml ?? "services:\n  web: {}\n");
-        }
-        return ok({ services: { web: {} } });
+    if (matches(args, ["config", "get"])) {
+      // cli.json appends --json; cli.text (configGetYAML) does not.
+      if (args.includes("--json")) {
+        return ok({ services: { web: { ref: "main" } } });
       }
-      return ok(scenario.configYaml ?? "services:\n  web: {}\n");
+      return ok(scenario.configYaml ?? "services:\n  web:\n    ref: main\n");
     }
 
     if (matches(args, ["config", "setup"])) {
@@ -656,14 +686,12 @@ function installMock(scenario: Scenario): void {
     }
 
     if (matches(args, ["backup", "setup"]) && args.includes("--dry-run")) {
-      return ok(
-        scenario.backupSetupPreview ?? {
-          status: "ok",
-          would_change: true,
-          commit_message: "backup: setup",
-          diff: "+ backup\n",
-        },
-      );
+      return ok({
+        status: "ok",
+        would_change: true,
+        commit_message: "backup: setup",
+        diff: "+ backup\n",
+      });
     }
 
     if (matches(args, ["backup", "setup"])) {
@@ -726,7 +754,6 @@ function installMock(scenario: Scenario): void {
     if (matches(args, ["ssh-key", "list"]) || matches(args, ["ssh-key", "add"])) {
       return ok({
         public_key:
-          scenario.sshPublicKey ??
           "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE2EdeployKey ownbase-deploy",
       });
     }
@@ -889,7 +916,10 @@ function installMock(scenario: Scenario): void {
       const argv = (args.args as string[]) ?? [];
       const stdin = (args.stdin as string | null) ?? null;
       state.calls.push({ cmd: "cli_stream", args: argv, stdin, id });
-      void handleStream(id, argv, stdin, args.onEvent);
+      void handleStream(id, argv, stdin, args.onEvent).catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error("[e2e shim] cli_stream failed:", message);
+      });
       return null;
     }
 

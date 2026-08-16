@@ -110,6 +110,38 @@ jobs:
           cargo fmt --check
           cargo clippy --all-targets -- -D warnings
 
+  # Optional: real ownbasectl via the e2e bridge. Manual only — needs a built
+  # sidecar and is not a PR gate. Catches argv/stdin/exit-code drift against
+  # a real binary that the hermetic suite cannot see.
+  desktop-e2e-real:
+    name: Desktop e2e real CLI (manual)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: npm ci
+        working-directory: desktop
+        run: npm ci
+      - name: Build sidecar
+        working-directory: desktop
+        run: npm run sidecar
+      - name: Install Playwright Chromium
+        working-directory: desktop
+        run: npx playwright install --with-deps chromium
+      - name: Playwright e2e real
+        working-directory: desktop
+        run: npm run e2e:real
+
   # Tier 2 — real Ubuntu with Podman + Quadlet + systemd. Runs on push to
   # main and on pull requests targeting main; also runnable manually.
   # Required from M3 onward; harmless before (no integration tests yet).

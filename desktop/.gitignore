@@ -20,4 +20,3 @@ src-tauri/icon-source.png
 /playwright-report/
 /blob-report/
 /playwright/.cache/
-e2e/fixtures/captured/

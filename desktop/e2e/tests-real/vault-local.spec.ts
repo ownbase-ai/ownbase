@@ -1,19 +1,27 @@
-// Tier B smoke: real ownbasectl against an isolated HOME. No Multipass required.
-// Covers vault create/unlock through the UI with the bridge-backed shim.
+// Tier B: real ownbasectl against an isolated HOME. Local / workflow_dispatch only.
+// Covers vault create through the UI with the bridge-backed shim.
 
 import { expect, test } from "@playwright/test";
 
 const BRIDGE = `http://127.0.0.1:${process.env.E2E_BRIDGE_PORT || 7391}`;
 
+let bridgeToken = "";
+
 test.beforeAll(async ({ request }) => {
   const health = await request.get(`${BRIDGE}/health`);
-  expect(health.ok()).toBeTruthy();
+  expect(health.ok(), await health.text()).toBeTruthy();
+  const body = (await health.json()) as { ok: boolean };
+  expect(body.ok).toBe(true);
+
+  const tok = await request.get(`${BRIDGE}/token`);
+  expect(tok.ok()).toBeTruthy();
+  bridgeToken = ((await tok.json()) as { token: string }).token;
+  expect(bridgeToken.length).toBeGreaterThan(8);
 });
 
 test("create vault via real ownbasectl", async ({ page }) => {
-  // Install a bridge-backed Tauri mock (forwards cli_* to the local bridge).
   await page.addInitScript(
-    ({ bridge }) => {
+    ({ bridge, token }) => {
       type CliResult = { code: number; stdout: string; stderr: string };
       const callbacks = new Map<number, (data: unknown) => void>();
 
@@ -37,11 +45,16 @@ test("create vault via real ownbasectl", async ({ page }) => {
         return null;
       }
 
+      const headers = {
+        "content-type": "application/json",
+        "x-e2e-token": token,
+      };
+
       async function invoke(cmd: string, args: Record<string, unknown> = {}) {
         if (cmd === "cli_run") {
           const res = await fetch(`${bridge}/run`, {
             method: "POST",
-            headers: { "content-type": "application/json" },
+            headers,
             body: JSON.stringify({ args: args.args, stdin: args.stdin ?? null }),
           });
           return (await res.json()) as CliResult;
@@ -52,7 +65,7 @@ test("create vault via real ownbasectl", async ({ page }) => {
           void (async () => {
             const res = await fetch(`${bridge}/stream`, {
               method: "POST",
-              headers: { "content-type": "application/json" },
+              headers,
               body: JSON.stringify({
                 id,
                 args: args.args,
@@ -71,11 +84,9 @@ test("create vault via real ownbasectl", async ({ page }) => {
               const parts = buf.split("\n\n");
               buf = parts.pop() ?? "";
               for (const part of parts) {
-                const line = part
-                  .split("\n")
-                  .find((l) => l.startsWith("data: "));
+                const line = part.split("\n").find((l) => l.startsWith("data: "));
                 if (!line) continue;
-                const event = JSON.parse(line.slice(6));
+                const event = JSON.parse(line.slice(6)) as { kind: string };
                 runCallback(ch, { index, message: event });
                 index++;
                 if (event.kind === "finished" || event.kind === "failed") {
@@ -90,7 +101,7 @@ test("create vault via real ownbasectl", async ({ page }) => {
         if (cmd === "cli_cancel") {
           await fetch(`${bridge}/cancel`, {
             method: "POST",
-            headers: { "content-type": "application/json" },
+            headers,
             body: JSON.stringify({ id: args.id }),
           });
           return null;
@@ -113,15 +124,15 @@ test("create vault via real ownbasectl", async ({ page }) => {
           currentWebview: { windowLabel: "main", label: "main" },
         },
       };
-      (window as unknown as { __TAURI_EVENT_PLUGIN_INTERNALS__: unknown }).__TAURI_EVENT_PLUGIN_INTERNALS__ =
-        { unregisterListener: () => {} };
+      (
+        window as unknown as { __TAURI_EVENT_PLUGIN_INTERNALS__: unknown }
+      ).__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
     },
-    { bridge: BRIDGE },
+    { bridge: BRIDGE, token: bridgeToken },
   );
 
   await page.goto("/");
 
-  // Fresh isolated HOME → absent vault.
   await expect(page.getByRole("heading", { name: "Create your vault" })).toBeVisible({
     timeout: 30_000,
   });

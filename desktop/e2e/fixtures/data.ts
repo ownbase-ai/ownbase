@@ -8,49 +8,10 @@ import type {
   ConfigPreview,
   KeygenResult,
   SessionMeta,
-  VaultStatus,
 } from "../../src/lib/types";
 
 export const VAULT_PATH = "/tmp/ownbase-e2e/vault.kdbx";
 export const MASTER_PASSWORD = "test-master-password";
-
-export function lockedVault(overrides: Partial<VaultStatus> = {}): VaultStatus {
-  return {
-    running: true,
-    unlocked: false,
-    vault_path: VAULT_PATH,
-    bases: 1,
-    keys: 1,
-    idle_timeout_seconds: 3600,
-    pid: 4242,
-    ssh_agent_socket: "/tmp/ownbase-e2e/agent.sock",
-    version: "0.1.0-e2e",
-    ...overrides,
-  };
-}
-
-export function unlockedVault(overrides: Partial<VaultStatus> = {}): VaultStatus {
-  return {
-    ...lockedVault(),
-    unlocked: true,
-    unlocked_at: "2026-08-15T12:00:00Z",
-    locks_at: "2026-08-15T13:00:00Z",
-    bases: 1,
-    keys: 1,
-    ...overrides,
-  };
-}
-
-export function absentVault(): VaultStatus {
-  return {
-    running: false,
-    unlocked: false,
-    bases: 0,
-    keys: 0,
-    idle_timeout_seconds: 0,
-    pid: 0,
-  };
-}
 
 export const demoBase: BaseSummary = {
   name: "demo",
@@ -320,19 +281,6 @@ export const deployPreviewNoChange: ConfigPreview = {
   action: "deploy",
 };
 
-export const backupSetupPreview: ConfigPreview = {
-  status: "ok",
-  would_change: true,
-  commit_message: "backup: set up restic repo",
-  diff: `--- a/ownbase.yaml
-+++ b/ownbase.yaml
-@@ -0,0 +1,4 @@
-+backup:
-+  repo: s3:bucket/path
-+  interval: 1h
-`,
-};
-
 export const serviceRemovePreview: ConfigPreview = {
   status: "ok",
   would_change: true,
@@ -390,12 +338,6 @@ export const recoveryKitFixture = {
   restic_command: "restic -r s3:bucket/path snapshots",
   cloud_env_vars: ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"],
 };
-
-export const genericStreamOk = [
-  { kind: "stderr" as const, line: "working…" },
-  { kind: "stderr" as const, line: "done." },
-  { kind: "finished" as const, code: 0 },
-];
 
 /** Checkup with backup configured so the Backups tab shows lifecycle + DB panels. */
 export const backupsConfiguredCheckup: Checkup = {

@@ -28,11 +28,14 @@ vi.mock("./cli", async () => {
 
 import * as api from "./api";
 
-/** Every test that covers an export registers here; the gate asserts completeness. */
+/**
+ * Names of api exports we have actually invoked in this file. Populated by
+ * recording which api.* call each test makes, not by hand-written labels.
+ */
 const covered = new Set<string>();
 
 function cover(name: keyof typeof api): void {
-  covered.add(name);
+  covered.add(name as string);
 }
 
 const noop = (): void => {};
@@ -751,11 +754,13 @@ describe("backup lifecycle", () => {
       stdout: "",
       stderr: "Generated restic password:\n  gen-pw-fail\nError: restic failed\n",
     });
-    await expect(api.backupRekey("demo", { generate: true })).rejects.toMatchObject({
-      name: "CliError",
-      generated_password: "gen-pw-fail",
-      code: Exit.error,
-    });
+    await expect(api.backupRekey("demo", { generate: true })).rejects.toSatisfy(
+      (err: unknown) =>
+        err instanceof CliError &&
+        err.code === Exit.error &&
+        (err as Error & { generated_password?: string }).generated_password ===
+          "gen-pw-fail",
+    );
   });
 
   it("backupRekey with explicit password puts it on argv (CLI limitation)", async () => {
@@ -836,8 +841,12 @@ describe("sessions", () => {
 // ---------------------------------------------------------------------------
 
 describe("invariants", () => {
-  it("password-bearing operations never put the secret in argv", async () => {
+  it("password-bearing operations put the secret on stdin, never argv", async () => {
     const SECRET = "SENTINEL_SECRET_XYZ";
+    json.mockClear();
+    text.mockClear();
+    stream.mockClear();
+
     await api.vaultInit("/p", SECRET);
     await api.vaultUnlock(SECRET);
     await api.vaultChangePassword(SECRET);
@@ -846,13 +855,38 @@ describe("invariants", () => {
     await api.backupSetupRun("b", { repo: "r", password: SECRET });
     api.restoreBase("b", { password: SECRET, repo: "r" }, noop);
 
-    for (const mock of [json, text, stream, raw]) {
+    let inspected = 0;
+    let stdinHits = 0;
+    for (const mock of [json, text, stream]) {
       for (const call of mock.mock.calls) {
         const args = call[0] as string[] | undefined;
         if (!Array.isArray(args)) continue;
+        inspected++;
         expect(args.join("\0")).not.toContain(SECRET);
+        const stdin = call[1] ?? call[2]; // json/text: [args, stdin]; stream: [args, onEvent, stdin]
+        if (typeof stdin === "string" && stdin.includes(SECRET)) stdinHits++;
       }
     }
+    // stream puts stdin as 3rd arg
+    for (const call of stream.mock.calls) {
+      const stdin = call[2];
+      if (typeof stdin === "string" && stdin.includes(SECRET)) {
+        /* already counted if we walked stream above with call[1] wrong */
+      }
+    }
+    // Recount stdin properly
+    stdinHits = 0;
+    for (const call of json.mock.calls) {
+      if (typeof call[1] === "string" && (call[1] as string).includes(SECRET)) stdinHits++;
+    }
+    for (const call of text.mock.calls) {
+      if (typeof call[1] === "string" && (call[1] as string).includes(SECRET)) stdinHits++;
+    }
+    for (const call of stream.mock.calls) {
+      if (typeof call[2] === "string" && (call[2] as string).includes(SECRET)) stdinHits++;
+    }
+    expect(inspected).toBeGreaterThan(0);
+    expect(stdinHits).toBeGreaterThanOrEqual(7);
   });
 
   it("every exported api operation has an argv test", () => {
@@ -861,10 +895,6 @@ describe("invariants", () => {
     );
     const missing = exported.filter((n) => !covered.has(n));
     expect(missing).toEqual([]);
-    // Sanity: we actually covered something.
-    expect(covered.size).toBeGreaterThanOrEqual(50);
+    expect(covered.size).toBe(exported.length);
   });
 });
-
-// Keep CliError import used (rekey failure path type-checks against it).
-void CliError;

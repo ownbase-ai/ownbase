@@ -1,5 +1,3 @@
-import { expect, test } from "@playwright/test";
-
 import {
   demoBase,
   demoSessions,
@@ -7,6 +5,7 @@ import {
   sampleCast,
   sampleTranscript,
 } from "../fixtures/data";
+import { expect, test } from "../fixtures/test";
 import { openApp } from "../shim/install";
 
 test.describe("sessions", () => {

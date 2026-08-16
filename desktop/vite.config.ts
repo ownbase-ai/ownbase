@@ -20,9 +20,10 @@ export default defineConfig({
     target: "es2022",
     sourcemap: true,
   },
-  // Unit tests only. Playwright owns e2e/ and must not be collected by vitest.
+  // Unit tests only. Playwright owns e2e/tests and must not be collected by vitest.
+  // fixtures-shape.test.ts imports from e2e/fixtures (data only, no Playwright).
   test: {
     include: ["src/**/*.{test,spec}.{ts,tsx}"],
-    exclude: ["e2e/**", "node_modules/**", "src-tauri/**"],
+    exclude: ["e2e/tests/**", "e2e/tests-real/**", "node_modules/**", "src-tauri/**"],
   },
 });

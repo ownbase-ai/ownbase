@@ -26,7 +26,12 @@ mkdirSync(outDir, { recursive: true });
 const ctl = process.env.E2E_OWNBASECTL || "ownbasectl";
 
 function capture(name, args) {
-  const r = spawnSync(ctl, [...args, "--json"], { encoding: "utf8" });
+  // --json is per-command; only pass it when the command accepts it.
+  const r = spawnSync(ctl, args, { encoding: "utf8" });
+  if (r.error) {
+    console.error(`fail: ${ctl} ${args.join(" ")}: ${r.error.message}`);
+    return false;
+  }
   if (r.status !== 0) {
     console.error(`fail: ${ctl} ${args.join(" ")} → ${r.status}`);
     console.error(r.stderr);
@@ -46,10 +51,10 @@ function capture(name, args) {
 }
 
 let ok = true;
-ok = capture("vault-status", ["vault", "status"]) && ok;
-ok = capture("list", ["list"]) && ok;
-ok = capture(`checkup-${base}`, ["checkup", base]) && ok;
-ok = capture("sessions-list", ["sessions", "list"]) && ok;
-ok = capture("version", ["version"]) && ok;
+ok = capture("vault-status", ["vault", "status", "--json"]) && ok;
+ok = capture("list", ["list", "--json"]) && ok;
+ok = capture(`checkup-${base}`, ["checkup", base, "--json"]) && ok;
+ok = capture("sessions-list", ["sessions", "list", "--json"]) && ok;
+ok = capture("version", ["version", "--json"]) && ok;
 
 process.exit(ok ? 0 : 1);

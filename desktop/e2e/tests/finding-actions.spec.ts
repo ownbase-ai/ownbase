@@ -1,45 +1,81 @@
-import { expect, test } from "@playwright/test";
-
 import { demoBase, findingsForRun, healthyCheckup } from "../fixtures/data";
+import { expect, test } from "../fixtures/test";
 import { callMatched, getCalls, openApp } from "../shim/install";
 
-const RUN_ACTIONS: Array<{ run: string; label: string; match: string[]; confirm?: string }> = [
-  { run: "security fix", label: "Apply patches", match: ["security", "fix", "demo"] },
+type RunCase = {
+  run: string;
+  label: string;
+  /** Non-flag argv prefix the CLI must receive. */
+  match: string[];
+  /** Flags that must be present. */
+  flags?: string[];
+  /** Flags that must be absent. */
+  forbid?: string[];
+  confirm?: string;
+  /** Streamed host actions use cli_stream; security scan uses cli_run. */
+  cmd: "cli_run" | "cli_stream";
+};
+
+const RUN_ACTIONS: RunCase[] = [
+  {
+    run: "security fix",
+    label: "Apply patches",
+    match: ["security", "fix", "demo"],
+    forbid: ["--reboot"],
+    cmd: "cli_stream",
+  },
   {
     run: "security fix --reboot",
     label: "Patch and reboot",
     match: ["security", "fix", "demo"],
+    flags: ["--reboot"],
     confirm: "Install updates and reboot?",
+    cmd: "cli_stream",
   },
-  { run: "security scan", label: "Rescan CVEs", match: ["security", "scan", "demo"] },
+  {
+    run: "security scan",
+    label: "Rescan CVEs",
+    match: ["security", "scan", "demo"],
+    forbid: ["--wait"],
+    cmd: "cli_run",
+  },
   {
     run: "security reboot",
     label: "Reboot",
     match: ["security", "reboot", "demo"],
+    forbid: ["--wait"],
     confirm: "Reboot the Base now?",
+    cmd: "cli_stream",
   },
   {
     run: "security reboot --wait",
     label: "Reboot and wait",
     match: ["security", "reboot", "demo"],
+    flags: ["--wait"],
     confirm: "Reboot and wait?",
+    cmd: "cli_stream",
   },
   {
     run: "security install-scanner",
     label: "Install scanner",
     match: ["security", "install-scanner", "demo"],
+    cmd: "cli_stream",
   },
   {
     run: "self-update",
     label: "Self-update",
     match: ["self-update", "demo"],
+    flags: ["--version", "latest"],
     confirm: "Replace the daemon?",
+    cmd: "cli_stream",
   },
   {
     run: "upgrade --apply",
     label: "Apply upgrade",
     match: ["upgrade", "demo"],
+    flags: ["--apply"],
     confirm: "Apply core upgrade?",
+    cmd: "cli_stream",
   },
 ];
 
@@ -59,25 +95,39 @@ test.describe("FindingRow action dispatch", () => {
       await expect(btn).toBeVisible();
 
       if (action.confirm) {
-        page.once("dialog", (d) => d.accept());
+        page.once("dialog", (d) => {
+          expect(d.message()).toContain(action.confirm!.slice(0, 10));
+          void d.accept();
+        });
+      } else {
+        // A surprise confirm would auto-dismiss and hang the action — fail fast.
+        page.once("dialog", (d) => {
+          throw new Error(`unexpected confirm for ${action.run}: ${d.message()}`);
+        });
       }
       await btn.click();
 
       await expect
-        .poll(async () => callMatched(await getCalls(page), action.match))
+        .poll(async () =>
+          callMatched(await getCalls(page), action.match, {
+            cmd: action.cmd,
+            includeFlags: action.flags,
+          }),
+        )
         .toBeTruthy();
 
       const call = (await getCalls(page)).find(
-        (c) => c.args && callMatched([c], action.match),
+        (c) =>
+          c.cmd === action.cmd &&
+          c.args &&
+          callMatched([c], action.match, { includeFlags: action.flags }),
       );
-      if (action.run.includes("--reboot") && action.run.startsWith("security fix")) {
-        expect(call?.args).toContain("--reboot");
+      expect(call, `expected ${action.cmd} ${action.match.join(" ")}`).toBeTruthy();
+      for (const f of action.forbid ?? []) {
+        expect(call!.args, `must not include ${f}`).not.toContain(f);
       }
-      if (action.run === "security reboot --wait") {
-        expect(call?.args).toContain("--wait");
-      }
-      if (action.run === "upgrade --apply") {
-        expect(call?.args).toContain("--apply");
+      for (const f of action.flags ?? []) {
+        expect(call!.args, `must include ${f}`).toContain(f);
       }
     });
   }
@@ -93,8 +143,11 @@ test.describe("FindingRow action dispatch", () => {
 
     page.once("dialog", (d) => d.dismiss());
     await page.getByRole("button", { name: "Self-update" }).click();
-    await page.waitForTimeout(200);
-    expect(callMatched(await getCalls(page), ["self-update"])).toBeFalsy();
+    // Button returns to idle; no stream recorded.
+    await expect(page.getByRole("button", { name: "Self-update" })).toBeEnabled();
+    await expect
+      .poll(async () => callMatched(await getCalls(page), ["self-update", "demo"]))
+      .toBeFalsy();
   });
 
   test("open action switches tab without a mutating CLI call", async ({ page }) => {
@@ -117,23 +170,27 @@ test.describe("FindingRow action dispatch", () => {
 
     const before = await getCalls(page);
     await page.getByRole("button", { name: "Open backups" }).click();
-    // Backups tab is selected (healthy fixture has last_backup → lifecycle view).
     await expect(page.getByRole("tab", { name: "Backups" })).toHaveAttribute(
       "aria-selected",
       "true",
     );
-    await expect(page.getByText(/Last snapshot|No snapshot has ever been taken/i).first()).toBeVisible();
-    const after = await getCalls(page);
-    const extra = after.slice(before.length);
-    // kind=open must not stream or mutate.
-    expect(extra.filter((c) => c.cmd === "cli_stream")).toHaveLength(0);
-    expect(
-      extra.every(
-        (c) =>
-          !c.args ||
-          ["checkup", "list", "vault", "db", "backup"].includes(c.args[0] ?? ""),
-      ),
-    ).toBeTruthy();
+    // healthyCheckup has last_backup → configured backups panel.
+    await expect(page.getByText("Last snapshot")).toBeVisible();
+
+    const extra = (await getCalls(page)).slice(before.length);
+    // Allow only read-only follow-ups.
+    const allowed = (c: (typeof extra)[number]) => {
+      if (!c.args) return true;
+      if (c.cmd === "cli_stream") return false;
+      return (
+        callMatched([c], ["checkup"]) ||
+        callMatched([c], ["list"]) ||
+        callMatched([c], ["vault", "status"]) ||
+        callMatched([c], ["db", "status"])
+      );
+    };
+    const offenders = extra.filter((c) => !allowed(c));
+    expect(offenders, JSON.stringify(offenders.map((c) => c.args))).toEqual([]);
   });
 
   test("unknown run action shows an error, no stream", async ({ page }) => {
@@ -146,7 +203,7 @@ test.describe("FindingRow action dispatch", () => {
     });
 
     await page.getByRole("button", { name: "Do the thing" }).click();
-    await expect(page.getByText(/Unknown action: not-a-real-action/)).toBeVisible();
+    await expect(page.getByText("Unknown action: not-a-real-action")).toBeVisible();
     const streams = (await getCalls(page)).filter((c) => c.cmd === "cli_stream");
     expect(streams).toHaveLength(0);
   });

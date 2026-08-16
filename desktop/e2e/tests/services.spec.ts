@@ -1,11 +1,28 @@
-import { expect, test } from "@playwright/test";
-
 import {
   demoBase,
   healthyCheckup,
   serviceAddPreview,
 } from "../fixtures/data";
-import { callMatched, getCalls, openApp } from "../shim/install";
+import { expect, test } from "../fixtures/test";
+import { callMatched, getCalls, openApp, realMutations } from "../shim/install";
+
+async function waitForQuiet(
+  page: import("@playwright/test").Page,
+  stableMs = 300,
+): Promise<Awaited<ReturnType<typeof getCalls>>> {
+  let last = -1;
+  let stableSince = Date.now();
+  for (;;) {
+    const calls = await getCalls(page);
+    if (calls.length === last) {
+      if (Date.now() - stableSince >= stableMs) return calls;
+    } else {
+      last = calls.length;
+      stableSince = Date.now();
+    }
+    await page.waitForTimeout(50);
+  }
+}
 
 test.describe("services", () => {
   test("add service: dry-run preview before commit", async ({ page }) => {
@@ -31,8 +48,7 @@ test.describe("services", () => {
     await expect(page.getByText("service: add api")).toBeVisible();
     await expect(page.getByText(/repo: git@github.com:example\/api.git/)).toBeVisible();
 
-    let calls = await getCalls(page);
-    const previewCall = calls.find(
+    const previewCall = (await getCalls(page)).find(
       (c) =>
         c.args &&
         callMatched([c], ["service", "add", "demo", "api"]) &&
@@ -40,33 +56,20 @@ test.describe("services", () => {
     );
     expect(previewCall).toBeTruthy();
 
-    // Dismiss confirm → no real apply.
     page.once("dialog", (d) => d.dismiss());
     await page.getByRole("button", { name: "Commit and apply" }).click();
-    await page.waitForTimeout(300);
+    await expect(page.getByRole("button", { name: "Commit and apply" })).toBeVisible();
+    expect(
+      realMutations(await waitForQuiet(page), ["service", "add", "demo", "api"]),
+    ).toHaveLength(0);
 
-    calls = await getCalls(page);
-    const applies = calls.filter(
-      (c) =>
-        c.args &&
-        callMatched([c], ["service", "add", "demo", "api"]) &&
-        !c.args.includes("--dry-run"),
-    );
-    expect(applies).toHaveLength(0);
-
-    // Accept confirm → real apply.
     page.once("dialog", (d) => d.accept());
     await page.getByRole("button", { name: "Commit and apply" }).click();
     await expect
-      .poll(async () => {
-        const c = await getCalls(page);
-        return c.filter(
-          (x) =>
-            x.args &&
-            callMatched([x], ["service", "add", "demo", "api"]) &&
-            !x.args.includes("--dry-run"),
-        ).length;
-      })
+      .poll(
+        async () =>
+          realMutations(await getCalls(page), ["service", "add", "demo", "api"]).length,
+      )
       .toBe(1);
   });
 
@@ -88,7 +91,8 @@ test.describe("services", () => {
     await page.getByRole("button", { name: "Reveal" }).first().click();
     await expect(page.getByText("super-secret-value")).toBeVisible();
 
-    const calls = await getCalls(page);
-    expect(callMatched(calls, ["secrets", "get", "demo", "web"])).toBeTruthy();
+    expect(
+      callMatched(await getCalls(page), ["secrets", "get", "demo", "web"]),
+    ).toBeTruthy();
   });
 });

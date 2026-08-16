@@ -1,5 +1,3 @@
-import { expect, test } from "@playwright/test";
-
 import {
   MASTER_PASSWORD,
   VAULT_PATH,
@@ -13,6 +11,7 @@ import {
   sampleTranscript,
   upgradeCheckFixture,
 } from "../fixtures/data";
+import { expect, test } from "../fixtures/test";
 import { callMatched, getCalls, openApp } from "../shim/install";
 
 test.describe("read-only panels", () => {
@@ -30,7 +29,7 @@ test.describe("read-only panels", () => {
     await expect(page.getByText("Provably restorable")).toBeVisible();
     await expect(page.getByText("Backup lifecycle")).toBeVisible();
     await expect(page.getByText("Postgres recovery")).toBeVisible();
-    await expect(page.getByText(/Earliest|earliest/i).first()).toBeVisible();
+    await expect(page.getByText("Earliest")).toBeVisible();
   });
 
   test("Updates tab shows drift and core upgrade check", async ({ page }) => {
@@ -43,25 +42,28 @@ test.describe("read-only panels", () => {
 
     await page.getByRole("tab", { name: "Updates" }).click();
     await expect(page.getByText("Service updates")).toBeVisible();
-    await expect(page.getByText("web").first()).toBeVisible();
-    await expect(page.getByText(/behind|commits/i).first()).toBeVisible();
+    await expect(page.getByText("3 commits behind")).toBeVisible();
 
     await page.getByRole("button", { name: "Check" }).click();
     await expect
-      .poll(async () => callMatched(await getCalls(page), ["upgrade", "demo"]))
+      .poll(async () =>
+        callMatched(await getCalls(page), ["upgrade", "demo"], {
+          cmd: "cli_run",
+        }),
+      )
       .toBeTruthy();
-    // upgrade without --apply
     const check = (await getCalls(page)).find(
       (c) =>
+        c.cmd === "cli_run" &&
         c.args &&
         callMatched([c], ["upgrade", "demo"]) &&
         !c.args.includes("--apply"),
     );
     expect(check).toBeTruthy();
-    await expect(page.getByText("caddy").first()).toBeVisible();
+    await expect(page.getByText("caddy", { exact: true })).toBeVisible();
   });
 
-  test("ownbase.yaml panel loads raw config", async ({ page }) => {
+  test("ownbase.yaml panel loads raw config without --json", async ({ page }) => {
     await openApp(page, {
       vault: "unlocked",
       bases: [demoBase],
@@ -71,8 +73,12 @@ test.describe("read-only panels", () => {
 
     await page.getByRole("tab", { name: "Services" }).click();
     await page.getByRole("button", { name: "Show" }).click();
-    await expect(page.getByText(/ref: main/)).toBeVisible();
-    expect(callMatched(await getCalls(page), ["config", "get", "demo"])).toBeTruthy();
+    await expect(page.getByText("ref: main")).toBeVisible();
+    const call = (await getCalls(page)).find((c) =>
+      callMatched([c], ["config", "get", "demo"]),
+    );
+    expect(call?.args).toBeTruthy();
+    expect(call?.args).not.toContain("--json");
   });
 
   test("Security tab reboot and rescan actions", async ({ page }) => {
@@ -99,12 +105,21 @@ test.describe("read-only panels", () => {
     page.once("dialog", (d) => d.accept());
     await page.getByRole("button", { name: "Reboot now" }).click();
     await expect
-      .poll(async () => callMatched(await getCalls(page), ["security", "reboot", "demo"]))
+      .poll(async () =>
+        callMatched(await getCalls(page), ["security", "reboot", "demo"], {
+          cmd: "cli_stream",
+          includeFlags: ["--wait"],
+        }),
+      )
       .toBeTruthy();
 
     await page.getByRole("button", { name: "Rescan" }).click();
     await expect
-      .poll(async () => callMatched(await getCalls(page), ["security", "scan", "demo"]))
+      .poll(async () =>
+        callMatched(await getCalls(page), ["security", "scan", "demo"], {
+          cmd: "cli_run",
+        }),
+      )
       .toBeTruthy();
   });
 
@@ -124,11 +139,11 @@ test.describe("read-only panels", () => {
     expect(callMatched(await getCalls(page), ["vault", "recovery-string"])).toBeTruthy();
 
     await page.getByRole("button", { name: "Show version" }).click();
-    await expect(page.getByText(/0\.1\.0-e2e|deadbeef/).first()).toBeVisible();
+    await expect(page.getByText("0.1.0-e2e", { exact: true })).toBeVisible();
     expect(callMatched(await getCalls(page), ["version"])).toBeTruthy();
   });
 
-  test("Sessions replay path loads cast", async ({ page }) => {
+  test("Sessions replay path loads cast into the player", async ({ page }) => {
     const id = demoSessions[0]!.id;
     await openApp(page, {
       vault: "unlocked",
@@ -146,9 +161,16 @@ test.describe("read-only panels", () => {
     await expect
       .poll(async () =>
         (await getCalls(page)).some(
-          (c) => c.args && callMatched([c], ["sessions", "show", id]) && c.args.includes("--cast"),
+          (c) =>
+            c.args &&
+            callMatched([c], ["sessions", "show", id]) &&
+            c.args.includes("--cast"),
         ),
       )
       .toBeTruthy();
+    // asciinema player mounts a terminal host inside the cast container.
+    await expect(page.locator(".ap-wrapper, .asciinema-player, [class*='asciinema']").first()).toBeVisible({
+      timeout: 10_000,
+    });
   });
 });

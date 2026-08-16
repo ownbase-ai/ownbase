@@ -1,10 +1,9 @@
-import { expect, test } from "@playwright/test";
-
 import {
   MASTER_PASSWORD,
   VAULT_PATH,
   demoBase,
 } from "../fixtures/data";
+import { expect, test } from "../fixtures/test";
 import { getCalls, openApp } from "../shim/install";
 
 test.describe("unlock gate", () => {
@@ -22,7 +21,6 @@ test.describe("unlock gate", () => {
     await page.locator('input[type="password"]').nth(1).fill(MASTER_PASSWORD);
     await page.getByRole("button", { name: "Create vault" }).click();
 
-    // Empty vault → wizard landing.
     await expect(page.getByRole("heading", { name: "Set up a Base" })).toBeVisible();
     await expect(page.getByText("None yet.")).toBeVisible();
 

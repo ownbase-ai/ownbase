@@ -1,10 +1,9 @@
-import { expect, test } from "@playwright/test";
-
 import {
   demoBase,
   findingsCheckup,
   healthyCheckup,
 } from "../fixtures/data";
+import { expect, test } from "../fixtures/test";
 import { openApp } from "../shim/install";
 
 test.describe("dashboard", () => {
@@ -21,17 +20,14 @@ test.describe("dashboard", () => {
     await expect(page.getByText("This machine")).toBeVisible();
     await expect(page.getByText("192.168.64.10").first()).toBeVisible();
 
-    // Services tab
     await page.getByRole("tab", { name: "Services" }).click();
-    await expect(page.getByText("web").first()).toBeVisible();
+    await expect(page.getByRole("button", { name: "web" })).toBeVisible();
     await expect(page.getByText("web.example.com")).toBeVisible();
 
-    // Security tab
     await page.getByRole("tab", { name: "Security" }).click();
     await expect(page.getByText("Network exposure")).toBeVisible();
     await expect(page.getByText("Firewall", { exact: true })).toBeVisible();
 
-    // Activity tab
     await page.getByRole("tab", { name: "Activity" }).click();
     await expect(page.getByText("reconcile.apply")).toBeVisible();
   });
@@ -74,10 +70,11 @@ test.describe("dashboard", () => {
     await expect(page.getByText("10.0.0.5").first()).toBeVisible();
   });
 
-  test("unreachable Base shows error with retry", async ({ page }) => {
+  test("unreachable Base shows error and retry recovers", async ({ page }) => {
     await openApp(page, {
       vault: "unlocked",
       bases: [demoBase],
+      checkup: { demo: healthyCheckup },
       fails: [
         {
           match: ["checkup", "demo"],
@@ -89,6 +86,11 @@ test.describe("dashboard", () => {
 
     await expect(page.getByText("demo did not answer")).toBeVisible();
     await expect(page.getByText("connection refused")).toBeVisible();
-    await expect(page.getByRole("button", { name: "Try again" })).toBeVisible();
+
+    await page.evaluate(() => window.__E2E__?.clearFails());
+    await page.getByRole("button", { name: "Try again" }).click();
+
+    await expect(page.getByText("All clear")).toBeVisible();
+    await expect(page.getByText("Nothing needs attention")).toBeVisible();
   });
 });
