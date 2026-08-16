@@ -80,23 +80,25 @@ Pick a Base in the sidebar. Each tab is a section of one `ownbasectl checkup` �
 
 **Overview** leads with anything worth your attention — and only things you can finish. Each finding carries a typed action from the CLI: a button that runs the fix (apply host patches, rescan, reboot), a button that opens the relevant tab, or the command itself when the fix changes desired state. Unfixed CVEs and other readings are not listed here; they live on their tabs. Below that: the machine's identity and a summary (services running, last backup, whether that backup has ever been *proven* restorable, disk, certificate expiry). At the bottom, *Remove from this computer* forgets the Base on this laptop (vault profile and owner key). For a local Multipass VM you can also destroy the VM. It never uninstalls OwnBase on a remote server or destroys a cloud instance — that is your provider's console, or the steps in [uninstall.md](uninstall.md).
 
-**Services** shows what `ownbase.yaml` asks for beside what the machine actually has running — the deployed ref, the domains, and the result of the health probe. A service can be running and unhealthy, and that reads differently from running.
+**Services** shows what `ownbase.yaml` asks for beside what the machine actually has running — the deployed ref, the domains, and the result of the health probe. A service can be running and unhealthy, and that reads differently from running. From here you can **add / edit / remove** a service (always with a dry-run diff and confirm before the config-repo commit), manage **per-service secrets** (key names listed; values reveal-on-click only), and read the live `ownbase.yaml`.
 
 **Security** has five parts: whether a reboot is required for applied packages to take effect; which ports the machine believes are reachable and whether each one is expected; who got in over SSH and who kept failing to; known CVEs in the host packages and in each service image (expand a row to see the top findings; only CVEs with a published patch are actionable); and whether any generated file on the Base has drifted from what the compiler produced. *Rescan* triggers an immediate trivy pass. *Reboot now* appears only when the host says it needs one.
 
 The exposure list is the machine's own view. It cannot see a firewall your provider runs in front of it, and it cannot see a socket a compromised kernel is hiding from it. It is one input, not a verdict.
 
-**Backups** is where the restore drill lives. *Back up now* takes a snapshot. *Run the restore drill* is the one that matters: the Base restores its newest snapshot into an isolated directory, checks it, and when Postgres is in the backup starts a real database from it and waits for recovery. Until that has passed, "restorable" is an assumption — which is why the app says *not yet verified* rather than showing you a green light you did not earn.
+**Backups** is where the restore drill lives. *Back up now* takes a snapshot. *Run the restore drill* is the one that matters: the Base restores its newest snapshot into an isolated directory, checks it, and when Postgres is in the backup starts a real database from it and waits for recovery. Until that has passed, "restorable" is an assumption — which is why the app says *not yet verified* rather than showing you a green light you did not earn. The same tab also covers **prune**, **rekey** (generated password always shown immediately), the vault **recovery kit**, and **Postgres point-in-time restore** (scratch by default; production behind type-the-name confirm).
 
-**Updates** shows how far each service is from its source repo. Nothing updates itself. Moving one forward is `ownbasectl deploy`, which resolves the ref to a concrete commit and commits it to your config repo, so what is deployed stays written down.
+**Updates** shows OwnBase core (Caddy) check/apply and how far each service is from its source repo. Nothing updates itself. Moving a service forward is `ownbasectl deploy`, which resolves the ref to a concrete commit and commits it to your config repo after you confirm the diff.
 
 **Activity** is the Base's own audit log: every governed action it took, newest first.
 
 ### What the app will not do
 
-It will not make a commit you did not ask for. Config changes (`deploy`, `backup setup`) always show the YAML diff and commit message first, and require an explicit confirm before pushing. Host actions (apply patches, rescan, reboot, install the CVE scanner, self-update OwnBase) do not touch git.
+It will not make a commit you did not ask for. Config changes (`deploy`, `backup setup`, `service add|update|remove`, `config set`) always show the YAML diff and commit message first, and require an explicit confirm before pushing. Host actions (apply patches, rescan, reboot, install the CVE scanner, self-update OwnBase, upgrade Caddy) do not touch git.
 
-It will not open an unrecorded shell. Sessions are always audited.
+It will not open an unrecorded shell. Sessions are always audited. `ssh` and `tunnel` stay terminal-only.
+
+It will not show a secret value until you ask. Secrets list key names; reveal is per-key and explicit.
 
 ## Sessions
 

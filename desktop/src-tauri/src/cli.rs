@@ -36,10 +36,9 @@ const SIDECAR: &str = "ownbasectl";
 ///
 /// This is exactly the set [desktop/src/lib/api.ts](../../src/lib/api.ts)
 /// calls today, not everything `ownbasectl` can do. The allowlist is the
-/// stated XSS boundary, so a subcommand the UI does not use yet — `deploy`,
-/// `restore`, `secrets`, and the rest — stays out until some screen actually
-/// calls it; adding one here is one line, at the point a caller in `api.ts`
-/// needs it.
+/// stated XSS boundary, so a subcommand the UI does not use yet stays out
+/// until some screen actually calls it; adding one here is one line, at the
+/// point a caller in `api.ts` needs it.
 ///
 /// `ssh` and `tunnel` are absent for a second reason on top of that: both take
 /// an arbitrary command or hold an interactive session open, which is exactly
@@ -52,16 +51,21 @@ const ALLOWED: &[&str] = &[
     "checkup",
     "config",
     "create",
+    "db",
     "delete",
     "deploy",
     "keygen",
     "list",
+    "restore",
+    "secrets",
     "security",
     "self-update",
+    "service",
     "sessions",
     "ssh-key",
     "upgrade",
     "vault",
+    "version",
 ];
 
 /// What one `ownbasectl` invocation produced.
@@ -184,17 +188,27 @@ pub async fn cli_stream(
     running: State<'_, Running>,
     id: String,
     args: Vec<String>,
+    stdin: Option<String>,
     on_event: Channel<StreamEvent>,
 ) -> Result<(), String> {
     check_allowed(&args)?;
 
-    let (mut rx, child) = app
+    let (mut rx, mut child) = app
         .shell()
         .sidecar(SIDECAR)
         .map_err(|e| format!("locate the bundled ownbasectl: {e}"))?
         .args(&args)
         .spawn()
         .map_err(|e| format!("start ownbasectl {}: {e}", args.join(" ")))?;
+
+    // Same stdin rule as cli_run: secrets never in argv. Write then leave the
+    // child alive so stdout/stderr keep streaming (unlike cli_run, which drops
+    // the child handle after writing because it only needs the final result).
+    if let Some(input) = stdin {
+        child
+            .write(input.as_bytes())
+            .map_err(|e| format!("send input to ownbasectl: {e}"))?;
+    }
 
     running.0.lock().unwrap().insert(id.clone(), child);
 
@@ -249,16 +263,21 @@ mod tests {
             "checkup",
             "config",
             "create",
+            "db",
             "delete",
             "deploy",
             "keygen",
             "list",
+            "restore",
+            "secrets",
             "security",
             "self-update",
+            "service",
             "sessions",
             "ssh-key",
             "upgrade",
             "vault",
+            "version",
         ] {
             assert!(
                 check_allowed(&args(&[cmd])).is_ok(),
@@ -271,10 +290,9 @@ mod tests {
     fn refuses_high_impact_commands_the_ui_never_calls() {
         // These exist in ownbasectl but no screen in the app calls them today;
         // the allowlist is the XSS boundary, so they must stay out until one
-        // does — see the ALLOWED doc comment.
-        for cmd in [
-            "secrets", "restore", "service", "status", "updates", "db", "version",
-        ] {
+        // does — see the ALLOWED doc comment. status/updates remain CLI-only
+        // (their data arrives via checkup); compile/plan/apply are local-repo.
+        for cmd in ["status", "updates", "compile", "plan", "apply"] {
             assert!(
                 check_allowed(&args(&[cmd])).is_err(),
                 "{cmd} should be refused"

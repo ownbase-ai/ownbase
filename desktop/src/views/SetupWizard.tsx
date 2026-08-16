@@ -72,6 +72,9 @@ export function SetupWizard({
   const [sshPort, setSSHPort] = useState(22); // adopt mode only
   const [apiPort, setAPIPort] = useState(7070); // adopt mode only
   const [caddyEmail, setCaddyEmail] = useState("");
+  const [cpus, setCpus] = useState(2);
+  const [memory, setMemory] = useState(2);
+  const [disk, setDisk] = useState(20);
 
   return (
     // Scroll the full main pane so the scrollbar sits on the window edge,
@@ -119,6 +122,12 @@ export function SetupWizard({
           local={mode === "create-local"}
           result={key}
           source={keySource}
+          cpus={cpus}
+          memory={memory}
+          disk={disk}
+          onCpus={setCpus}
+          onMemory={setMemory}
+          onDisk={setDisk}
           onResult={(result, source) => {
             setKey(result);
             setKeySource(source);
@@ -173,6 +182,9 @@ export function SetupWizard({
           address={address}
           sshUser={sshUser}
           caddyEmail={caddyEmail}
+          cpus={cpus}
+          memory={memory}
+          disk={disk}
           onBack={() => setStep(mode === "create-local" ? "key" : "server")}
           onDone={() => setStep("done")}
         />
@@ -368,6 +380,12 @@ function KeyStep({
   local,
   result,
   source,
+  cpus,
+  memory,
+  disk,
+  onCpus,
+  onMemory,
+  onDisk,
   onResult,
   onBack,
   onNext,
@@ -376,6 +394,12 @@ function KeyStep({
   local: boolean;
   result: KeygenResult | null;
   source: "generated" | "imported" | null;
+  cpus: number;
+  memory: number;
+  disk: number;
+  onCpus: (n: number) => void;
+  onMemory: (n: number) => void;
+  onDisk: (n: number) => void;
   onResult: (result: KeygenResult, source: "generated" | "imported") => void;
   onBack: () => void;
   onNext: () => void;
@@ -465,10 +489,42 @@ function KeyStep({
           </pre>
           {!local && (
             <p className="mt-3 text-sm leading-relaxed text-zinc-500">
-              You will paste this into your provider's <em>SSH key</em> field in a
+              You will paste this into your provider&apos;s <em>SSH key</em> field in a
               moment. Copy it now.
             </p>
           )}
+        </div>
+      )}
+
+      {local && result && (
+        <div className="mt-5 grid gap-3 sm:grid-cols-3">
+          <Field label="CPUs" hint="Default 2.">
+            <Input
+              type="number"
+              min={1}
+              max={32}
+              value={cpus}
+              onChange={(e) => onCpus(Number(e.target.value) || 2)}
+            />
+          </Field>
+          <Field label="Memory (GB)" hint="Default 2.">
+            <Input
+              type="number"
+              min={1}
+              max={128}
+              value={memory}
+              onChange={(e) => onMemory(Number(e.target.value) || 2)}
+            />
+          </Field>
+          <Field label="Disk (GB)" hint="Default 20.">
+            <Input
+              type="number"
+              min={10}
+              max={500}
+              value={disk}
+              onChange={(e) => onDisk(Number(e.target.value) || 20)}
+            />
+          </Field>
         </div>
       )}
 
@@ -852,6 +908,9 @@ function InstallStep({
   address,
   sshUser,
   caddyEmail,
+  cpus,
+  memory,
+  disk,
   onBack,
   onDone,
 }: {
@@ -860,6 +919,9 @@ function InstallStep({
   address: string;
   sshUser: string;
   caddyEmail: string;
+  cpus: number;
+  memory: number;
+  disk: number;
   onBack: () => void;
   onDone: () => void;
 }) {
@@ -897,7 +959,7 @@ function InstallStep({
       stream = api.createBase(
         base.trim(),
         local
-          ? {}
+          ? { cpus, memory, disk }
           : {
               remote: `${sshUser}@${address.trim()}`,
               caddyEmail: caddyEmail.trim() || undefined,

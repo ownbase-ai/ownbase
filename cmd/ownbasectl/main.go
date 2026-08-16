@@ -200,12 +200,24 @@ func versionString() string {
 // newVersionCmd keeps `ownbasectl version` working alongside the standard
 // --version flag.
 func newVersionCmd() *cobra.Command {
-	return &cobra.Command{
+	var jsonOut bool
+	cmd := &cobra.Command{
 		Use:   "version",
 		Short: "Print the ownbasectl version",
 		Args:  cobra.NoArgs,
-		Run: func(cmd *cobra.Command, args []string) {
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if jsonOut {
+				return printJSON(map[string]string{
+					"version": version,
+					"commit":  commit,
+					"date":    date,
+					"string":  versionString(),
+				})
+			}
 			fmt.Println("ownbasectl " + versionString())
+			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "print version fields as JSON")
+	return cmd
 }

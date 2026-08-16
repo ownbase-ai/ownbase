@@ -21,29 +21,29 @@ import type { Tone } from "../components/ui";
 import * as api from "../lib/api";
 import type { StreamEvent } from "../lib/cli";
 import { cx } from "../lib/cx";
-import { absolute, ago, pickDeployRef, shortRef, until } from "../lib/format";
+import { absolute, ago, pickDeployRef, shortRef } from "../lib/format";
 import type {
   BaseStatus,
   BaseSummary,
   Checkup,
   Finding,
   ServiceDrift,
-  ServiceStatus,
   VulnSummary,
 } from "../lib/types";
 import { useAsync } from "../lib/useAsync";
+
+import { DiffPreview } from "./DiffPreview";
+import { ServicePanel } from "./ServicePanel";
 
 type Tab = "overview" | "services" | "security" | "backups" | "updates" | "activity";
 
 /**
  * Everything known about one Base.
  *
- * Desired state is read-only here. Config changes are commits to a Git repo
- * the user owns, and giving the window a second way to make them would mean
- * two answers to "what is deployed". Actions the window does take never
- * rewrite what should run: backup now, the restore drill, apply host OS
- * patches, rescan CVEs, reboot so those patches take effect, and forget this
- * Base on this computer.
+ * Config changes go through the same client-side path as the CLI (clone, edit,
+ * commit, push) and always dry-run → confirm first. Host actions (patches,
+ * reboot, scanner, self-update, upgrade) never touch git. Secret values are
+ * never shown until the operator reveals one key.
  */
 export function BaseDetail({
   base,
@@ -143,7 +143,9 @@ function Body({
         />
       );
     case "services":
-      return <Services status={status} />;
+      return (
+        <ServicePanel base={base.name} status={status} onChanged={onChanged} />
+      );
     case "security":
       return <Security base={base} status={status} onChanged={onChanged} />;
     case "backups":
@@ -579,6 +581,16 @@ export function ConfigSetupForm({
     setBusy("key");
     setError(null);
     try {
+      // Prefer an existing key; only generate when none is registered.
+      try {
+        const existing = await api.sshKeyList(base);
+        if (existing.public_key) {
+          setPublicKey(existing.public_key);
+          return;
+        }
+      } catch {
+        /* none yet */
+      }
       const host = repo.includes("gitlab")
         ? "gitlab.com"
         : repo.includes("bitbucket")
@@ -695,25 +707,6 @@ export function ConfigSetupForm({
           Config source set. The Base is pulling and reconciling.
         </p>
       )}
-    </div>
-  );
-}
-
-function DiffPreview({
-  diff,
-  commitMessage,
-}: {
-  diff: string;
-  commitMessage: string;
-}) {
-  return (
-    <div className="space-y-2">
-      <p className="text-xs text-zinc-400">
-        Commit: <span className="font-mono text-zinc-300">{commitMessage}</span>
-      </p>
-      <pre className="selectable max-h-56 overflow-auto rounded-md border border-zinc-800 bg-zinc-950/60 p-3 font-mono text-[11px] leading-relaxed text-zinc-300">
-        {diff || "(no textual diff)"}
-      </pre>
     </div>
   );
 }
@@ -1155,116 +1148,6 @@ function RemoveBase({
         </div>
       )}
     </Panel>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Services
-// ---------------------------------------------------------------------------
-
-function Services({ status }: { status: BaseStatus }) {
-  const services = status.services ?? [];
-  const jobs = status.jobs ?? [];
-
-  return (
-    <div className="space-y-5">
-      <Panel
-        title="Services"
-        subtitle="What ownbase.yaml asks for, and what the machine actually has running."
-      >
-        {services.length === 0 ? (
-          <Unavailable>
-            Nothing is deployed yet. Services are declared in{" "}
-            <code className="font-mono text-xs">ownbase.yaml</code> in your config
-            repo, and appear here after the Base reconciles.
-          </Unavailable>
-        ) : (
-          <ul className="divide-y divide-zinc-800">
-            {services.map((service) => (
-              <ServiceRow key={service.name} service={service} />
-            ))}
-          </ul>
-        )}
-      </Panel>
-
-      {jobs.length > 0 && (
-        <Panel title="Scheduled jobs" subtitle="Timers, and how their last run went.">
-          <ul className="divide-y divide-zinc-800">
-            {jobs.map((job) => (
-              <li key={job.name} className="py-3 first:pt-0 last:pb-0">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="flex items-center gap-2 text-sm text-zinc-200">
-                    <Dot tone={job.timer_enabled ? "good" : "bad"} />
-                    {job.name}
-                  </span>
-                  <span className="font-mono text-xs text-zinc-500">{job.schedule}</span>
-                </div>
-                <p className="mt-1 pl-4 text-xs text-zinc-500">
-                  reuses {job.service}
-                  {job.last_run && (
-                    <>
-                      {" · last run "}
-                      <span title={absolute(job.last_run)}>{ago(job.last_run)}</span>
-                      {job.last_result ? ` (${job.last_result})` : ""}
-                    </>
-                  )}
-                  {job.next_run && ` · next ${until(job.next_run)}`}
-                  {!job.timer_enabled && " · timer not enabled"}
-                </p>
-              </li>
-            ))}
-          </ul>
-        </Panel>
-      )}
-    </div>
-  );
-}
-
-function ServiceRow({ service }: { service: ServiceStatus }) {
-  const tone: Tone = !service.running ? "bad" : service.healthy ? "good" : "warn";
-  const state = !service.running
-    ? "stopped"
-    : service.healthy
-      ? "running"
-      : "running, unhealthy";
-  const domains = service.domains ?? (service.domain ? [service.domain] : []);
-
-  return (
-    <li className="py-3 first:pt-0 last:pb-0">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <span className="flex items-center gap-2 text-sm text-zinc-200">
-          <Dot tone={tone} />
-          {service.name}
-        </span>
-        <span className="flex items-center gap-3 text-xs">
-          {service.ref && (
-            <span className="font-mono text-zinc-500" title={service.ref}>
-              @{shortRef(service.ref)}
-            </span>
-          )}
-          <span
-            className={cx(
-              tone === "good" && "text-emerald-300",
-              tone === "warn" && "text-amber-300",
-              tone === "bad" && "text-red-300",
-            )}
-          >
-            {state}
-          </span>
-        </span>
-      </div>
-      {(domains.length > 0 || service.repo || service.health_probe_result) && (
-        <div className="mt-1 space-y-0.5 pl-4 text-xs text-zinc-500">
-          {domains.map((domain) => (
-            <p key={domain} className="selectable font-mono">
-              https://{domain}
-            </p>
-          ))}
-          {service.repo && <p className="selectable font-mono">{service.repo}</p>}
-          {service.health_probe_result && <p>probe: {service.health_probe_result}</p>}
-        </div>
-      )}
-    </li>
   );
 }
 
@@ -1789,12 +1672,285 @@ function Backups({
               The drill is the part that matters: the Base restores its newest
               snapshot into an isolated directory, checks it, and when Postgres is in
               the backup starts a real database from it and waits for recovery. Until
-              that has passed, "restorable" is an assumption.
+              that has passed, &quot;restorable&quot; is an assumption.
             </p>
           </>
         )}
       </Panel>
+
+      {configured && (
+        <>
+          <BackupLifecycle base={base.name} />
+          <DBRecovery base={base.name} />
+        </>
+      )}
     </div>
+  );
+}
+
+function BackupLifecycle({ base }: { base: string }) {
+  const [busy, setBusy] = useState<"prune" | "rekey" | "kit" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [lines, setLines] = useState<string[] | null>(null);
+  const [generatedPw, setGeneratedPw] = useState<string | null>(null);
+  const [kit, setKit] = useState<import("../lib/types").RecoveryKit | null>(null);
+  const [showKit, setShowKit] = useState(false);
+
+  async function prune() {
+    if (
+      !window.confirm(
+        "Run restic forget+prune on this Base's backup repository?\n\nUnder append-only mode this is the only way old snapshots are removed.",
+      )
+    ) {
+      return;
+    }
+    setBusy("prune");
+    setError(null);
+    setLines(null);
+    try {
+      const out = await api.backupPrune(base);
+      setLines(out.trim().split("\n").filter(Boolean));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function rekey() {
+    if (
+      !window.confirm(
+        "Rotate the restic repository password?\n\nA new password will be generated. Save it immediately — it is a root recovery secret.",
+      )
+    ) {
+      return;
+    }
+    setBusy("rekey");
+    setError(null);
+    setGeneratedPw(null);
+    setLines(null);
+    try {
+      const r = await api.backupRekey(base, { generate: true });
+      if (r.generated_password) setGeneratedPw(r.generated_password);
+      setLines(["Rekey completed."]);
+    } catch (err) {
+      const e = err as Error & { generated_password?: string };
+      if (e.generated_password) setGeneratedPw(e.generated_password);
+      setError(e.message || String(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function loadKit() {
+    if (showKit) {
+      setShowKit(false);
+      setKit(null);
+      return;
+    }
+    setBusy("kit");
+    setError(null);
+    try {
+      setKit(await api.backupRecoveryKit(base));
+      setShowKit(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <Panel
+      title="Backup lifecycle"
+      subtitle="Prune, rotate the restic password, or reprint the recovery kit from the vault."
+    >
+      <div className="flex flex-wrap gap-2">
+        <Button busy={busy === "prune"} disabled={busy !== null} onClick={() => void prune()}>
+          Prune snapshots
+        </Button>
+        <Button busy={busy === "rekey"} disabled={busy !== null} onClick={() => void rekey()}>
+          Rekey (generate password)
+        </Button>
+        <Button
+          variant="secondary"
+          busy={busy === "kit"}
+          disabled={busy !== null}
+          onClick={() => void loadKit()}
+        >
+          {showKit ? "Hide recovery kit" : "Show recovery kit"}
+        </Button>
+      </div>
+      {generatedPw && (
+        <div className="mt-3 space-y-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
+          <p className="text-xs font-medium text-amber-200">
+            Save this restic password now — it is not recoverable from OwnBase later.
+          </p>
+          <p className="selectable break-all font-mono text-sm text-zinc-100">{generatedPw}</p>
+          <CopyButton value={generatedPw} label="Copy password" />
+        </div>
+      )}
+      {showKit && kit && (
+        <div className="mt-3 space-y-2 rounded-md border border-zinc-800 bg-zinc-950/40 p-3 text-xs">
+          <Row label="Repo">
+            <span className="selectable font-mono">{kit.repo}</span>
+          </Row>
+          <Row label="Password">
+            <span className="selectable font-mono">{kit.password}</span>
+          </Row>
+          {kit.cloud_env_vars && kit.cloud_env_vars.length > 0 && (
+            <Row label="Cloud env">{kit.cloud_env_vars.join(", ")}</Row>
+          )}
+          <div className="flex gap-2 pt-1">
+            <CopyButton value={kit.password} label="Copy password" />
+            <CopyButton
+              value={[kit.repo, kit.password, kit.restic].filter(Boolean).join("\n")}
+              label="Copy kit"
+            />
+          </div>
+          {kit.note && <p className="text-zinc-500">{kit.note}</p>}
+        </div>
+      )}
+      {error && <p className="mt-2 text-xs text-red-300">{error}</p>}
+      {lines && <LogView lines={lines} className="mt-3 max-h-40 w-full" />}
+    </Panel>
+  );
+}
+
+function DBRecovery({ base }: { base: string }) {
+  const load = useCallback(() => api.dbStatus(base), [base]);
+  const state = useAsync(load);
+  const [to, setTo] = useState("");
+  const [into, setInto] = useState<"scratch" | "production">("scratch");
+  const [confirmName, setConfirmName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<string | null>(null);
+
+  async function runRestore() {
+    if (into === "production") {
+      if (confirmName.trim() !== base) return;
+      if (
+        !window.confirm(
+          `This replaces the live database on ${base}. Type-confirm is done. Proceed?`,
+        )
+      ) {
+        return;
+      }
+    } else if (
+      !window.confirm(
+        "Restore Postgres into a scratch instance on the Base (production keeps serving)?",
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setResult(null);
+    try {
+      const out = await api.dbRestore(base, {
+        to: to.trim() || undefined,
+        into,
+      });
+      setResult(
+        out.scratch_endpoint
+          ? `Scratch restore ready at ${out.scratch_endpoint}`
+          : `Restore into ${out.into} finished.`,
+      );
+      state.reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const s = state.data;
+
+  return (
+    <Panel
+      title="Postgres recovery"
+      subtitle="Point-in-time restore from pgBackRest. Defaults to a scratch instance."
+      action={
+        <Button variant="secondary" busy={state.refreshing} onClick={state.reload}>
+          Refresh window
+        </Button>
+      }
+    >
+      {state.loading ? (
+        <Spinner />
+      ) : state.error ? (
+        <p className="text-xs text-zinc-500">
+          No Postgres recovery window available ({state.error}).
+        </p>
+      ) : s ? (
+        <div className="mb-4 space-y-1">
+          {s.postgres_version && (
+            <Row label="Postgres">{s.postgres_version}</Row>
+          )}
+          <Row label="Earliest" title={absolute(s.earliest_recovery)}>
+            {ago(s.earliest_recovery, "—")}
+          </Row>
+          <Row label="Latest" title={absolute(s.latest_recovery)}>
+            {ago(s.latest_recovery, "—")}
+          </Row>
+          {s.backups && (
+            <Row label="Backups held">{s.backups.length}</Row>
+          )}
+        </div>
+      ) : null}
+
+      <div className="space-y-3 border-t border-zinc-800 pt-3">
+        <Field
+          label="Recover to"
+          hint='UTC timestamp, e.g. 2026-07-25 14:00:00+00. Empty = everything the repository holds.'
+        >
+          <Input
+            value={to}
+            onChange={(e) => setTo(e.target.value)}
+            placeholder="(latest)"
+            spellCheck={false}
+          />
+        </Field>
+        <div className="flex flex-wrap gap-4 text-sm text-zinc-300">
+          <label className="flex items-center gap-2">
+            <input
+              type="radio"
+              checked={into === "scratch"}
+              onChange={() => setInto("scratch")}
+            />
+            Scratch (safe default)
+          </label>
+          <label className="flex items-center gap-2">
+            <input
+              type="radio"
+              checked={into === "production"}
+              onChange={() => setInto("production")}
+            />
+            Production (replaces live DB)
+          </label>
+        </div>
+        {into === "production" && (
+          <Field label={`Type ${base} to confirm production restore`}>
+            <Input
+              value={confirmName}
+              onChange={(e) => setConfirmName(e.target.value)}
+              spellCheck={false}
+            />
+          </Field>
+        )}
+        <Button
+          variant={into === "production" ? "danger" : "primary"}
+          busy={busy}
+          disabled={into === "production" && confirmName.trim() !== base}
+          onClick={() => void runRestore()}
+        >
+          {into === "production" ? "Restore over production" : "Restore to scratch"}
+        </Button>
+        {error && <p className="text-xs text-red-300">{error}</p>}
+        {result && <p className="text-xs text-emerald-300">{result}</p>}
+      </div>
+    </Panel>
   );
 }
 
@@ -1904,64 +2060,160 @@ function Updates({
   const [openFor, setOpenFor] = useState<string | null>(null);
 
   return (
-    <Panel
-      title="Service updates"
-      subtitle="How far each service is from its source repo. Updating commits a pin to your config repo after you confirm the diff."
-    >
-      {drift.length === 0 ? (
-        <Unavailable>
-          Nothing to compare yet. The Base checks each service's source repo on its
-          own schedule and reports what it finds here.
-        </Unavailable>
-      ) : (
-        <ul className="divide-y divide-zinc-800">
-          {drift.map((d) => (
-            <li key={d.service} className="py-3 first:pt-0 last:pb-0">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <span className="flex items-center gap-2 text-sm text-zinc-200">
-                  <Dot tone={d.up_to_date ? "good" : "warn"} />
-                  {d.service}
-                </span>
-                <span className="flex items-center gap-3">
-                  <span className="font-mono text-xs text-zinc-500" title={d.ref}>
-                    @{shortRef(d.ref)}
+    <div className="space-y-5">
+      <CoreUpgrade base={base.name} onChanged={onChanged} />
+      <Panel
+        title="Service updates"
+        subtitle="How far each service is from its source repo. Updating commits a pin to your config repo after you confirm the diff."
+      >
+        {drift.length === 0 ? (
+          <Unavailable>
+            Nothing to compare yet. The Base checks each service&apos;s source repo on
+            its own schedule and reports what it finds here.
+          </Unavailable>
+        ) : (
+          <ul className="divide-y divide-zinc-800">
+            {drift.map((d) => (
+              <li key={d.service} className="py-3 first:pt-0 last:pb-0">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <span className="flex items-center gap-2 text-sm text-zinc-200">
+                    <Dot tone={d.up_to_date ? "good" : "warn"} />
+                    {d.service}
                   </span>
-                  {!d.up_to_date && (
-                    <Button
-                      variant="secondary"
-                      onClick={() =>
-                        setOpenFor((cur) => (cur === d.service ? null : d.service))
-                      }
-                    >
-                      {openFor === d.service ? "Cancel" : "Update"}
-                    </Button>
-                  )}
-                </span>
-              </div>
-              <p className="mt-1 pl-4 text-xs text-zinc-500">
-                {driftStatusLine(d)}
-              </p>
-              {openFor === d.service && (
-                <div className="mt-3 pl-4">
-                  <DeployForm
-                    base={base.name}
-                    service={d.service}
-                    suggestedRef={pickDeployRef(
-                      d.commits_behind,
-                      d.branch,
-                      d.newest_tag,
+                  <span className="flex items-center gap-3">
+                    <span className="font-mono text-xs text-zinc-500" title={d.ref}>
+                      @{shortRef(d.ref)}
+                    </span>
+                    {!d.up_to_date && (
+                      <Button
+                        variant="secondary"
+                        onClick={() =>
+                          setOpenFor((cur) => (cur === d.service ? null : d.service))
+                        }
+                      >
+                        {openFor === d.service ? "Cancel" : "Update"}
+                      </Button>
                     )}
-                    onDone={() => {
-                      setOpenFor(null);
-                      onChanged();
-                    }}
-                  />
+                  </span>
                 </div>
-              )}
+                <p className="mt-1 pl-4 text-xs text-zinc-500">
+                  {driftStatusLine(d)}
+                </p>
+                {openFor === d.service && (
+                  <div className="mt-3 pl-4">
+                    <DeployForm
+                      base={base.name}
+                      service={d.service}
+                      suggestedRef={pickDeployRef(
+                        d.commits_behind,
+                        d.branch,
+                        d.newest_tag,
+                      )}
+                      onDone={() => {
+                        setOpenFor(null);
+                        onChanged();
+                      }}
+                    />
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </Panel>
+    </div>
+  );
+}
+
+function CoreUpgrade({ base, onChanged }: { base: string; onChanged: () => void }) {
+  const [check, setCheck] = useState<import("../lib/types").UpgradeCheck | null>(null);
+  const [busy, setBusy] = useState<"check" | "apply" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [lines, setLines] = useState<string[] | null>(null);
+
+  async function doCheck() {
+    setBusy("check");
+    setError(null);
+    try {
+      setCheck(await api.upgradeCheck(base));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function doApply() {
+    if (
+      !window.confirm(
+        "Pull the latest pinned Caddy image and restart the reverse proxy briefly?",
+      )
+    ) {
+      return;
+    }
+    setBusy("apply");
+    setError(null);
+    setLines([]);
+    const collected: string[] = [];
+    const stream = api.upgradeApply(base, (event: StreamEvent) => {
+      if (event.kind === "stdout" || event.kind === "stderr") {
+        collected.push(event.line);
+        setLines([...collected]);
+      }
+    });
+    stream.done
+      .then((code) => {
+        setBusy(null);
+        if (code !== 0) setError("Upgrade did not finish cleanly.");
+        else void doCheck();
+        onChanged();
+      })
+      .catch((err: unknown) => {
+        setBusy(null);
+        setError(err instanceof Error ? err.message : String(err));
+      });
+  }
+
+  return (
+    <Panel
+      title="OwnBase core (Caddy)"
+      subtitle="Managed outside ownbase.yaml. Check status, then apply to pull and restart."
+      action={
+        <div className="flex gap-2">
+          <Button
+            variant="secondary"
+            busy={busy === "check"}
+            disabled={busy !== null}
+            onClick={() => void doCheck()}
+          >
+            Check
+          </Button>
+          <Button busy={busy === "apply"} disabled={busy !== null} onClick={doApply}>
+            Apply upgrade
+          </Button>
+        </div>
+      }
+    >
+      {check ? (
+        <ul className="divide-y divide-zinc-800 text-xs">
+          {check.packages.map((pkg) => (
+            <li
+              key={pkg.name}
+              className="flex flex-wrap items-center justify-between gap-2 py-2 first:pt-0 last:pb-0"
+            >
+              <span className="font-mono text-zinc-300">{pkg.name}</span>
+              <span className="text-zinc-500">
+                {pkg.running ? "running" : "stopped"} · {pkg.image}
+                {pkg.digest ? `@${pkg.digest.slice(0, 12)}` : " (no digest pinned)"}
+              </span>
             </li>
           ))}
         </ul>
+      ) : (
+        <p className="text-xs text-zinc-500">Not checked yet this session.</p>
       )}
+      {error && <p className="mt-2 text-xs text-red-300">{error}</p>}
+      {lines && <LogView lines={lines} className="mt-3 max-h-40 w-full" />}
     </Panel>
   );
 }

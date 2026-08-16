@@ -129,6 +129,10 @@ export function VaultView({ vault, bases }: { vault: Vault; bases: BaseSummary[]
 
       <ChangePassword />
 
+      <RecoveryStringPanel />
+
+      <AboutPanel />
+
       <Panel
         title="If OwnBase disappeared tomorrow"
         subtitle="The escape hatch is not a promise, it is the file format."
@@ -147,6 +151,105 @@ export function VaultView({ vault, bases }: { vault: Vault; bases: BaseSummary[]
         </p>
       </Panel>
     </div>
+  );
+}
+
+function RecoveryStringPanel() {
+  const [open, setOpen] = useState(false);
+  const [value, setValue] = useState<string | null>(null);
+  const [location, setLocation] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function reveal() {
+    if (open) {
+      setOpen(false);
+      setValue(null);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await api.vaultRecoveryString();
+      setValue(r.recovery_string);
+      setLocation(r.location);
+      setOpen(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Panel
+      title="Recovery string"
+      subtitle="For remote vaults only. Store offline with your master password so a fresh machine can reopen the same vault."
+      action={
+        <Button variant="secondary" busy={busy} onClick={() => void reveal()}>
+          {open ? "Hide" : "Reveal"}
+        </Button>
+      }
+    >
+      {error && (
+        <p className="text-sm text-zinc-500">
+          {error.includes("local file")
+            ? "This vault is a local file — there is no recovery string. Back up the file itself."
+            : error}
+        </p>
+      )}
+      {open && value && (
+        <div className="space-y-2">
+          {location && (
+            <Row label="Location">
+              <span className="font-mono text-xs">{location}</span>
+            </Row>
+          )}
+          <p className="selectable break-all font-mono text-xs text-zinc-300">{value}</p>
+          <CopyButton value={value} label="Copy recovery string" />
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function AboutPanel() {
+  const [info, setInfo] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function load() {
+    setError(null);
+    try {
+      const v = await api.cliVersion();
+      setInfo(v.string || `${v.version} (${v.commit})`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  return (
+    <Panel
+      title="About"
+      subtitle="The bundled ownbasectl this window runs."
+      action={
+        !info && (
+          <Button variant="secondary" onClick={() => void load()}>
+            Show version
+          </Button>
+        )
+      }
+    >
+      {info ? (
+        <Row label="ownbasectl">
+          <span className="font-mono text-xs">{info}</span>
+        </Row>
+      ) : (
+        <p className="text-sm text-zinc-500">
+          Every action in this app is a call to the CLI bundled beside it.
+        </p>
+      )}
+      {error && <p className="text-xs text-red-300">{error}</p>}
+    </Panel>
   );
 }
 
