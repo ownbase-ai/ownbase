@@ -284,6 +284,7 @@ export function SetupWizard({
           local={mode === "restore-local"}
           address={address}
           sshUser={sshUser}
+          caddyEmail={caddyEmail}
           cpus={cpus}
           memory={memory}
           disk={disk}
@@ -861,7 +862,7 @@ function ServerStep({
             Back
           </Button>
           <Button type="submit" variant="primary" disabled={!ready}>
-            Install OwnBase
+            {restore ? "Continue to restore" : "Install OwnBase"}
           </Button>
         </Footer>
       </form>
@@ -1209,6 +1210,7 @@ function RestoreStep({
   local,
   address,
   sshUser,
+  caddyEmail,
   cpus,
   memory,
   disk,
@@ -1226,6 +1228,7 @@ function RestoreStep({
   local: boolean;
   address: string;
   sshUser: string;
+  caddyEmail: string;
   cpus: number;
   memory: number;
   disk: number;
@@ -1244,13 +1247,15 @@ function RestoreStep({
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(true);
   const handle = useRef<StreamHandle | null>(null);
+  // Shared with the Cancel button so stream.done does not overwrite "Cancelled."
+  const userCancelled = useRef(false);
   const phases = restorePhases;
 
   useEffect(() => {
-    let cancelled = false;
+    let unmounted = false;
     let stream: StreamHandle | null = null;
     const timer = window.setTimeout(() => {
-      if (cancelled) return;
+      if (unmounted) return;
       const onEvent = (event: StreamEvent) => {
         if (event.kind === "stdout" || event.kind === "stderr") {
           const line = event.line;
@@ -1268,6 +1273,7 @@ function RestoreStep({
           password: password || undefined,
           remote: local ? undefined : `${sshUser}@${address.trim()}`,
           sshUser: local ? undefined : sshUser,
+          caddyEmail: local ? undefined : caddyEmail.trim() || undefined,
           cpus: local ? cpus : undefined,
           memory: local ? memory : undefined,
           disk: local ? disk : undefined,
@@ -1282,7 +1288,7 @@ function RestoreStep({
       handle.current = stream;
       stream.done
         .then((code) => {
-          if (cancelled) return;
+          if (unmounted || userCancelled.current) return;
           setRunning(false);
           if (code === 0) {
             setReached(phases.length);
@@ -1294,13 +1300,13 @@ function RestoreStep({
           }
         })
         .catch((err: unknown) => {
-          if (cancelled) return;
+          if (unmounted || userCancelled.current) return;
           setRunning(false);
           setError(err instanceof Error ? err.message : String(err));
         });
     }, 0);
     return () => {
-      cancelled = true;
+      unmounted = true;
       window.clearTimeout(timer);
       void stream?.cancel();
       handle.current = null;
@@ -1311,7 +1317,13 @@ function RestoreStep({
   return (
     <Card>
       <h2 className="text-base font-medium text-zinc-100">
-        {running ? "Restoring from backup" : error ? "Restore failed" : "Restored"}
+        {running
+          ? "Restoring from backup"
+          : error === "Cancelled."
+            ? "Restore cancelled"
+            : error
+              ? "Restore failed"
+              : "Restored"}
       </h2>
       <p className="mt-1.5 text-sm leading-relaxed text-zinc-500">
         Fresh machine, rebuild install, restic restore, then normal reconcile. This
@@ -1337,7 +1349,10 @@ function RestoreStep({
       </ol>
       {error && (
         <div className="mt-4">
-          <ErrorNote title="Restore failed" detail={error} />
+          <ErrorNote
+            title={error === "Cancelled." ? "Cancelled" : "Restore failed"}
+            detail={error}
+          />
         </div>
       )}
       {lines.length > 0 && (
@@ -1348,6 +1363,7 @@ function RestoreStep({
           <Button
             variant="ghost"
             onClick={() => {
+              userCancelled.current = true;
               void handle.current?.cancel();
               setRunning(false);
               setError("Cancelled.");
