@@ -64,7 +64,7 @@ func TestVersionFindings_SkewDaemonAhead(t *testing.T) {
 	}
 }
 
-func TestVersionFindings_BehindLatestNoSkew(t *testing.T) {
+func TestVersionFindings_CLIBehindSuppressesSelfUpdate(t *testing.T) {
 	orig := version
 	version = "v0.4.0"
 	t.Cleanup(func() { version = orig })
@@ -78,26 +78,51 @@ func TestVersionFindings_BehindLatestNoSkew(t *testing.T) {
 			},
 		},
 	}
-	// Both at v0.4.0 — no skew, both behind latest.
+	// Both at v0.4.0 — CLI-first: one finding, no self-update button.
 	got := versionFindings("mybase", "v0.4.0", snap)
-	if len(got) != 2 {
+	if len(got) != 1 {
 		t.Fatalf("got %d findings: %+v", len(got), got)
 	}
-	var sawDaemon, sawCLI bool
-	for _, f := range got {
-		if f.Action.Run == "self-update" {
-			sawDaemon = true
-		}
-		if f.Action.Kind == actionManual {
-			sawCLI = true
-		}
+	if got[0].Action.Kind != actionManual {
+		t.Errorf("kind = %q, want manual", got[0].Action.Kind)
 	}
-	if !sawDaemon || !sawCLI {
-		t.Errorf("want daemon+cli findings, got %+v", got)
+	if got[0].Action.Run != "" {
+		t.Errorf("must not offer self-update while CLI is behind: %+v", got[0].Action)
+	}
+	if !strings.Contains(got[0].Summary, "upgrade the CLI before") {
+		t.Errorf("summary should name the ordering: %q", got[0].Summary)
+	}
+	if !strings.Contains(got[0].Fix, "self-update mybase") {
+		t.Errorf("fix should chain self-update after brew: %q", got[0].Fix)
 	}
 }
 
-func TestVersionFindings_SkewDedupesBehind(t *testing.T) {
+func TestVersionFindings_CLIBehindAndCLIAheadSkew_StillCLIFirst(t *testing.T) {
+	// CLI v0.4.5, daemon v0.4.0, latest v0.5.0 — CLI ahead of daemon but
+	// itself behind latest. Self-update would install v0.5 and flip skew.
+	orig := version
+	version = "v0.4.5"
+	t.Cleanup(func() { version = orig })
+
+	snap := release.Snapshot{
+		Manifest: release.Manifest{
+			Schema: 1,
+			Components: map[string]release.ComponentVersion{
+				"cli":    {Version: "v0.5.0"},
+				"daemon": {Version: "v0.5.0"},
+			},
+		},
+	}
+	got := versionFindings("mybase", "v0.4.0", snap)
+	if len(got) != 1 {
+		t.Fatalf("got %d findings: %+v", len(got), got)
+	}
+	if got[0].Action.Run == "self-update" {
+		t.Fatalf("must not self-update while CLI is behind latest: %+v", got)
+	}
+}
+
+func TestVersionFindings_CLICurrentDaemonBehind(t *testing.T) {
 	orig := version
 	version = "v0.5.0"
 	t.Cleanup(func() { version = orig })
@@ -114,7 +139,7 @@ func TestVersionFindings_SkewDedupesBehind(t *testing.T) {
 	// CLI current, daemon behind both CLI and latest — one self-update only.
 	got := versionFindings("mybase", "v0.4.0", snap)
 	if len(got) != 1 {
-		t.Fatalf("got %d findings (want 1 skew): %+v", len(got), got)
+		t.Fatalf("got %d findings (want 1): %+v", len(got), got)
 	}
 	if got[0].Action.Run != "self-update" {
 		t.Errorf("action = %+v", got[0].Action)
@@ -153,18 +178,33 @@ func TestCheckupFindings_VersionBehind(t *testing.T) {
 		},
 		"updates": {"drift": [{"service": "crm", "up_to_date": true}]}
 	}`)
-	findings := checkupFindings("mybase", body, snap, "v0.4.0")
-	var versionHits int
-	for _, f := range findings {
-		if strings.Contains(f.Summary, "behind latest") {
-			versionHits++
-		}
+	findings := checkupFindings("mybase", body, snap)
+	// CLI-first: one finding covering both components.
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 CLI-first finding, got %d: %+v", len(findings), findings)
 	}
-	if versionHits != 2 {
-		t.Fatalf("expected 2 behind-latest findings, got %d: %+v", versionHits, findings)
+	if findings[0].Action.Kind != actionManual {
+		t.Errorf("kind = %q", findings[0].Action.Kind)
 	}
-	// All-clear body plus two version findings — nothing else.
-	if len(findings) != 2 {
-		t.Errorf("unexpected extra findings: %+v", findings)
+}
+
+func TestReportNeedsAttention(t *testing.T) {
+	if reportNeedsAttention(release.Report{}) {
+		t.Error("empty report should not need attention")
+	}
+	if reportNeedsAttention(release.Report{
+		Components: []release.Component{{Status: release.StatusCurrent}},
+	}) {
+		t.Error("current should not need attention")
+	}
+	if !reportNeedsAttention(release.Report{
+		Components: []release.Component{{Status: release.StatusBehind}},
+	}) {
+		t.Error("behind should need attention")
+	}
+	if !reportNeedsAttention(release.Report{
+		Skew: &release.Skew{Direction: "cli_ahead"},
+	}) {
+		t.Error("skew should need attention")
 	}
 }

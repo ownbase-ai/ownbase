@@ -30,12 +30,14 @@ export function VaultView({
   bases,
   versionCheck,
   versionError,
+  versionRefreshing,
   onRefreshVersions,
 }: {
   vault: Vault;
   bases: BaseSummary[];
   versionCheck?: VersionCheck | null;
   versionError?: string | null;
+  versionRefreshing?: boolean;
   onRefreshVersions?: () => void;
 }) {
   const status = vault.status;
@@ -146,6 +148,7 @@ export function VaultView({
       <AboutPanel
         check={versionCheck}
         error={versionError}
+        refreshing={versionRefreshing}
         onRefresh={onRefreshVersions}
       />
 
@@ -232,10 +235,12 @@ function RecoveryStringPanel() {
 function AboutPanel({
   check,
   error,
+  refreshing,
   onRefresh,
 }: {
   check?: VersionCheck | null;
   error?: string | null;
+  refreshing?: boolean;
   onRefresh?: () => void;
 }) {
   const components = check?.components ?? [];
@@ -246,7 +251,7 @@ function AboutPanel({
       subtitle="This app and the CLI bundled beside it. Client updates are guided, not applied."
       action={
         onRefresh ? (
-          <Button variant="secondary" onClick={() => onRefresh()}>
+          <Button variant="secondary" busy={refreshing} onClick={() => onRefresh()}>
             Check again
           </Button>
         ) : undefined

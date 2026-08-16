@@ -58,8 +58,6 @@ func runVersionCheck(base, appVersion string, jsonOut, refresh bool) error {
 		if err != nil {
 			// Still report CLI/app; surface the daemon error in text mode.
 			if jsonOut {
-				// Include what we have; put the error on the daemon component
-				// via an empty daemon + note in manifest err.
 				if snap.Err == "" {
 					snap.Err = fmt.Sprintf("daemon %s: %v", base, err)
 				} else {
@@ -75,10 +73,30 @@ func runVersionCheck(base, appVersion string, jsonOut, refresh bool) error {
 
 	report := release.BuildReport(run, snap)
 	if jsonOut {
-		return printJSON(report)
+		if err := printJSON(report); err != nil {
+			return err
+		}
+	} else {
+		printVersionCheck(report, base)
 	}
-	printVersionCheck(report, base)
+	if reportNeedsAttention(report) {
+		return fmt.Errorf("one or more OwnBase components are behind — see above")
+	}
 	return nil
+}
+
+// reportNeedsAttention is true when any component is behind or skew is present.
+// Scripts use the non-zero exit; humans already saw the report on stdout.
+func reportNeedsAttention(report release.Report) bool {
+	if report.Skew != nil {
+		return true
+	}
+	for _, c := range report.Components {
+		if c.Status == release.StatusBehind {
+			return true
+		}
+	}
+	return false
 }
 
 func printVersionCheck(report release.Report, base string) {
@@ -129,71 +147,80 @@ func statusMark(s release.Status) string {
 // and CLI/daemon skew. snap may be empty (manifest unreachable) — that yields
 // no "behind latest" findings, but skew still works offline from the two
 // running versions.
+//
+// Ordering rule: when the CLI itself is behind the newest release, never offer
+// self-update. self-update installs latest and would leave the daemon ahead of
+// the still-stale CLI (whack-a-mole). Upgrade the CLI first, then the daemon.
 func versionFindings(base, daemonVer string, snap release.Snapshot) []checkupFinding {
 	var out []checkupFinding
 
-	// Skew first — works without a manifest and is the failure that bites.
-	if skew := release.AssessSkew(version, daemonVer, base); skew != nil {
-		f := checkupFinding{
+	skew := release.AssessSkew(version, daemonVer, base)
+	cli := release.Assess(release.ComponentCLI, version, snap.LatestOf(release.ComponentCLI))
+	daemon := release.Assess(release.ComponentDaemon, daemonVer, snap.LatestOf(release.ComponentDaemon))
+
+	cliBehindLatest := cli.Status == release.StatusBehind
+	daemonNeedsUpdate := daemon.Status == release.StatusBehind ||
+		(skew != nil && skew.Direction == "cli_ahead")
+
+	// --- CLI side ---
+	if cliBehindLatest {
+		summary := fmt.Sprintf("ownbasectl %s is behind latest %s", cli.Current, cli.Latest)
+		fix := cli.Guide
+		if daemonNeedsUpdate && base != "" {
+			summary += " — upgrade the CLI before updating the Base daemon"
+			fix = cli.Guide + " && ownbasectl self-update " + base
+		}
+		out = append(out, checkupFinding{
+			Summary: summary,
+			Fix:     fix,
+			Action: checkupAction{
+				Kind:  actionManual,
+				Label: "Upgrade CLI",
+			},
+		})
+	} else if skew != nil && skew.Direction == "daemon_ahead" {
+		// Daemon is newer than this CLI; no "behind latest" (or CLI is current
+		// relative to a lagging manifest). Guide brew upgrade.
+		out = append(out, checkupFinding{
 			Summary: skew.Summary,
 			Fix:     skew.Guide,
-		}
-		if skew.Direction == "cli_ahead" {
-			f.Action = checkupAction{
+			Action: checkupAction{
+				Kind:  actionManual,
+				Label: "Upgrade CLI",
+			},
+		})
+	}
+
+	// --- Daemon side: only when CLI is not itself behind latest ---
+	if cliBehindLatest {
+		return out
+	}
+
+	if skew != nil && skew.Direction == "cli_ahead" {
+		out = append(out, checkupFinding{
+			Summary: skew.Summary,
+			Fix:     skew.Guide,
+			Action: checkupAction{
 				Kind:    actionRun,
 				Run:     "self-update",
 				Label:   "Update OwnBase",
 				Confirm: "Replaces the OwnBase daemon with the latest signed release (~10s restart).",
-			}
-		} else {
-			// CLI behind daemon — user must upgrade the local CLI/app.
-			f.Action = checkupAction{
-				Kind:  actionManual,
-				Label: "Upgrade CLI",
-			}
-		}
-		out = append(out, f)
-	}
-
-	// Behind-latest findings need a usable manifest.
-	if snap.LatestOf(release.ComponentDaemon) == "" && snap.LatestOf(release.ComponentCLI) == "" {
+			},
+		})
 		return out
 	}
 
-	// Daemon behind newest release. Skip when skew already offered self-update
-	// for the same gap (cli_ahead means daemon is older than CLI, and CLI may
-	// itself be current or behind — still one self-update button is enough
-	// when the skew path already covers it). Prefer the explicit "behind
-	// latest" message when there is no skew.
-	if skew := release.AssessSkew(version, daemonVer, base); skew == nil || skew.Direction != "cli_ahead" {
-		d := release.Assess(release.ComponentDaemon, daemonVer, snap.LatestOf(release.ComponentDaemon))
-		if d.Status == release.StatusBehind {
-			out = append(out, checkupFinding{
-				Summary: fmt.Sprintf("OwnBase daemon %s is behind latest %s", d.Current, d.Latest),
-				Fix:     "ownbasectl self-update " + base,
-				Action: checkupAction{
-					Kind:    actionRun,
-					Run:     "self-update",
-					Label:   "Update OwnBase",
-					Confirm: "Replaces the OwnBase daemon with the latest signed release (~10s restart).",
-				},
-			})
-		}
-	}
-
-	// CLI behind newest — manual brew guide. Skip when skew already said so.
-	if skew := release.AssessSkew(version, daemonVer, base); skew == nil || skew.Direction != "daemon_ahead" {
-		c := release.Assess(release.ComponentCLI, version, snap.LatestOf(release.ComponentCLI))
-		if c.Status == release.StatusBehind {
-			out = append(out, checkupFinding{
-				Summary: fmt.Sprintf("ownbasectl %s is behind latest %s", c.Current, c.Latest),
-				Fix:     c.Guide,
-				Action: checkupAction{
-					Kind:  actionManual,
-					Label: "Upgrade CLI",
-				},
-			})
-		}
+	if daemon.Status == release.StatusBehind {
+		out = append(out, checkupFinding{
+			Summary: fmt.Sprintf("OwnBase daemon %s is behind latest %s", daemon.Current, daemon.Latest),
+			Fix:     "ownbasectl self-update " + base,
+			Action: checkupAction{
+				Kind:    actionRun,
+				Run:     "self-update",
+				Label:   "Update OwnBase",
+				Confirm: "Replaces the OwnBase daemon with the latest signed release (~10s restart).",
+			},
+		})
 	}
 
 	return out

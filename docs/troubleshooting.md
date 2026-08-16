@@ -258,22 +258,26 @@ It never left the Base: `sudo cat /opt/ownbase/api-token` (root, 0600), or just 
 
 ---
 
-## Upgrading the daemon itself
+## Upgrading OwnBase itself
 
-`ownbasectl upgrade` updates the **core package** (Caddy) — not `ownbased`. To update the daemon binary on a Base, install the new signed release and restart the service:
+Check what is running against the newest release:
 
 ```bash
-ssh root@<base-host>
-ARCH=$(dpkg --print-architecture)   # amd64 or arm64
-curl -fsSL -o /tmp/ownbased      https://releases.ownbase.ai/daemon/latest/ownbased-linux-$ARCH
-curl -fsSL -o /tmp/ownbased.minisig https://releases.ownbase.ai/daemon/latest/ownbased-linux-$ARCH.minisig
-minisign -Vm /tmp/ownbased -x /tmp/ownbased.minisig \
-  -P 'RWTaLp3BlckCjjicEDrN7oVrRhGDWhSjgOpR2Ue/yHzP0cFsmmxALr/V'
-install -o ownbase -g ownbase -m 0755 /tmp/ownbased /opt/ownbase/bin/ownbased
-systemctl restart ownbased
+ownbasectl version --check              # CLI (and app, from the desktop)
+ownbasectl version --check mybase       # also the Base daemon + CLI/daemon skew
 ```
 
-(Replace `latest` with a pinned version like `v0.2.0` to install a specific release; the public key above is printed in [install.sh](../install.sh).) The daemon's state all lives in `/opt/ownbase` and the config repo, so replacing the binary is safe — the restart resumes the normal reconcile loop.
+| Component | Update |
+|---|---|
+| CLI | `brew upgrade --cask ownbase-ai/tap/ownbasectl` |
+| Desktop app | `brew upgrade --cask ownbase-ai/tap/ownbase` |
+| Daemon on a Base | `ownbasectl self-update mybase` |
+
+`ownbasectl upgrade` updates the **core package** (Caddy) — not `ownbased`. The daemon's state all lives in `/opt/ownbase` and the config repo, so replacing the binary is safe — systemd `Restart=always` boots the new process and the normal reconcile loop resumes.
+
+When the CLI itself is behind the newest release, upgrade the CLI **before** `self-update`. Self-update installs latest; doing it first would leave the daemon ahead of a still-stale CLI.
+
+A fork that hosts its own release channel sets `OWNBASE_RELEASE_URL` (origin for `latest.json` and, with `/daemon` appended, the signed binaries). `install.sh` still accepts `RELEASE_BASE_URL` as the full `…/daemon` prefix.
 
 ---
 

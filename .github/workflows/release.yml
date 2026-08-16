@@ -128,8 +128,11 @@ jobs:
                 daemon: {version: $v}
               }
             }' > /tmp/latest.json
+          # Short CDN TTL: this is the one mutable object in a bucket of
+          # immutable versioned binaries. Clients also cache locally for 24h.
           aws s3 cp /tmp/latest.json "s3://${RELEASES_BUCKET}/latest.json" \
             --content-type application/json \
+            --cache-control "public, max-age=300" \
             "${endpoint_flag[@]}"
 
   # The desktop app, attached to the release GoReleaser just created.

@@ -118,7 +118,8 @@ function Shell({ vault }: { vault: Vault }) {
             bases={list}
             versionCheck={versions.data}
             versionError={versions.error}
-            onRefreshVersions={versions.reload}
+            versionRefreshing={versions.refreshing}
+            onRefreshVersions={() => void versions.reload({ refresh: true })}
           />
         ) : selected ? (
           <BaseDetail

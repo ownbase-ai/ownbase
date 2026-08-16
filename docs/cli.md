@@ -239,7 +239,7 @@ Verified-restore drill
 
 Without `--verify`, the report shows the last drill the Base ran on its own schedule, which may be up to a day old. A failed drill names the failing check and exits non-zero; the report still prints.
 
-`--json` is one document: `{"findings": [{"summary", "fix", "action"}…], "status": {…}}`, plus a `"verify"` key when `--verify` ran. Each finding's `action` is `{kind: "run"|"open"|"manual", …}` — the CLI decides both what counts as a problem and how to address it, and the desktop app switches on `kind` rather than recomputing either. For the machine's own words with no verdict attached, use `status --json`. A failed drill still exits non-zero with its message on stderr, so stdout stays parseable.
+`--json` is one document: `{"findings": [{"summary", "fix", "action"}…], "status": {…}}`, plus a `"verify"` key when `--verify` ran. Each finding's `action` is `{kind: "run"|"open"|"form"|"manual", …}` — the CLI decides both what counts as a problem and how to address it, and the desktop app switches on `kind` rather than recomputing either. For the machine's own words with no verdict attached, use `status --json`. A failed drill still exits non-zero with its message on stderr, so stdout stays parseable.
 
 ### `backup setup|run|status|prune <name>`
 
@@ -592,7 +592,7 @@ These operate on a checkout of a config repo and take no Base name. Mostly for d
 | `compile` | Compile `ownbase.yaml` into `runtime/` (Quadlet units, Caddyfile, docker-compose.yml) | `--dir` (default `.`), `--out` (default `<dir>`) |
 | `plan` | Show the diff between compiled desired state and what is running | `--dir`, `--fake-current` |
 | `apply` | Apply the plan. A real apply needs Ubuntu + Podman | `--dir`, `--dry-run`, `--fake-current`, `--audit-log` |
-| `version` | Print version, commit, and build date. With `--check`, compare CLI (and optional app/Base daemon) against `releases.ownbase.ai/latest.json` | `--json`, `--check`, `--refresh`, `--app-version`, optional `[name]` Base |
+| `version` | Print version, commit, and build date. With `--check`, compare CLI (and optional app/Base daemon) against `releases.ownbase.ai/latest.json`; exits non-zero when any component is behind or CLI/daemon skew is present | `--json`, `--check`, `--refresh`, `--app-version`, optional `[name]` Base. Override origin with `OWNBASE_RELEASE_URL` |
 
 ```
 + start  ownbase-auth

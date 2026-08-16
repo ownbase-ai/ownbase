@@ -143,12 +143,17 @@ describe("vault and agent", () => {
     ]);
   });
 
-  it("appVersion", async () => {
+  it("appVersion returns the Tauri bundle version", async () => {
     cover("appVersion");
-    // Dynamic import of @tauri-apps/api/app is mocked by the absence of Tauri
-    // in unit tests — call is still covered for the export gate. The real
-    // path is exercised in the app; here we only assert it is exported.
-    await expect(api.appVersion()).rejects.toThrow();
+    vi.resetModules();
+    vi.doMock("@tauri-apps/api/app", () => ({
+      getVersion: async () => "0.5.0",
+    }));
+    // Re-import so the dynamic import inside appVersion sees the mock.
+    const fresh = await import("./api");
+    await expect(fresh.appVersion()).resolves.toBe("0.5.0");
+    // Keep the cover gate happy for the already-bound export.
+    covered.add("appVersion");
   });
 });
 

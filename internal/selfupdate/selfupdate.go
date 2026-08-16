@@ -24,8 +24,18 @@ import (
 // coordinated OwnBase major.
 const MinisignPublicKey = "RWTaLp3BlckCjjicEDrN7oVrRhGDWhSjgOpR2Ue/yHzP0cFsmmxALr/V"
 
-// DefaultReleaseBaseURL is the S3/R2 bucket that holds signed daemon binaries.
+// DefaultReleaseBaseURL is the S3/R2 prefix that holds signed daemon binaries.
 const DefaultReleaseBaseURL = "https://releases.ownbase.ai/daemon"
+
+// OriginEnv is the release origin (no /daemon suffix). Same name as
+// internal/release.BaseURLEnv and the version-check client. When set,
+// binaries are fetched from $OWNBASE_RELEASE_URL/daemon/…
+const OriginEnv = "OWNBASE_RELEASE_URL"
+
+// DaemonBaseEnv is the full daemon artifact prefix (includes /daemon).
+// Same name as install.sh's RELEASE_BASE_URL so a fork sets one knob for
+// install and self-update.
+const DaemonBaseEnv = "RELEASE_BASE_URL"
 
 // DefaultBinaryPath is where install.sh places the daemon.
 const DefaultBinaryPath = "/opt/ownbase/bin/ownbased"
@@ -34,7 +44,7 @@ const DefaultBinaryPath = "/opt/ownbase/bin/ownbased"
 type Options struct {
 	// Version is the target release tag (e.g. "v0.4.0") or "latest".
 	Version string
-	// ReleaseBaseURL overrides DefaultReleaseBaseURL.
+	// ReleaseBaseURL overrides the env-resolved daemon prefix.
 	ReleaseBaseURL string
 	// BinaryPath is the live daemon path to replace. Empty → DefaultBinaryPath.
 	BinaryPath string
@@ -63,6 +73,14 @@ type Result struct {
 func (o Options) releaseBase() string {
 	if o.ReleaseBaseURL != "" {
 		return strings.TrimRight(o.ReleaseBaseURL, "/")
+	}
+	// RELEASE_BASE_URL is the full …/daemon prefix (install.sh).
+	if v := strings.TrimSpace(os.Getenv(DaemonBaseEnv)); v != "" {
+		return strings.TrimRight(v, "/")
+	}
+	// OWNBASE_RELEASE_URL is the origin; binaries live under /daemon.
+	if v := strings.TrimSpace(os.Getenv(OriginEnv)); v != "" {
+		return strings.TrimRight(v, "/") + "/daemon"
 	}
 	return DefaultReleaseBaseURL
 }

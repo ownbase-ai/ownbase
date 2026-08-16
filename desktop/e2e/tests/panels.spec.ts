@@ -146,6 +146,53 @@ test.describe("read-only panels", () => {
     ).toBeTruthy();
   });
 
+  test("Vault: behind versions show badge and Check again refreshes", async ({ page }) => {
+    await openApp(page, {
+      vault: "unlocked",
+      vaultPath: VAULT_PATH,
+      password: MASTER_PASSWORD,
+      bases: [demoBase],
+      checkup: { demo: healthyCheckup },
+      versionCheck: {
+        components: [
+          {
+            name: "cli",
+            current: "v0.4.0",
+            latest: "v0.5.0",
+            status: "behind",
+            guide: "brew upgrade --cask ownbase-ai/tap/ownbasectl",
+          },
+          {
+            name: "app",
+            current: "v0.4.0",
+            latest: "v0.5.0",
+            status: "behind",
+            guide: "brew upgrade --cask ownbase-ai/tap/ownbase",
+          },
+        ],
+      },
+    });
+
+    // Sidebar badge counts behind components.
+    const vaultNav = page.getByRole("navigation").getByRole("button", { name: /Vault/ });
+    await expect(vaultNav).toContainText("2");
+    await expect(page.getByText(/OwnBase updates available/)).toBeVisible();
+
+    await vaultNav.click();
+    await expect(page.getByText("About & updates")).toBeVisible();
+    await expect(page.getByText("brew upgrade --cask ownbase-ai/tap/ownbasectl")).toBeVisible();
+
+    const before = (await getCalls(page)).length;
+    await page.getByRole("button", { name: "Check again" }).click();
+    await expect
+      .poll(async () =>
+        callMatched((await getCalls(page)).slice(before), ["version"], {
+          includeFlags: ["--check", "--refresh"],
+        }),
+      )
+      .toBeTruthy();
+  });
+
   test("Sessions replay path loads cast into the player", async ({ page }) => {
     const id = demoSessions[0]!.id;
     await openApp(page, {

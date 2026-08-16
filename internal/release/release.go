@@ -23,11 +23,14 @@ import (
 	"github.com/ownbase/ownbase/internal/vault"
 )
 
-// DefaultBaseURL is the origin that hosts latest.json and the signed daemon
-// binaries. Override with OWNBASE_RELEASE_URL (forks, local fixtures).
+// DefaultBaseURL is the origin that hosts latest.json. Daemon binaries live
+// under {BaseURL}/daemon/… (see internal/selfupdate). Override with
+// OWNBASE_RELEASE_URL (forks, local fixtures) — the same env self-update and
+// install.sh honor for the binary channel.
 const DefaultBaseURL = "https://releases.ownbase.ai"
 
-// BaseURLEnv overrides DefaultBaseURL for one process.
+// BaseURLEnv overrides DefaultBaseURL for one process. Same name as
+// selfupdate.OriginEnv so one knob repoints the whole release channel.
 const BaseURLEnv = "OWNBASE_RELEASE_URL"
 
 // CacheFile is the filename under ~/.ownbase/cache for the cached manifest.

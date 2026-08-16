@@ -71,6 +71,8 @@ export type Scenario = {
   servicePreview?: ConfigPreview;
   deployPreview?: ConfigPreview;
   upgradeCheck?: unknown;
+  /** Override for `version --check --json` (default is a dev CLI, no badge). */
+  versionCheck?: unknown;
   dbStatus?: unknown;
   dbRestore?: unknown;
   recoveryKit?: unknown;
@@ -443,8 +445,11 @@ function installMock(scenario: Scenario): void {
     }
 
     if (matches(args, ["version"])) {
-      // version --check --json [--app-version X] [base]
+      // version --check --json [--app-version X] [--refresh] [base]
       if (args.includes("--check")) {
+        if (scenario.versionCheck) {
+          return ok(scenario.versionCheck);
+        }
         const appIdx = args.indexOf("--app-version");
         const appVer = appIdx >= 0 ? (args[appIdx + 1] ?? "0.1.0") : undefined;
         const components: Array<{
