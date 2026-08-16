@@ -113,9 +113,9 @@ enum TrackedChild {
 impl TrackedChild {
     fn kill(self) -> Result<(), String> {
         match self {
-            TrackedChild::Shell(child) => child
-                .kill()
-                .map_err(|e| format!("stop the command: {e}")),
+            TrackedChild::Shell(child) => {
+                child.kill().map_err(|e| format!("stop the command: {e}"))
+            }
             TrackedChild::Pid(pid) => kill_pid(pid),
         }
     }
