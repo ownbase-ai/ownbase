@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ownbase/ownbase/internal/release"
 )
@@ -160,6 +161,7 @@ func TestCheckupFindings_VersionBehind(t *testing.T) {
 			},
 		},
 	}
+	// scanned_at must be fresh so the 48h stale-scan rule does not fire.
 	body := []byte(`{
 		"version": "v0.4.0",
 		"config": {"repo_url": "git@example.com/x.git"},
@@ -170,7 +172,7 @@ func TestCheckupFindings_VersionBehind(t *testing.T) {
 			"vulns": {
 				"available": true,
 				"trivy_installed": true,
-				"scanned_at": "2026-08-16T00:00:00Z",
+				"scanned_at": "` + time.Now().UTC().Format(time.RFC3339) + `",
 				"host": {"critical": 0, "high": 0}
 			},
 			"drift_count": 0,
