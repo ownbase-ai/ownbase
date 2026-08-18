@@ -67,7 +67,7 @@ cask "ownbase" do
   desc "Set up a Base, watch its health, and replay every session opened on it"
   homepage "https://ownbase.ai"
 
-  depends_on macos: ">= :big_sur"
+  depends_on macos: :big_sur
 
   app "OwnBase.app"
 
