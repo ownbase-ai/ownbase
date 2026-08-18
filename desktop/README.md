@@ -74,7 +74,14 @@ This matters because the app renders things that came off a Base: session transc
 
 ## The icon
 
-`scripts/make-icon.mjs` draws the mark and writes `src-tauri/icon-source.png`; `npx tauri icon src-tauri/icon-source.png` derives every platform size into `src-tauri/icons/`. Generated rather than committed as art so the geometry is reviewable in a diff.
+Brand mark lives at `src-tauri/icon-mark.png`. Rebuild the 1024² intermediate (transparent canvas, mark at ~78% so the dock mask keeps a margin), then derive every platform size into `src-tauri/icons/` (those are committed; `icon-source.png` is gitignored):
+
+```sh
+node scripts/make-icon.mjs          # needs ImageMagick (`magick` on PATH)
+npx tauri icon src-tauri/icon-source.png
+```
+
+Commit `icon-mark.png` and `src-tauri/icons/`.
 
 ## Conventions
 

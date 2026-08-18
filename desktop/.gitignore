@@ -9,11 +9,13 @@ src-tauri/gen/
 # checkout it is built from anyway.
 src-tauri/binaries/
 
-# The icons in src-tauri/icons/ ARE committed, even though make-icon.mjs
-# generates them: a release build should not need the Tauri CLI's image
-# pipeline, and the geometry that produced them is in the script. The 1024px
-# source it feeds to `tauri icon` is only an intermediate.
+# The icons in src-tauri/icons/ ARE committed so a release build does not need
+# ImageMagick or the Tauri CLI image pipeline. Rebuild from icon-mark.png via
+# scripts/make-icon.mjs; the 1024px file it feeds to `tauri icon` is only an
+# intermediate. iOS/Android sets from `tauri icon` are unused (desktop only).
 src-tauri/icon-source.png
+src-tauri/icons/ios/
+src-tauri/icons/android/
 
 # Playwright
 /test-results/
