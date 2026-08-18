@@ -3,9 +3,9 @@
 // platform sizes to `tauri icon`.
 //
 // Source of truth is src-tauri/icon-mark.png (the OwnBase "O"). We place it on
-// a dark rounded-rect tile that matches the app chrome, full-bleed at 1024² so
-// it reads like other macOS dock icons (Notion, Settings, …) rather than a bare
-// circle. Requires ImageMagick (`magick` on PATH).
+// a white rounded-rect tile, full-bleed at 1024² so it reads like other macOS
+// dock icons (Notion, …) rather than a bare circle. Requires ImageMagick
+// (`magick` on PATH).
 
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -17,8 +17,8 @@ const SIZE = 1024;
 const MARK = 620;
 /** Continuous-corner radius (~22% of side). */
 const CORNER = 230;
-/** Near-black app chrome (zinc-950-ish). */
-const BG = "#0b0d10";
+/** White tile — matches common macOS app icons in the dock. */
+const BG = "#ffffff";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const tauri = resolve(here, "..", "src-tauri");
