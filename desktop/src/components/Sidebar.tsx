@@ -35,11 +35,11 @@ export function Sidebar({
       <div className="h-11 shrink-0" />
 
       <div className="px-3 pb-3">
-        <div className="flex h-7 items-center px-2">
+        <div className="flex h-9 items-center px-2">
           <img
             src={wordmark}
             alt="OwnBase"
-            className="h-5 w-auto max-w-[9.5rem] object-contain object-left"
+            className="h-7 w-auto max-w-[12rem] object-contain object-left"
             draggable={false}
           />
         </div>
