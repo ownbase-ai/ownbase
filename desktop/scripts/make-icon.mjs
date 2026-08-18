@@ -4,11 +4,10 @@
 //
 // Source of truth is src-tauri/icon-mark.png (the OwnBase "O").
 //
-// The tile is a white squircle with transparent corners, full-bleed to the
-// canvas edges on the flat sides. We bake the shape in (rather than shipping a
-// sharp square) so the dock looks right even when macOS does not re-mask the
-// asset — which is what made the full-square version read as a big white box.
-// Requires ImageMagick (`magick` on PATH).
+// Layout matches common Electron/macOS dock icons (e.g. Slack): a white
+// squircle centered on a transparent 1024² canvas at ~82% of the side, so the
+// dock size lines up with neighbors. Full-bleed tiles read oversized. Requires
+// ImageMagick (`magick` on PATH).
 
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
@@ -17,13 +16,13 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SIZE = 1024;
-/** Longest edge of the mark — roomy, Notion-like padding inside the tile. */
-const MARK = 540;
-/**
- * Corner radius as a fraction of side. ~22.4% matches Apple's continuous
- * corner on a 1024 macOS app icon grid.
- */
-const CORNER = Math.round(SIZE * 0.2237);
+/** Squircle side as a fraction of the canvas (Slack ≈ 420/512). */
+const TILE_FRAC = 420 / 512;
+const TILE = Math.round(SIZE * TILE_FRAC);
+/** Corner radius ≈ 22.4% of the tile (Apple continuous corner). */
+const CORNER = Math.round(TILE * 0.2237);
+/** Mark longest edge relative to the tile. */
+const MARK = Math.round(TILE * 0.62);
 const BG = "#ffffff";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -46,18 +45,28 @@ if (check.error || check.status !== 0) {
 const tmp = mkdtempSync(join(tmpdir(), "ownbase-icon-"));
 const svgPath = join(tmp, "tile.svg");
 try {
-  // SVG roundrect rasterizes cleaner edge AA than magick -draw.
   writeFileSync(
     svgPath,
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}">` +
-      `<rect width="${SIZE}" height="${SIZE}" rx="${CORNER}" ry="${CORNER}" fill="${BG}"/>` +
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${TILE}" height="${TILE}">` +
+      `<rect width="${TILE}" height="${TILE}" rx="${CORNER}" ry="${CORNER}" fill="${BG}"/>` +
       `</svg>\n`,
   );
 
+  // Transparent canvas → centered squircle → centered mark.
   const args = [
+    "-size",
+    `${SIZE}x${SIZE}`,
+    "xc:none",
+    "(",
     "-background",
     "none",
     svgPath,
+    ")",
+    "-gravity",
+    "center",
+    "-compose",
+    "over",
+    "-composite",
     "(",
     mark,
     "-resize",
@@ -82,5 +91,8 @@ try {
   rmSync(tmp, { recursive: true, force: true });
 }
 
-console.log(`wrote ${out} (${SIZE}x${SIZE}, white squircle r=${CORNER}, mark ${MARK}px)`);
+const pad = Math.round((SIZE - TILE) / 2);
+console.log(
+  `wrote ${out} (${SIZE}x${SIZE}, tile ${TILE}px r=${CORNER}, pad ${pad}px, mark ${MARK}px)`,
+);
 console.log(`next: npx tauri icon ${join("src-tauri", "icon-source.png")}`);
