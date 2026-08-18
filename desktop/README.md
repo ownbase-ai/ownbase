@@ -74,7 +74,7 @@ This matters because the app renders things that came off a Base: session transc
 
 ## The icon
 
-Brand mark lives at `src-tauri/icon-mark.png`. Rebuild the 1024² intermediate (full square white canvas + centered mark — macOS applies the squircle; do not bake rounded corners in), then derive every platform size into `src-tauri/icons/` (those are committed; `icon-source.png` is gitignored):
+Brand mark lives at `src-tauri/icon-mark.png`. Rebuild the 1024² intermediate (white squircle + centered mark; corners are transparent so the dock shape is correct even when the system does not re-mask), then derive every platform size into `src-tauri/icons/` (those are committed; `icon-source.png` is gitignored):
 
 ```sh
 node scripts/make-icon.mjs          # needs ImageMagick (`magick` on PATH)
