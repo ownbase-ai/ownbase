@@ -37,28 +37,15 @@ if (check.error || check.status !== 0) {
   process.exit(1);
 }
 
-// Tile = solid fill masked to a rounded rect, then the mark centered on top.
+// Transparent canvas → white rounded rect → mark centered on top.
 const args = [
   "-size",
   `${SIZE}x${SIZE}`,
   "xc:none",
-  "(",
-  "-size",
-  `${SIZE}x${SIZE}`,
-  `xc:${BG}`,
-  ")",
-  "(",
-  "-size",
-  `${SIZE}x${SIZE}`,
-  "xc:none",
   "-fill",
-  "white",
+  BG,
   "-draw",
   `roundrectangle 0,0 ${SIZE - 1},${SIZE - 1} ${CORNER},${CORNER}`,
-  ")",
-  "-compose",
-  "copyopacity",
-  "-composite",
   "(",
   mark,
   "-resize",
