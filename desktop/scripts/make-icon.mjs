@@ -2,10 +2,10 @@
 // Builds src-tauri/icon-source.png from the brand mark, then leaves the
 // platform sizes to `tauri icon`.
 //
-// Source of truth is src-tauri/icon-mark.png (the OwnBase "O"). We place it on
-// a white rounded-rect tile, full-bleed at 1024² so it reads like other macOS
-// dock icons (Notion, …) rather than a bare circle. Requires ImageMagick
-// (`magick` on PATH).
+// Source of truth is src-tauri/icon-mark.png (the OwnBase "O"). Place it on a
+// full square white canvas — do not pre-draw rounded corners. macOS (and the
+// other platform packagers) apply the squircle mask; baking one in makes the
+// icon read larger than peers in the dock. Requires ImageMagick (`magick`).
 
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -13,11 +13,11 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SIZE = 1024;
-/** Longest edge of the mark inside the tile. */
-const MARK = 620;
-/** Continuous-corner radius (~22% of side). */
-const CORNER = 230;
-/** White tile — matches common macOS app icons in the dock. */
+/**
+ * Longest edge of the mark. Kept under ~60% so the glyph has similar internal
+ * padding to Notion / Slack rather than filling the tile edge-to-edge.
+ */
+const MARK = 560;
 const BG = "#ffffff";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -37,15 +37,10 @@ if (check.error || check.status !== 0) {
   process.exit(1);
 }
 
-// Transparent canvas → white rounded rect → mark centered on top.
 const args = [
   "-size",
   `${SIZE}x${SIZE}`,
-  "xc:none",
-  "-fill",
-  BG,
-  "-draw",
-  `roundrectangle 0,0 ${SIZE - 1},${SIZE - 1} ${CORNER},${CORNER}`,
+  `xc:${BG}`,
   "(",
   mark,
   "-resize",
@@ -67,5 +62,5 @@ if (result.status !== 0) {
   process.exit(result.status ?? 1);
 }
 
-console.log(`wrote ${out} (${SIZE}x${SIZE}, tile ${BG}, mark ${MARK}px)`);
+console.log(`wrote ${out} (${SIZE}x${SIZE}, full square ${BG}, mark ${MARK}px)`);
 console.log(`next: npx tauri icon ${join("src-tauri", "icon-source.png")}`);
