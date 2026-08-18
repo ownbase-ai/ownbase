@@ -22,7 +22,7 @@ const PAD = Math.round((SIZE - TILE) / 2);
 /** Corner radius ≈ 22.4% of the tile (Apple continuous corner). */
 const CORNER = Math.round(TILE * 0.2237);
 /** Mark longest edge relative to the tile. */
-const MARK = Math.round(TILE * 0.62);
+const MARK = Math.round(TILE * 0.78);
 const BG = "#ffffff";
 
 const here = dirname(fileURLToPath(import.meta.url));
