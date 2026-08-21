@@ -481,6 +481,7 @@ func run(cfg agentConfig) error {
 						digest = strings.TrimSpace(string(id))
 					}
 				}
+				imgRecipe, _, _ := core.ImageLabels(m.CaddyImage)
 				return []explain.CorePackageStatus{{
 					Name:          "Caddy",
 					Container:     core.CaddyContainerName,
@@ -488,6 +489,9 @@ func run(cfg agentConfig) error {
 					Digest:        digest,
 					RunningDigest: runningDigest,
 					Running:       running,
+					Recipe:        core.RecipeHash(),
+					ImageRecipe:   imgRecipe,
+					GoImage:       core.GoImage(),
 				}}
 			},
 			// GetConfig reads the checkout's ownbase.yaml — the read side of
@@ -939,10 +943,15 @@ func run(cfg agentConfig) error {
 		}()
 	}
 
-	// Seed durable patch stamp so checkup can suppress stale Apply-patches
-	// findings across daemon restarts.
-	if st := explain.LoadSecurityState(explain.DefaultSecurityStatePath); !st.LastPatchAt.IsZero() {
-		statusSrv.SetLastPatchAt(st.LastPatchAt)
+	// Seed durable stamps so checkup can suppress stale Apply-patches /
+	// Rebuild-Caddy findings across daemon restarts.
+	if st := explain.LoadSecurityState(explain.DefaultSecurityStatePath); !st.LastPatchAt.IsZero() || !st.LastCoreRebuildAt.IsZero() {
+		if !st.LastPatchAt.IsZero() {
+			statusSrv.SetLastPatchAt(st.LastPatchAt)
+		}
+		if !st.LastCoreRebuildAt.IsZero() {
+			statusSrv.SetLastCoreRebuildAt(st.LastCoreRebuildAt)
+		}
 	}
 
 	ticker := time.NewTicker(cfg.tickInterval)
@@ -1021,8 +1030,14 @@ func run(cfg agentConfig) error {
 			// Available=true result (e.g. trivy removed after last scan).
 			// Carry durable/in-flight metadata that GatherVulns does not set.
 			result.LastPatchAt = lastVulnStatus.LastPatchAt
-			if st := explain.LoadSecurityState(explain.DefaultSecurityStatePath); !st.LastPatchAt.IsZero() {
-				result.LastPatchAt = st.LastPatchAt
+			result.LastCoreRebuildAt = lastVulnStatus.LastCoreRebuildAt
+			if st := explain.LoadSecurityState(explain.DefaultSecurityStatePath); !st.LastPatchAt.IsZero() || !st.LastCoreRebuildAt.IsZero() {
+				if !st.LastPatchAt.IsZero() {
+					result.LastPatchAt = st.LastPatchAt
+				}
+				if !st.LastCoreRebuildAt.IsZero() {
+					result.LastCoreRebuildAt = st.LastCoreRebuildAt
+				}
 			}
 			lastVulnStatus = result
 			statusSrv.SetScanning(false)

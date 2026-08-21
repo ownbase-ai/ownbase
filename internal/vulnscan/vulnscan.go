@@ -128,4 +128,9 @@ type VulnStatus struct {
 	// older than this, displayed counts are pre-patch and must not drive an
 	// "Apply patches" finding.
 	LastPatchAt time.Time `json:"last_patch_at,omitempty"`
+
+	// LastCoreRebuildAt is when POST /upgrade last finished successfully.
+	// Durable via security.json. When ScannedAt is older than this, core-image
+	// CVE counts are pre-rebuild and must not drive a "Rebuild Caddy" finding.
+	LastCoreRebuildAt time.Time `json:"last_core_rebuild_at,omitempty"`
 }

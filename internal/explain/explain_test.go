@@ -481,6 +481,23 @@ func TestStatusServer_Update_ReflectsImmediately(t *testing.T) {
 	}
 }
 
+func TestStatusServer_PreservesLastCoreRebuildAt(t *testing.T) {
+	srv := explain.NewStatusServer()
+	rebuilt := time.Now().UTC().Truncate(time.Second)
+	srv.SetLastCoreRebuildAt(rebuilt)
+
+	// A full Update with zero LastCoreRebuildAt must not wipe the stamp.
+	st := explain.Gather(explain.GatherInput{
+		Config: &schema.OwnbaseConfig{SchemaVersion: "v1"},
+	})
+	srv.Update(st)
+
+	got := srv.Get().Security.Vulns.LastCoreRebuildAt
+	if !got.Equal(rebuilt) {
+		t.Fatalf("LastCoreRebuildAt = %v, want %v", got, rebuilt)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // M14: Constant-time auth, case-correct Bearer check
 // ---------------------------------------------------------------------------

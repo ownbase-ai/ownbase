@@ -36,9 +36,9 @@ type CoreManifest struct {
 
 // Current is the core manifest embedded in this binary.
 //
-// Caddy is built on the Base from internal/core/caddy/Dockerfile (Go 1.26.5 +
-// alpine apk upgrade) and tagged LocalCaddyImage. No registry digest: the
-// image is rebuilt by bootstrap and by `ownbasectl upgrade --apply`.
+// Caddy is built on the Base from internal/core/caddy/Dockerfile (current Go
+// patch + alpine apk upgrade) and tagged LocalCaddyImage. No registry digest:
+// the image is rebuilt by bootstrap and by `ownbasectl upgrade --apply`.
 var Current = CoreManifest{
 	CaddyImage:  LocalCaddyImage,
 	CaddyDigest: "", // local build — not pulled

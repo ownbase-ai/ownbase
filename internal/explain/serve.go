@@ -49,10 +49,10 @@ func NewStatusServer() *StatusServer {
 //     the caller assembled st; publishing st.Reboot as-is would wipe a
 //     just-raised SetReboot. The marker is two cheap stats, so sampling at
 //     publish time is the single source of truth.
-//   - Vulns.Scanning / ScanStartedAt / LastPatchAt are preserved from the
-//     previous cache (or merged with st when st carries a fresher value) so a
-//     full Gather push cannot clear an in-flight scan or the durable
-//     last_patch_at stamp.
+//   - Vulns.Scanning / ScanStartedAt / LastPatchAt / LastCoreRebuildAt are
+//     preserved from the previous cache (or merged with st when st carries a
+//     fresher value) so a full Gather push cannot clear an in-flight scan or
+//     the durable last_patch_at / last_core_rebuild_at stamps.
 func (s *StatusServer) Update(st *BaseStatus) {
 	reboot := secwatch.GatherRebootRequired()
 	s.mu.Lock()
@@ -69,6 +69,9 @@ func (s *StatusServer) Update(st *BaseStatus) {
 	}
 	if st.Security.Vulns.LastPatchAt.IsZero() {
 		st.Security.Vulns.LastPatchAt = prev.LastPatchAt
+	}
+	if st.Security.Vulns.LastCoreRebuildAt.IsZero() {
+		st.Security.Vulns.LastCoreRebuildAt = prev.LastCoreRebuildAt
 	}
 	s.status = st
 	s.mu.Unlock()
@@ -130,6 +133,16 @@ func (s *StatusServer) SetLastPatchAt(t time.Time) {
 		return
 	}
 	s.status.Security.Vulns.LastPatchAt = t
+}
+
+// SetLastCoreRebuildAt stamps when POST /upgrade last finished. Safe for concurrent use.
+func (s *StatusServer) SetLastCoreRebuildAt(t time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.status == nil {
+		return
+	}
+	s.status.Security.Vulns.LastCoreRebuildAt = t
 }
 
 // SetToken updates the Bearer token required for authenticated routes. An

@@ -404,6 +404,8 @@ export interface VulnStatus {
   scan_started_at?: string;
   /** When /security/fix last finished; counts older than this are pre-patch. */
   last_patch_at?: string;
+  /** When POST /upgrade last finished; core-image counts older than this are pre-rebuild. */
+  last_core_rebuild_at?: string;
 }
 
 /** internal/vulnscan.VulnSummary */

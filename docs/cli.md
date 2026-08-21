@@ -384,7 +384,8 @@ kernel is still running; `security reboot` is what closes that gap
 | Host OS packages with a patch | `ownbasectl security fix <name>` — auto-rescans after; may leave a reboot required |
 | Reboot required | `ownbasectl security reboot <name>` |
 | Scanner missing | `ownbasectl security install-scanner <name>` |
-| Caddy image CVE (local-build daemon) | `ownbasectl upgrade <name> --apply` — rebuilds hardened Caddy on the Base |
+| Caddy image CVE (rebuild can help) | `ownbasectl upgrade <name> --apply` — rebuilds hardened Caddy (current Go patch + alpine) on the Base |
+| Caddy image CVE after rebuild still present | `ownbasectl self-update <name>` when a newer OwnBase exists, then rebuild; otherwise a Security-tab reading until OwnBase ships a recipe fix |
 | Caddy image CVE (old registry-pinned daemon) | `ownbasectl self-update <name>` first, then `upgrade --apply` |
 | Service image CVE / behind source | `ownbasectl deploy <name> <svc> --ref <tag>` (use `--dry-run --json` first) |
 | Image CVE with no fix available | Wait for the upstream maintainer |
@@ -399,7 +400,8 @@ ownbasectl self-update mybase --version v0.4.1
 Downloads a signed `ownbased` from the release server, verifies the minisign
 signature, atomically replaces `/opt/ownbase/bin/ownbased`, and lets systemd
 `Restart=always` boot the new process. This is how a Base picks up a newer
-Caddy pin — `core.Current` is compiled into the daemon.
+Caddy *recipe* (the Dockerfile embedded in the daemon). After self-update,
+run `upgrade --apply` so the new recipe is built.
 
 To learn whether an update is needed: `ownbasectl version --check <name>` (or
 `checkup`, which surfaces the same finding). CLI and app updates are guided
@@ -410,10 +412,14 @@ To learn whether an update is needed: `ownbasectl version --check <name>` (or
 Check or apply updates to the OwnBase core package (Caddy) — the one package managed outside `ownbase.yaml`.
 
 ```bash
-ownbasectl upgrade mybase             # check: image, digest, running state
-ownbasectl upgrade mybase --json      # {"status","packages":[{name,image,digest,running},…]}
-ownbasectl upgrade mybase --apply     # pull and restart, streaming progress
+ownbasectl upgrade mybase             # check: image, recipe, Go image, running state
+ownbasectl upgrade mybase --json      # {"status","packages":[{name,image,digest,running,recipe,…},…]}
+ownbasectl upgrade mybase --apply     # rebuild hardened image and restart, streaming progress
 ```
+
+`--apply` rebuilds from the Dockerfile embedded in the running daemon (floating
+Go patch within the pinned minor + alpine `apk upgrade`), stamps
+`last_core_rebuild_at`, and triggers a CVE rescan. It cannot exceed that recipe.
 
 ---
 

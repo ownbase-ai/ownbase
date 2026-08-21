@@ -492,6 +492,7 @@ func checkupFindings(base string, body []byte, snap release.Snapshot) []checkupF
 			scannedAt, _ := vulns["scanned_at"].(string)
 			scanning, _ := vulns["scanning"].(bool)
 			lastPatchAt, _ := vulns["last_patch_at"].(string)
+			lastCoreRebuildAt, _ := vulns["last_core_rebuild_at"].(string)
 
 			switch {
 			case !trivyInstalled:
@@ -600,10 +601,16 @@ func checkupFindings(base string, body []byte, snap release.Snapshot) []checkupF
 					continue
 				}
 				if strings.HasPrefix(svc, "ownbase-core-") {
-					// Local-build daemons rebuild Caddy via upgrade --apply.
-					// Registry-pinned daemons only re-pull the same digest —
-					// they need self-update first to pick up the Dockerfile.
+					// Honest core-image findings: the button's number must be
+					// what the button changes (decisions.md). Rebuild uses the
+					// Dockerfile embedded in the running daemon — it cannot
+					// exceed that recipe.
 					imgRef, _ := img["image"].(string)
+					// Pre-rebuild counts (scan still older than last rebuild)
+					// must not drive a Rebuild row — same as post-patch.
+					if scanOlderThan(scannedAt, lastCoreRebuildAt) {
+						continue
+					}
 					if coreNeedsSelfUpdate(s, imgRef) {
 						findings = append(findings, checkupFinding{
 							Summary: fmt.Sprintf("%d CVE(s) with a patch in core image %q — daemon must self-update first", n, svc),
@@ -615,18 +622,39 @@ func checkupFindings(base string, body []byte, snap release.Snapshot) []checkupF
 								Confirm: "Replaces the OwnBase daemon with the latest signed release (~10s restart). Then use Rebuild Caddy (or upgrade --apply) so the hardened image is built.",
 							},
 						})
-					} else {
-						findings = append(findings, checkupFinding{
-							Summary: fmt.Sprintf("%d CVE(s) with a patch in core image %q", n, svc),
-							Fix:     "ownbasectl upgrade " + base + " --apply",
-							Action: checkupAction{
-								Kind:    actionRun,
-								Run:     "upgrade --apply",
-								Label:   "Rebuild Caddy",
-								Confirm: "Rebuilds the hardened Caddy image on this Base (downloads Go toolchains on first build) and restarts the proxy. Brief interruption to HTTPS.",
-							},
-						})
+						continue
 					}
+					// Rebuild already ran and a newer scan still shows fixable
+					// CVEs → Rebuild is a proven no-op. Offer self-update only
+					// when a newer OwnBase exists (and the CLI is not itself
+					// behind — same CLI-first rule as versionFindings).
+					if coreRebuildProvenIneffective(scannedAt, lastCoreRebuildAt) {
+						if coreNewerOwnBaseAvailable(s, snap) && !cliBehindLatest(snap) {
+							findings = preferSelfUpdateFinding(findings, checkupFinding{
+								Summary: fmt.Sprintf("%d CVE(s) remain in core image %q after rebuild — a newer OwnBase may carry a fixed recipe", n, svc),
+								Fix:     "ownbasectl self-update " + base,
+								Action: checkupAction{
+									Kind:    actionRun,
+									Run:     "self-update",
+									Label:   "Update OwnBase",
+									Confirm: "Replaces the OwnBase daemon with the latest signed release (~10s restart). Then rebuild Caddy so the new recipe is applied.",
+								},
+							})
+						}
+						// Daemon already current (or CLI-first): Security-tab
+						// reading only — nothing Overview can finish.
+						continue
+					}
+					findings = append(findings, checkupFinding{
+						Summary: fmt.Sprintf("%d CVE(s) with a patch in core image %q", n, svc),
+						Fix:     "ownbasectl upgrade " + base + " --apply",
+						Action: checkupAction{
+							Kind:    actionRun,
+							Run:     "upgrade --apply",
+							Label:   "Rebuild Caddy",
+							Confirm: "Rebuilds the hardened Caddy image on this Base (pulls current Go patch + alpine packages) and restarts the proxy. Brief interruption to HTTPS.",
+						},
+					})
 					continue
 				}
 				// User services: deploy a newer ref only when that ref would
@@ -863,6 +891,48 @@ func coreNeedsSelfUpdate(status map[string]any, imageRef string) bool {
 	}
 	// No version + still a registry (or unknown) image → migration required.
 	return true
+}
+
+// coreRebuildProvenIneffective is true when a rebuild finished and a scan
+// strictly after that stamp still reports fixable core CVEs. Rebuild would
+// re-run the same recipe and cannot move the number.
+func coreRebuildProvenIneffective(scannedAt, lastCoreRebuildAt string) bool {
+	if lastCoreRebuildAt == "" {
+		return false
+	}
+	// scanOlderThan is true when scanned < stamp. Ineffective means the
+	// opposite: scanned is at-or-after the rebuild.
+	return !scanOlderThan(scannedAt, lastCoreRebuildAt) && scannedAt != ""
+}
+
+// coreNewerOwnBaseAvailable reports whether the release manifest lists a
+// daemon newer than the one on this Base. Empty snap → false (unknown ≠ behind).
+func coreNewerOwnBaseAvailable(status map[string]any, snap release.Snapshot) bool {
+	daemonVer, _ := status["version"].(string)
+	daemon := release.Assess(release.ComponentDaemon, strings.TrimSpace(daemonVer), snap.LatestOf(release.ComponentDaemon))
+	return daemon.Status == release.StatusBehind
+}
+
+// cliBehindLatest mirrors versionFindings' CLI-first gate so core findings
+// never offer self-update while the CLI itself is stale.
+func cliBehindLatest(snap release.Snapshot) bool {
+	cli := release.Assess(release.ComponentCLI, version, snap.LatestOf(release.ComponentCLI))
+	return cli.Status == release.StatusBehind
+}
+
+// preferSelfUpdateFinding upgrades an existing self-update finding's summary
+// to the more specific CVE-motivated copy, or appends when none exists yet.
+// Avoids two "Update OwnBase" buttons when versionFindings already emitted one.
+func preferSelfUpdateFinding(findings []checkupFinding, f checkupFinding) []checkupFinding {
+	for i := range findings {
+		if findings[i].Action.Run == "self-update" {
+			findings[i].Summary = f.Summary
+			findings[i].Fix = f.Fix
+			findings[i].Action = f.Action
+			return findings
+		}
+	}
+	return append(findings, f)
 }
 
 // scanIsStale reports whether a scanned_at timestamp is older than

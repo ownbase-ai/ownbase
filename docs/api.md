@@ -208,7 +208,7 @@ Schema (`schema_version: v3`):
 
 ### `GET /core/status` — core package state (read-only)
 
-Behind `ownbasectl upgrade` (check-only mode). Reports the core package's pinned image, digest, and running state:
+Behind `ownbasectl upgrade` (check-only mode). Reports the core package's image, digest, running state, and recipe provenance:
 
 ```json
 {
@@ -216,17 +216,24 @@ Behind `ownbasectl upgrade` (check-only mode). Reports the core package's pinned
     {
       "name": "Caddy",
       "container": "ownbase-core-caddy",
-      "image": "docker.io/library/caddy:2.11.4-alpine",
+      "image": "localhost/ownbase-core-caddy:local",
       "digest": "sha256:…",
-      "running": true
+      "running": true,
+      "recipe": "a1b2c3d4e5f6",
+      "image_recipe": "a1b2c3d4e5f6",
+      "go_image": "docker.io/library/golang:1.26-alpine"
     }
   ]
 }
 ```
 
-### `POST /upgrade` — pull + restart the core package
+`recipe` is the short hash of the Dockerfile embedded in this daemon;
+`image_recipe` is the `ownbase.core.recipe` label on the local image (empty on
+pre-label builds). When they differ, a rebuild will apply a newer recipe.
 
-Behind `ownbasectl upgrade --apply`. Pulls the latest pinned image for Caddy and restarts its container. **Streams** progress as `text/plain`; the final line is the sentinel `---OK---` on success (its absence means the upgrade failed even though the HTTP status was already committed as 200). Triggers a vulnerability rescan on completion.
+### `POST /upgrade` — rebuild + restart the core package
+
+Behind `ownbasectl upgrade --apply`. Rebuilds the hardened Caddy image from the Dockerfile embedded in the daemon and restarts its container. **Streams** progress as `text/plain`; the final line is the sentinel `---OK---` on success (its absence means the upgrade failed even though the HTTP status was already committed as 200). On success stamps `last_core_rebuild_at` in `/opt/ownbase/state/security.json` (also exposed on `GET /status` as `security.vulns.last_core_rebuild_at`) and triggers a vulnerability rescan.
 
 ---
 

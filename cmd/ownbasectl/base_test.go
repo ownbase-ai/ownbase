@@ -814,6 +814,129 @@ func TestCheckupFindings_CoreOldDaemonNeedsSelfUpdate(t *testing.T) {
 	}
 }
 
+// After rebuild, while the post-rebuild scan is still pending (scanned_at
+// older than last_core_rebuild_at), do not offer Rebuild Caddy.
+func TestCheckupFindings_CoreSuppressesWhileRescanPending(t *testing.T) {
+	scanned := time.Now().UTC().Add(-10 * time.Minute).Format(time.RFC3339)
+	rebuilt := time.Now().UTC().Format(time.RFC3339)
+	body := []byte(`{
+		"config": {"repo_url": "git@example.com/x.git"},
+		"version": "v0.5.1",
+		"security": {
+			"backup_restorable": true,
+			"vulns": {
+				"available": true,
+				"trivy_installed": true,
+				"scanned_at": "` + scanned + `",
+				"last_core_rebuild_at": "` + rebuilt + `",
+				"host": {"critical": 0, "high": 0},
+				"images": [{
+					"service": "ownbase-core-caddy",
+					"image": "localhost/ownbase-core-caddy:local",
+					"summary": {"critical": 0, "high": 2, "fixable_critical": 0, "fixable_high": 2}
+				}]
+			}
+		}
+	}`)
+	findings := checkupFindings("mybase", body, release.Snapshot{})
+	for _, f := range findings {
+		if strings.Contains(f.Summary, "core image") || f.Action.Run == "upgrade --apply" {
+			t.Fatalf("pre-rebuild counts must not drive a finding, got %+v", f)
+		}
+	}
+}
+
+// Rebuild already ran and a newer scan still shows fixable CVEs; daemon is
+// current → no Overview action (Security-tab reading only).
+func TestCheckupFindings_CoreProvenIneffectiveDaemonCurrent(t *testing.T) {
+	rebuilt := time.Now().UTC().Add(-20 * time.Minute).Format(time.RFC3339)
+	scanned := time.Now().UTC().Format(time.RFC3339)
+	body := []byte(`{
+		"config": {"repo_url": "git@example.com/x.git"},
+		"version": "v0.5.1",
+		"security": {
+			"backup_restorable": true,
+			"vulns": {
+				"available": true,
+				"trivy_installed": true,
+				"scanned_at": "` + scanned + `",
+				"last_core_rebuild_at": "` + rebuilt + `",
+				"host": {"critical": 0, "high": 0},
+				"images": [{
+					"service": "ownbase-core-caddy",
+					"image": "localhost/ownbase-core-caddy:local",
+					"summary": {"critical": 0, "high": 2, "fixable_critical": 0, "fixable_high": 2}
+				}]
+			}
+		}
+	}`)
+	// Empty snap → no "newer OwnBase"; daemon current → no finding.
+	findings := checkupFindings("mybase", body, release.Snapshot{})
+	for _, f := range findings {
+		if strings.Contains(f.Summary, "core image") || f.Action.Run == "upgrade --apply" || f.Action.Run == "self-update" {
+			t.Fatalf("proven-ineffective + current daemon must not offer a run action, got %+v", f)
+		}
+	}
+}
+
+// Rebuild proven ineffective but a newer OwnBase exists → Update OwnBase
+// (with CVE-motivated summary), not Rebuild Caddy.
+func TestCheckupFindings_CoreProvenIneffectiveOffersSelfUpdate(t *testing.T) {
+	orig := version
+	version = "v0.5.1"
+	t.Cleanup(func() { version = orig })
+
+	rebuilt := time.Now().UTC().Add(-20 * time.Minute).Format(time.RFC3339)
+	scanned := time.Now().UTC().Format(time.RFC3339)
+	body := []byte(`{
+		"config": {"repo_url": "git@example.com/x.git"},
+		"version": "v0.5.0",
+		"security": {
+			"backup_restorable": true,
+			"vulns": {
+				"available": true,
+				"trivy_installed": true,
+				"scanned_at": "` + scanned + `",
+				"last_core_rebuild_at": "` + rebuilt + `",
+				"host": {"critical": 0, "high": 0},
+				"images": [{
+					"service": "ownbase-core-caddy",
+					"image": "localhost/ownbase-core-caddy:local",
+					"summary": {"critical": 0, "high": 2, "fixable_critical": 0, "fixable_high": 2}
+				}]
+			}
+		}
+	}`)
+	snap := release.Snapshot{
+		Manifest: release.Manifest{
+			Schema: 1,
+			Components: map[string]release.ComponentVersion{
+				"cli":    {Version: "v0.5.1"},
+				"daemon": {Version: "v0.5.1"},
+			},
+		},
+	}
+	findings := checkupFindings("mybase", body, snap)
+	var selfUpdate *checkupFinding
+	for i := range findings {
+		if findings[i].Action.Run == "self-update" {
+			if selfUpdate != nil {
+				t.Fatalf("duplicate self-update findings: %+v", findings)
+			}
+			selfUpdate = &findings[i]
+		}
+		if findings[i].Action.Run == "upgrade --apply" {
+			t.Fatalf("must not offer Rebuild after proven-ineffective rebuild: %+v", findings[i])
+		}
+	}
+	if selfUpdate == nil {
+		t.Fatalf("expected self-update finding, got %+v", findings)
+	}
+	if !strings.Contains(selfUpdate.Summary, "after rebuild") {
+		t.Errorf("want CVE-motivated summary, got %q", selfUpdate.Summary)
+	}
+}
+
 func TestCheckupFindings_ImageCVESkippedWhenUpToDate(t *testing.T) {
 	fresh := time.Now().UTC().Format(time.RFC3339)
 	body := []byte(`{

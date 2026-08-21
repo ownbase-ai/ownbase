@@ -65,6 +65,10 @@ type APIConfig struct {
 	// to w so the HTTP handler can stream them to the client. A non-nil error
 	// means at least one pull failed; partial progress may have been written.
 	UpgradeCore func(w io.Writer) error
+	// SecurityStatePath is where durable security-loop stamps are written
+	// (last_patch_at, last_core_rebuild_at, rescan_on_boot). Empty means
+	// DefaultSecurityStatePath. Tests override with a temp path.
+	SecurityStatePath string
 	// GetConfig, when non-nil, returns the current contents of ownbase.yaml
 	// from the checkout. Called by GET /config — the read side of
 	// `ownbasectl config get`.
@@ -164,6 +168,12 @@ type CorePackageStatus struct {
 	// `upgrade --apply` would change anything.
 	RunningDigest string `json:"running_digest,omitempty"`
 	Running       bool   `json:"running"`
+	// Recipe is the short hash of the Dockerfile embedded in this daemon.
+	Recipe string `json:"recipe,omitempty"`
+	// ImageRecipe is the ownbase.core.recipe label on the local image, when set.
+	ImageRecipe string `json:"image_recipe,omitempty"`
+	// GoImage is the GO_IMAGE default from the embedded Dockerfile.
+	GoImage string `json:"go_image,omitempty"`
 }
 
 // BackupRunStatus is the JSON-friendly result of an immediate backup run,
@@ -582,7 +592,7 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 		// post-patch scan lands (scanned_at would otherwise keep driving the
 		// pre-patch count).
 		patchedAt := time.Now().UTC()
-		if err := MarkPatched(DefaultSecurityStatePath); err != nil {
+		if err := MarkPatched(cfg.securityStatePath()); err != nil {
 			fmt.Fprintf(fw, "WARNING: persist last_patch_at: %v\n", err)
 		}
 		if cfg.StatusSrv != nil {
@@ -666,7 +676,7 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 		// Ask the next daemon start to scan immediately instead of waiting
 		// the normal 5-minute startup delay — otherwise the Base is blind to
 		// CVEs for minutes after a security reboot.
-		if err := MarkRescanOnBoot(DefaultSecurityStatePath); err != nil {
+		if err := MarkRescanOnBoot(cfg.securityStatePath()); err != nil {
 			fmt.Fprintf(fw, "WARNING: could not set rescan-on-boot: %v\n", err)
 		}
 
@@ -724,6 +734,17 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 		if err := cfg.UpgradeCore(fw); err != nil {
 			fmt.Fprintf(fw, "\nERROR: %v\n", err)
 			return
+		}
+
+		// Stamp last_core_rebuild_at so checkup suppresses "Rebuild Caddy"
+		// while the post-rebuild scan is still in flight, and can detect a
+		// proven-ineffective rebuild (newer scan still shows fixable CVEs).
+		rebuiltAt := time.Now().UTC()
+		if err := MarkCoreRebuilt(cfg.securityStatePath()); err != nil {
+			fmt.Fprintf(fw, "WARNING: persist last_core_rebuild_at: %v\n", err)
+		}
+		if cfg.StatusSrv != nil {
+			cfg.StatusSrv.SetLastCoreRebuildAt(rebuiltAt)
 		}
 
 		fmt.Fprintf(fw, "\n==> Done. Triggering vulnerability rescan...\n")
@@ -1375,6 +1396,14 @@ func auditAction(t schema.ActionType, target string, p schema.Principal) (schema
 		p = schema.Owner()
 	}
 	return a.WithPrincipal(p), nil
+}
+
+// securityStatePath returns the durable security.json path for this config.
+func (cfg APIConfig) securityStatePath() string {
+	if cfg.SecurityStatePath != "" {
+		return cfg.SecurityStatePath
+	}
+	return DefaultSecurityStatePath
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
