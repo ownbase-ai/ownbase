@@ -492,6 +492,9 @@ func checkupFindings(base string, body []byte, snap release.Snapshot) []checkupF
 			scannedAt, _ := vulns["scanned_at"].(string)
 			scanning, _ := vulns["scanning"].(bool)
 			lastPatchAt, _ := vulns["last_patch_at"].(string)
+			lastCoreRebuildAt, _ := vulns["last_core_rebuild_at"].(string)
+			lastCoreRebuildRecipe, _ := vulns["last_core_rebuild_recipe"].(string)
+			coreRecipe, _ := vulns["core_recipe"].(string)
 
 			switch {
 			case !trivyInstalled:
@@ -600,10 +603,15 @@ func checkupFindings(base string, body []byte, snap release.Snapshot) []checkupF
 					continue
 				}
 				if strings.HasPrefix(svc, "ownbase-core-") {
-					// Local-build daemons rebuild Caddy via upgrade --apply.
-					// Registry-pinned daemons only re-pull the same digest —
-					// they need self-update first to pick up the Dockerfile.
+					// Honest core-image findings: the button's number must be
+					// what the button changes (decisions.md). Rebuild uses the
+					// Dockerfile embedded in the running daemon.
 					imgRef, _ := img["image"].(string)
+					// Pre-rebuild counts (scan still older than last rebuild)
+					// must not drive a Rebuild row — same as post-patch.
+					if scanOlderThan(scannedAt, lastCoreRebuildAt) {
+						continue
+					}
 					if coreNeedsSelfUpdate(s, imgRef) {
 						findings = append(findings, checkupFinding{
 							Summary: fmt.Sprintf("%d CVE(s) with a patch in core image %q — daemon must self-update first", n, svc),
@@ -615,18 +623,43 @@ func checkupFindings(base string, body []byte, snap release.Snapshot) []checkupF
 								Confirm: "Replaces the OwnBase daemon with the latest signed release (~10s restart). Then use Rebuild Caddy (or upgrade --apply) so the hardened image is built.",
 							},
 						})
-					} else {
-						findings = append(findings, checkupFinding{
-							Summary: fmt.Sprintf("%d CVE(s) with a patch in core image %q", n, svc),
-							Fix:     "ownbasectl upgrade " + base + " --apply",
-							Action: checkupAction{
-								Kind:    actionRun,
-								Run:     "upgrade --apply",
-								Label:   "Rebuild Caddy",
-								Confirm: "Rebuilds the hardened Caddy image on this Base (downloads Go toolchains on first build) and restarts the proxy. Brief interruption to HTTPS.",
-							},
-						})
+						continue
 					}
+					// Same recipe already rebuilt and measured: prefer a newer
+					// OwnBase when available. Otherwise cool down briefly so a
+					// second click is not an instant no-op — but re-offer
+					// Rebuild after the cooldown (floating Go/alpine can move)
+					// or immediately when the daemon recipe changed (self-update).
+					if coreSameRecipeAlreadyMeasured(scannedAt, lastCoreRebuildAt, lastCoreRebuildRecipe, coreRecipe) {
+						if coreNewerOwnBaseAvailable(s, snap) && !cliBehindLatest(snap) {
+							findings = preferSelfUpdateFinding(findings, checkupFinding{
+								Summary: fmt.Sprintf("%d CVE(s) remain in core image %q after rebuild — a newer OwnBase may carry a fixed recipe", n, svc),
+								Fix:     "ownbasectl self-update " + base,
+								Action: checkupAction{
+									Kind:    actionRun,
+									Run:     "self-update",
+									Label:   "Update OwnBase",
+									Confirm: "Replaces the OwnBase daemon with the latest signed release (~10s restart). Then rebuild Caddy so the new recipe is applied.",
+								},
+							})
+							continue
+						}
+						if coreRebuildInCooldown(lastCoreRebuildAt) {
+							// Recent same-recipe rebuild already measured —
+							// nothing finishable until cooldown or a recipe change.
+							continue
+						}
+					}
+					findings = append(findings, checkupFinding{
+						Summary: fmt.Sprintf("%d CVE(s) with a patch in core image %q", n, svc),
+						Fix:     "ownbasectl upgrade " + base + " --apply",
+						Action: checkupAction{
+							Kind:    actionRun,
+							Run:     "upgrade --apply",
+							Label:   "Rebuild Caddy",
+							Confirm: "Rebuilds the hardened Caddy image on this Base (pulls current Go patch + alpine packages) and restarts the proxy. Brief interruption to HTTPS.",
+						},
+					})
 					continue
 				}
 				// User services: deploy a newer ref only when that ref would
@@ -863,6 +896,67 @@ func coreNeedsSelfUpdate(status map[string]any, imageRef string) bool {
 	}
 	// No version + still a registry (or unknown) image → migration required.
 	return true
+}
+
+// coreRebuildCooldown is how long Overview withholds Rebuild after a same-recipe
+// rebuild whose post-scan still showed fixable CVEs. Long enough to stop an
+// instant second click; short enough that a later floating Go/alpine move is
+// still one button away. Recipe changes (self-update) bypass this entirely.
+const coreRebuildCooldown = 24 * time.Hour
+
+// coreSameRecipeAlreadyMeasured is true when the running daemon's recipe is
+// the one last rebuilt, and a scan at-or-after that rebuild is available.
+// A different core_recipe (self-update) means Rebuild can apply a new recipe
+// immediately even if last_core_rebuild_at is recent.
+func coreSameRecipeAlreadyMeasured(scannedAt, lastCoreRebuildAt, lastRecipe, currentRecipe string) bool {
+	if lastCoreRebuildAt == "" || scannedAt == "" {
+		return false
+	}
+	if lastRecipe == "" || currentRecipe == "" || lastRecipe != currentRecipe {
+		return false
+	}
+	// scanOlderThan is true when scanned < stamp. Measured means the opposite.
+	return !scanOlderThan(scannedAt, lastCoreRebuildAt)
+}
+
+// coreRebuildInCooldown reports whether lastCoreRebuildAt is within the
+// same-recipe cooldown window.
+func coreRebuildInCooldown(lastCoreRebuildAt string) bool {
+	t, err := parseStatusTime(lastCoreRebuildAt)
+	if err != nil {
+		return false
+	}
+	return time.Since(t) < coreRebuildCooldown
+}
+
+// coreNewerOwnBaseAvailable reports whether the release manifest lists a
+// daemon newer than the one on this Base. Empty snap → false (unknown ≠ behind).
+func coreNewerOwnBaseAvailable(status map[string]any, snap release.Snapshot) bool {
+	daemonVer, _ := status["version"].(string)
+	daemon := release.Assess(release.ComponentDaemon, strings.TrimSpace(daemonVer), snap.LatestOf(release.ComponentDaemon))
+	return daemon.Status == release.StatusBehind
+}
+
+// cliBehindLatest mirrors versionFindings' CLI-first gate so core findings
+// never offer self-update while the CLI itself is stale.
+func cliBehindLatest(snap release.Snapshot) bool {
+	cli := release.Assess(release.ComponentCLI, version, snap.LatestOf(release.ComponentCLI))
+	return cli.Status == release.StatusBehind
+}
+
+// preferSelfUpdateFinding upgrades an existing self-update finding's summary
+// to the more specific CVE-motivated copy, or appends when none exists yet.
+// Avoids two "Update OwnBase" buttons when versionFindings already emitted one.
+func preferSelfUpdateFinding(findings []checkupFinding, f checkupFinding) []checkupFinding {
+	for i := range findings {
+		if findings[i].Action.Run == "self-update" {
+			findings[i].Summary = f.Summary
+			findings[i].Fix = f.Fix
+			findings[i].Action = f.Action
+			return findings
+		}
+	}
+	return append(findings, f)
 }
 
 // scanIsStale reports whether a scanned_at timestamp is older than

@@ -436,6 +436,81 @@ func TestAPI_CoreStatus_401WithoutToken(t *testing.T) {
 	}
 }
 
+func TestAPI_Upgrade_StampsLastCoreRebuildAt(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "security.json")
+	srv := explain.NewStatusServer()
+	mux := http.NewServeMux()
+	mux.Handle("/status", srv.Handler("test-api-token"))
+	var upgraded bool
+	explain.MountAPI(mux, explain.APIConfig{
+		StatusSrv:         srv,
+		SecurityStatePath: statePath,
+		CoreRecipe:        func() string { return "testhash12ab" },
+		UpgradeCore: func(w io.Writer) error {
+			upgraded = true
+			fmt.Fprintln(w, "built")
+			return nil
+		},
+		TriggerScan: func() bool { return true },
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	resp := authedPost(t, ts, "/upgrade", "")
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d: %s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "---OK---") {
+		t.Fatalf("missing ---OK---: %s", body)
+	}
+	if !upgraded {
+		t.Fatal("UpgradeCore not called")
+	}
+	st := explain.LoadSecurityState(statePath)
+	if st.LastCoreRebuildAt.IsZero() {
+		t.Fatal("last_core_rebuild_at not stamped on disk")
+	}
+	if st.LastCoreRebuildRecipe != "testhash12ab" {
+		t.Fatalf("last_core_rebuild_recipe = %q, want testhash12ab", st.LastCoreRebuildRecipe)
+	}
+	got := srv.Get()
+	if got.Security.Vulns.LastCoreRebuildAt.IsZero() {
+		t.Fatal("last_core_rebuild_at not stamped on StatusServer")
+	}
+	if got.Security.Vulns.LastCoreRebuildRecipe != "testhash12ab" {
+		t.Fatalf("StatusServer recipe = %q", got.Security.Vulns.LastCoreRebuildRecipe)
+	}
+}
+
+func TestAPI_Upgrade_FailureDoesNotStamp(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "security.json")
+	srv := explain.NewStatusServer()
+	mux := http.NewServeMux()
+	mux.Handle("/status", srv.Handler("test-api-token"))
+	explain.MountAPI(mux, explain.APIConfig{
+		StatusSrv:         srv,
+		SecurityStatePath: statePath,
+		UpgradeCore: func(w io.Writer) error {
+			return fmt.Errorf("build failed")
+		},
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	resp := authedPost(t, ts, "/upgrade", "")
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if strings.Contains(string(body), "---OK---") {
+		t.Fatalf("unexpected ---OK--- on failure: %s", body)
+	}
+	st := explain.LoadSecurityState(statePath)
+	if !st.LastCoreRebuildAt.IsZero() {
+		t.Fatal("failed upgrade must not stamp last_core_rebuild_at")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // /token/reset
 // ---------------------------------------------------------------------------

@@ -9,17 +9,27 @@ import (
 )
 
 // DefaultSecurityStatePath is where the daemon persists security-loop state
-// that must survive a reboot (last_patch_at) or trigger work on the next boot
-// (rescan_on_boot). Under /opt/ownbase/state, not runtime/ — the compiler is
-// the single writer of runtime/.
+// that must survive a reboot (last_patch_at, last_core_rebuild_at) or trigger
+// work on the next boot (rescan_on_boot). Under /opt/ownbase/state, not
+// runtime/ — the compiler is the single writer of runtime/.
 const DefaultSecurityStatePath = "/opt/ownbase/state/security.json"
 
-// SecurityState is durable daemon state for the host-patching loop.
+// SecurityState is durable daemon state for the host-patching and core-rebuild
+// loops.
 type SecurityState struct {
 	// LastPatchAt is when /security/fix last finished successfully.
 	// Used by checkup to suppress "Apply patches" while counts are still
 	// pre-patch (scanned_at < last_patch_at).
 	LastPatchAt time.Time `json:"last_patch_at,omitempty"`
+	// LastCoreRebuildAt is when POST /upgrade last finished successfully.
+	// Used by checkup to suppress "Rebuild Caddy" while counts are still
+	// pre-rebuild, and (with LastCoreRebuildRecipe) to cool down repeated
+	// rebuilds of the same recipe.
+	LastCoreRebuildAt time.Time `json:"last_core_rebuild_at,omitempty"`
+	// LastCoreRebuildRecipe is the embedded Dockerfile hash at the last
+	// successful rebuild. When it differs from the running daemon's recipe
+	// (e.g. after self-update), Rebuild is offered again immediately.
+	LastCoreRebuildRecipe string `json:"last_core_rebuild_recipe,omitempty"`
 	// RescanOnBoot, when true, tells the next daemon start to run a CVE scan
 	// immediately instead of waiting the normal 5-minute startup delay.
 	// Set by /security/reboot; cleared after the scan is triggered.
@@ -64,6 +74,16 @@ func SaveSecurityState(path string, st SecurityState) error {
 func MarkPatched(path string) error {
 	st := LoadSecurityState(path)
 	st.LastPatchAt = time.Now().UTC()
+	return SaveSecurityState(path, st)
+}
+
+// MarkCoreRebuilt sets LastCoreRebuildAt and LastCoreRebuildRecipe and persists.
+// recipe is the short hash of the Dockerfile embedded in the daemon that just
+// ran the rebuild (empty is allowed for older callers/tests).
+func MarkCoreRebuilt(path, recipe string) error {
+	st := LoadSecurityState(path)
+	st.LastCoreRebuildAt = time.Now().UTC()
+	st.LastCoreRebuildRecipe = recipe
 	return SaveSecurityState(path, st)
 }
 

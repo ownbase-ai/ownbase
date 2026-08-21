@@ -47,7 +47,38 @@ func TestSecurityStateRoundTrip(t *testing.T) {
 
 func TestLoadSecurityStateMissing(t *testing.T) {
 	st := LoadSecurityState(filepath.Join(t.TempDir(), "nope.json"))
-	if !st.LastPatchAt.IsZero() || st.RescanOnBoot {
+	if !st.LastPatchAt.IsZero() || st.RescanOnBoot || !st.LastCoreRebuildAt.IsZero() {
 		t.Fatalf("missing file should yield zero state: %+v", st)
+	}
+}
+
+func TestMarkCoreRebuiltPreservesSiblings(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "security.json")
+
+	if err := MarkPatched(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := MarkRescanOnBoot(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := MarkCoreRebuilt(path, "abc123def456"); err != nil {
+		t.Fatal(err)
+	}
+	st := LoadSecurityState(path)
+	if st.LastCoreRebuildAt.IsZero() {
+		t.Fatal("LastCoreRebuildAt not set")
+	}
+	if st.LastCoreRebuildRecipe != "abc123def456" {
+		t.Fatalf("LastCoreRebuildRecipe = %q", st.LastCoreRebuildRecipe)
+	}
+	if st.LastPatchAt.IsZero() {
+		t.Fatal("MarkCoreRebuilt must preserve LastPatchAt")
+	}
+	if !st.RescanOnBoot {
+		t.Fatal("MarkCoreRebuilt must preserve RescanOnBoot")
+	}
+	if time.Since(st.LastCoreRebuildAt) > time.Minute {
+		t.Fatalf("LastCoreRebuildAt drifted: %v", st.LastCoreRebuildAt)
 	}
 }

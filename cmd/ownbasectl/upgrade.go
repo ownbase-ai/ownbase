@@ -52,10 +52,13 @@ User services are updated by editing ref: in ownbase.yaml and committing
 // corePackage is one entry from GET /core/status — the JSON shape ownbasectl
 // upgrade --json emits so the desktop app never parses human check output.
 type corePackage struct {
-	Name    string `json:"name"`
-	Image   string `json:"image"`
-	Digest  string `json:"digest"`
-	Running bool   `json:"running"`
+	Name        string `json:"name"`
+	Image       string `json:"image"`
+	Digest      string `json:"digest"`
+	Running     bool   `json:"running"`
+	Recipe      string `json:"recipe,omitempty"`
+	ImageRecipe string `json:"image_recipe,omitempty"`
+	GoImage     string `json:"go_image,omitempty"`
 }
 
 // runUpgradeCheck asks the Base's daemon for the state of the core packages
@@ -104,8 +107,20 @@ func runUpgradeCheck(base string, jsonOut bool) error {
 			hint = fmt.Sprintf("  (no digest pinned — run ownbasectl upgrade %s --apply to pin)", base)
 		}
 		fmt.Printf("%-10s  %-8s  %s%s\n", pkg.Name, status, imageRef, hint)
+		if pkg.GoImage != "" {
+			fmt.Printf("            go:     %s\n", pkg.GoImage)
+		}
+		if pkg.Recipe != "" {
+			recipeLine := pkg.Recipe
+			if pkg.ImageRecipe != "" && pkg.ImageRecipe != pkg.Recipe {
+				recipeLine = fmt.Sprintf("%s (image has %s — rebuild available)", pkg.Recipe, pkg.ImageRecipe)
+			} else if pkg.ImageRecipe == pkg.Recipe && pkg.Recipe != "" {
+				recipeLine = pkg.Recipe + " (matches image)"
+			}
+			fmt.Printf("            recipe: %s\n", recipeLine)
+		}
 	}
-	fmt.Printf("\nRun 'ownbasectl upgrade %s --apply' to pull new images and restart core containers.\n", base)
+	fmt.Printf("\nRun 'ownbasectl upgrade %s --apply' to rebuild the hardened Caddy image and restart it.\n", base)
 	fmt.Println("After upgrading, image CVEs refresh automatically (~5 min).")
 	return nil
 }
@@ -130,8 +145,9 @@ func runUpgradeApply(base string) error {
 	}
 
 	fmt.Println("About to upgrade the OwnBase core package (Caddy) on the Base:")
-	fmt.Println("  the daemon pulls the latest pinned image and restarts the")
-	fmt.Println("  reverse proxy container briefly.")
+	fmt.Println("  the daemon rebuilds the hardened image from its embedded")
+	fmt.Println("  Dockerfile (current Go patch + alpine packages) and restarts")
+	fmt.Println("  the reverse proxy briefly.")
 	fmt.Println()
 
 	client := &http.Client{Timeout: 15 * time.Minute}

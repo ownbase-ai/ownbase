@@ -2,21 +2,26 @@
 #
 # The official caddy:2.11.4-alpine image still ships:
 #   - alpine packages (curl, c-ares) with published fixes apk can apply
-#   - a caddy binary built with go1.26.3 that has fixable stdlib / x/text / grpc CVEs
+#   - a caddy binary built with an older Go that has fixable stdlib / x/text / grpc CVEs
 #
 # We rebuild the binary from the same Caddy tag with a current Go toolchain and
 # start from a fresh alpine with apk upgrade, so both layers clear.
+#
+# GO_IMAGE floats the patch within a pinned minor (1.26-alpine). podman build
+# --pull=newer picks up Go security patches without an OwnBase release. Bump
+# the minor deliberately when Caddy or OwnBase needs a newer Go line. Module
+# pins below still need a release when trivy reports fixable non-stdlib CVEs.
 
 ARG CADDY_VERSION=v2.11.4
-ARG GO_IMAGE=docker.io/library/golang:1.26.5-alpine
+ARG GO_IMAGE=docker.io/library/golang:1.26-alpine
 
 FROM ${GO_IMAGE} AS build
 ARG CADDY_VERSION
 RUN apk add --no-cache git ca-certificates
 WORKDIR /src
 RUN git clone --depth 1 --branch "${CADDY_VERSION}" https://github.com/caddyserver/caddy.git .
-# Building with Go 1.26.5 clears stdlib CVEs in the caddy binary. Bump
-# known-vulnerable module deps to patched releases the go.mod permits.
+# Build with the floating Go minor above. Bump known-vulnerable module deps
+# to patched releases the go.mod permits.
 WORKDIR /src
 RUN go get golang.org/x/text@v0.39.0 \
     && go get google.golang.org/grpc@v1.82.1 \

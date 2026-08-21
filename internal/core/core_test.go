@@ -157,3 +157,23 @@ func TestWithPreservedImageLine(t *testing.T) {
 		t.Fatalf("identical Image= must leave desired unchanged")
 	}
 }
+
+func TestRecipeHash_StableNonEmpty(t *testing.T) {
+	h := core.RecipeHash()
+	if len(h) != 12 {
+		t.Fatalf("RecipeHash len = %d, want 12: %q", len(h), h)
+	}
+	if h != core.RecipeHash() {
+		t.Fatal("RecipeHash must be stable")
+	}
+}
+
+func TestGoImage_FloatingMinor(t *testing.T) {
+	got := core.GoImage()
+	if !strings.Contains(got, "golang:1.26-alpine") {
+		t.Fatalf("GoImage = %q, want floating 1.26-alpine tag", got)
+	}
+	if strings.Contains(got, "1.26.") {
+		t.Fatalf("GoImage must float patch, not pin an exact patch: %q", got)
+	}
+}

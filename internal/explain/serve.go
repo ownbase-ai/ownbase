@@ -49,10 +49,10 @@ func NewStatusServer() *StatusServer {
 //     the caller assembled st; publishing st.Reboot as-is would wipe a
 //     just-raised SetReboot. The marker is two cheap stats, so sampling at
 //     publish time is the single source of truth.
-//   - Vulns.Scanning / ScanStartedAt / LastPatchAt are preserved from the
-//     previous cache (or merged with st when st carries a fresher value) so a
-//     full Gather push cannot clear an in-flight scan or the durable
-//     last_patch_at stamp.
+//   - Vulns.Scanning / ScanStartedAt / LastPatchAt / LastCoreRebuildAt /
+//     LastCoreRebuildRecipe / CoreRecipe are preserved from the previous cache
+//     (or merged with st when st carries a fresher value) so a full Gather push
+//     cannot clear an in-flight scan or the durable rebuild stamps.
 func (s *StatusServer) Update(st *BaseStatus) {
 	reboot := secwatch.GatherRebootRequired()
 	s.mu.Lock()
@@ -69,6 +69,15 @@ func (s *StatusServer) Update(st *BaseStatus) {
 	}
 	if st.Security.Vulns.LastPatchAt.IsZero() {
 		st.Security.Vulns.LastPatchAt = prev.LastPatchAt
+	}
+	if st.Security.Vulns.LastCoreRebuildAt.IsZero() {
+		st.Security.Vulns.LastCoreRebuildAt = prev.LastCoreRebuildAt
+	}
+	if st.Security.Vulns.LastCoreRebuildRecipe == "" {
+		st.Security.Vulns.LastCoreRebuildRecipe = prev.LastCoreRebuildRecipe
+	}
+	if st.Security.Vulns.CoreRecipe == "" {
+		st.Security.Vulns.CoreRecipe = prev.CoreRecipe
 	}
 	s.status = st
 	s.mu.Unlock()
@@ -130,6 +139,29 @@ func (s *StatusServer) SetLastPatchAt(t time.Time) {
 		return
 	}
 	s.status.Security.Vulns.LastPatchAt = t
+}
+
+// SetLastCoreRebuild stamps when POST /upgrade last finished and which recipe
+// produced the image. Safe for concurrent use.
+func (s *StatusServer) SetLastCoreRebuild(t time.Time, recipe string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.status == nil {
+		return
+	}
+	s.status.Security.Vulns.LastCoreRebuildAt = t
+	s.status.Security.Vulns.LastCoreRebuildRecipe = recipe
+}
+
+// SetCoreRecipe records the Dockerfile hash embedded in the running daemon.
+// Safe for concurrent use.
+func (s *StatusServer) SetCoreRecipe(recipe string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.status == nil {
+		return
+	}
+	s.status.Security.Vulns.CoreRecipe = recipe
 }
 
 // SetToken updates the Bearer token required for authenticated routes. An
