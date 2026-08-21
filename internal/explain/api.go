@@ -69,6 +69,10 @@ type APIConfig struct {
 	// (last_patch_at, last_core_rebuild_at, rescan_on_boot). Empty means
 	// DefaultSecurityStatePath. Tests override with a temp path.
 	SecurityStatePath string
+	// CoreRecipe, when non-nil, returns the short hash of the Dockerfile
+	// embedded in this daemon. Stamped onto last_core_rebuild_recipe after
+	// a successful /upgrade so checkup can tell recipe changes from no-ops.
+	CoreRecipe func() string
 	// GetConfig, when non-nil, returns the current contents of ownbase.yaml
 	// from the checkout. Called by GET /config — the read side of
 	// `ownbasectl config get`.
@@ -736,15 +740,19 @@ func MountAPI(mux *http.ServeMux, cfg APIConfig) {
 			return
 		}
 
-		// Stamp last_core_rebuild_at so checkup suppresses "Rebuild Caddy"
-		// while the post-rebuild scan is still in flight, and can detect a
-		// proven-ineffective rebuild (newer scan still shows fixable CVEs).
+		// Stamp last_core_rebuild_at (+ recipe) so checkup suppresses Rebuild
+		// while the post-rebuild scan is in flight, cools down same-recipe
+		// repeats, and re-offers Rebuild immediately after a recipe change.
 		rebuiltAt := time.Now().UTC()
-		if err := MarkCoreRebuilt(cfg.securityStatePath()); err != nil {
+		recipe := ""
+		if cfg.CoreRecipe != nil {
+			recipe = cfg.CoreRecipe()
+		}
+		if err := MarkCoreRebuilt(cfg.securityStatePath(), recipe); err != nil {
 			fmt.Fprintf(fw, "WARNING: persist last_core_rebuild_at: %v\n", err)
 		}
 		if cfg.StatusSrv != nil {
-			cfg.StatusSrv.SetLastCoreRebuildAt(rebuiltAt)
+			cfg.StatusSrv.SetLastCoreRebuild(rebuiltAt, recipe)
 		}
 
 		fmt.Fprintf(fw, "\n==> Done. Triggering vulnerability rescan...\n")

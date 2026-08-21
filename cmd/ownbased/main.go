@@ -455,6 +455,7 @@ func run(cfg agentConfig) error {
 				}
 				return nil
 			},
+			CoreRecipe: core.RecipeHash,
 			// CoreStatus reports the pinned image/digest and running state of
 			// the core package (Caddy) for `ownbasectl upgrade` (check-only).
 			CoreStatus: func() []explain.CorePackageStatus {
@@ -943,14 +944,15 @@ func run(cfg agentConfig) error {
 		}()
 	}
 
-	// Seed durable stamps so checkup can suppress stale Apply-patches /
-	// Rebuild-Caddy findings across daemon restarts.
+	// Seed durable stamps + current recipe so checkup can suppress stale
+	// Apply-patches / Rebuild-Caddy findings across daemon restarts.
+	statusSrv.SetCoreRecipe(core.RecipeHash())
 	if st := explain.LoadSecurityState(explain.DefaultSecurityStatePath); !st.LastPatchAt.IsZero() || !st.LastCoreRebuildAt.IsZero() {
 		if !st.LastPatchAt.IsZero() {
 			statusSrv.SetLastPatchAt(st.LastPatchAt)
 		}
 		if !st.LastCoreRebuildAt.IsZero() {
-			statusSrv.SetLastCoreRebuildAt(st.LastCoreRebuildAt)
+			statusSrv.SetLastCoreRebuild(st.LastCoreRebuildAt, st.LastCoreRebuildRecipe)
 		}
 	}
 
@@ -1031,12 +1033,18 @@ func run(cfg agentConfig) error {
 			// Carry durable/in-flight metadata that GatherVulns does not set.
 			result.LastPatchAt = lastVulnStatus.LastPatchAt
 			result.LastCoreRebuildAt = lastVulnStatus.LastCoreRebuildAt
+			result.LastCoreRebuildRecipe = lastVulnStatus.LastCoreRebuildRecipe
+			result.CoreRecipe = lastVulnStatus.CoreRecipe
+			if result.CoreRecipe == "" {
+				result.CoreRecipe = core.RecipeHash()
+			}
 			if st := explain.LoadSecurityState(explain.DefaultSecurityStatePath); !st.LastPatchAt.IsZero() || !st.LastCoreRebuildAt.IsZero() {
 				if !st.LastPatchAt.IsZero() {
 					result.LastPatchAt = st.LastPatchAt
 				}
 				if !st.LastCoreRebuildAt.IsZero() {
 					result.LastCoreRebuildAt = st.LastCoreRebuildAt
+					result.LastCoreRebuildRecipe = st.LastCoreRebuildRecipe
 				}
 			}
 			lastVulnStatus = result

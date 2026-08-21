@@ -846,9 +846,9 @@ func TestCheckupFindings_CoreSuppressesWhileRescanPending(t *testing.T) {
 	}
 }
 
-// Rebuild already ran and a newer scan still shows fixable CVEs; daemon is
-// current → no Overview action (Security-tab reading only).
-func TestCheckupFindings_CoreProvenIneffectiveDaemonCurrent(t *testing.T) {
+// Same-recipe rebuild already measured, daemon current, within cooldown →
+// no Overview action (avoids an instant no-op second click).
+func TestCheckupFindings_CoreSameRecipeCooldownSuppresses(t *testing.T) {
 	rebuilt := time.Now().UTC().Add(-20 * time.Minute).Format(time.RFC3339)
 	scanned := time.Now().UTC().Format(time.RFC3339)
 	body := []byte(`{
@@ -861,6 +861,8 @@ func TestCheckupFindings_CoreProvenIneffectiveDaemonCurrent(t *testing.T) {
 				"trivy_installed": true,
 				"scanned_at": "` + scanned + `",
 				"last_core_rebuild_at": "` + rebuilt + `",
+				"last_core_rebuild_recipe": "samehash0001",
+				"core_recipe": "samehash0001",
 				"host": {"critical": 0, "high": 0},
 				"images": [{
 					"service": "ownbase-core-caddy",
@@ -870,18 +872,79 @@ func TestCheckupFindings_CoreProvenIneffectiveDaemonCurrent(t *testing.T) {
 			}
 		}
 	}`)
-	// Empty snap → no "newer OwnBase"; daemon current → no finding.
 	findings := checkupFindings("mybase", body, release.Snapshot{})
 	for _, f := range findings {
 		if strings.Contains(f.Summary, "core image") || f.Action.Run == "upgrade --apply" || f.Action.Run == "self-update" {
-			t.Fatalf("proven-ineffective + current daemon must not offer a run action, got %+v", f)
+			t.Fatalf("same-recipe cooldown must not offer a run action, got %+v", f)
 		}
 	}
 }
 
-// Rebuild proven ineffective but a newer OwnBase exists → Update OwnBase
-// (with CVE-motivated summary), not Rebuild Caddy.
-func TestCheckupFindings_CoreProvenIneffectiveOffersSelfUpdate(t *testing.T) {
+// After cooldown, same recipe still offers Rebuild (floating Go/alpine may move).
+func TestCheckupFindings_CoreSameRecipeAfterCooldownOffersRebuild(t *testing.T) {
+	rebuilt := time.Now().UTC().Add(-25 * time.Hour).Format(time.RFC3339)
+	scanned := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339)
+	body := []byte(`{
+		"config": {"repo_url": "git@example.com/x.git"},
+		"version": "v0.5.1",
+		"security": {
+			"backup_restorable": true,
+			"vulns": {
+				"available": true,
+				"trivy_installed": true,
+				"scanned_at": "` + scanned + `",
+				"last_core_rebuild_at": "` + rebuilt + `",
+				"last_core_rebuild_recipe": "samehash0001",
+				"core_recipe": "samehash0001",
+				"host": {"critical": 0, "high": 0},
+				"images": [{
+					"service": "ownbase-core-caddy",
+					"image": "localhost/ownbase-core-caddy:local",
+					"summary": {"critical": 0, "high": 2, "fixable_critical": 0, "fixable_high": 2}
+				}]
+			}
+		}
+	}`)
+	findings := checkupFindings("mybase", body, release.Snapshot{})
+	if len(findings) != 1 || findings[0].Action.Run != "upgrade --apply" {
+		t.Fatalf("after cooldown want Rebuild, got %+v", findings)
+	}
+}
+
+// Recipe changed since last rebuild (self-update) → Rebuild immediately,
+// even inside the cooldown window.
+func TestCheckupFindings_CoreRecipeChangedOffersRebuild(t *testing.T) {
+	rebuilt := time.Now().UTC().Add(-20 * time.Minute).Format(time.RFC3339)
+	scanned := time.Now().UTC().Format(time.RFC3339)
+	body := []byte(`{
+		"config": {"repo_url": "git@example.com/x.git"},
+		"version": "v0.5.1",
+		"security": {
+			"backup_restorable": true,
+			"vulns": {
+				"available": true,
+				"trivy_installed": true,
+				"scanned_at": "` + scanned + `",
+				"last_core_rebuild_at": "` + rebuilt + `",
+				"last_core_rebuild_recipe": "oldhash000001",
+				"core_recipe": "newhash000001",
+				"host": {"critical": 0, "high": 0},
+				"images": [{
+					"service": "ownbase-core-caddy",
+					"image": "localhost/ownbase-core-caddy:local",
+					"summary": {"critical": 0, "high": 2, "fixable_critical": 0, "fixable_high": 2}
+				}]
+			}
+		}
+	}`)
+	findings := checkupFindings("mybase", body, release.Snapshot{})
+	if len(findings) != 1 || findings[0].Action.Run != "upgrade --apply" {
+		t.Fatalf("recipe change must offer Rebuild immediately, got %+v", findings)
+	}
+}
+
+// Same-recipe rebuild measured + newer OwnBase → Update OwnBase (not Rebuild).
+func TestCheckupFindings_CoreSameRecipeOffersSelfUpdateWhenNewer(t *testing.T) {
 	orig := version
 	version = "v0.5.1"
 	t.Cleanup(func() { version = orig })
@@ -898,6 +961,8 @@ func TestCheckupFindings_CoreProvenIneffectiveOffersSelfUpdate(t *testing.T) {
 				"trivy_installed": true,
 				"scanned_at": "` + scanned + `",
 				"last_core_rebuild_at": "` + rebuilt + `",
+				"last_core_rebuild_recipe": "samehash0001",
+				"core_recipe": "samehash0001",
 				"host": {"critical": 0, "high": 0},
 				"images": [{
 					"service": "ownbase-core-caddy",
@@ -926,7 +991,7 @@ func TestCheckupFindings_CoreProvenIneffectiveOffersSelfUpdate(t *testing.T) {
 			selfUpdate = &findings[i]
 		}
 		if findings[i].Action.Run == "upgrade --apply" {
-			t.Fatalf("must not offer Rebuild after proven-ineffective rebuild: %+v", findings[i])
+			t.Fatalf("must not offer Rebuild when newer OwnBase exists: %+v", findings[i])
 		}
 	}
 	if selfUpdate == nil {

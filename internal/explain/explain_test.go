@@ -484,7 +484,8 @@ func TestStatusServer_Update_ReflectsImmediately(t *testing.T) {
 func TestStatusServer_PreservesLastCoreRebuildAt(t *testing.T) {
 	srv := explain.NewStatusServer()
 	rebuilt := time.Now().UTC().Truncate(time.Second)
-	srv.SetLastCoreRebuildAt(rebuilt)
+	srv.SetLastCoreRebuild(rebuilt, "recipehash01")
+	srv.SetCoreRecipe("recipehash01")
 
 	// A full Update with zero LastCoreRebuildAt must not wipe the stamp.
 	st := explain.Gather(explain.GatherInput{
@@ -492,9 +493,15 @@ func TestStatusServer_PreservesLastCoreRebuildAt(t *testing.T) {
 	})
 	srv.Update(st)
 
-	got := srv.Get().Security.Vulns.LastCoreRebuildAt
-	if !got.Equal(rebuilt) {
-		t.Fatalf("LastCoreRebuildAt = %v, want %v", got, rebuilt)
+	v := srv.Get().Security.Vulns
+	if !v.LastCoreRebuildAt.Equal(rebuilt) {
+		t.Fatalf("LastCoreRebuildAt = %v, want %v", v.LastCoreRebuildAt, rebuilt)
+	}
+	if v.LastCoreRebuildRecipe != "recipehash01" {
+		t.Fatalf("LastCoreRebuildRecipe = %q", v.LastCoreRebuildRecipe)
+	}
+	if v.CoreRecipe != "recipehash01" {
+		t.Fatalf("CoreRecipe = %q", v.CoreRecipe)
 	}
 }
 

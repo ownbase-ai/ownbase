@@ -62,12 +62,15 @@ func TestMarkCoreRebuiltPreservesSiblings(t *testing.T) {
 	if err := MarkRescanOnBoot(path); err != nil {
 		t.Fatal(err)
 	}
-	if err := MarkCoreRebuilt(path); err != nil {
+	if err := MarkCoreRebuilt(path, "abc123def456"); err != nil {
 		t.Fatal(err)
 	}
 	st := LoadSecurityState(path)
 	if st.LastCoreRebuildAt.IsZero() {
 		t.Fatal("LastCoreRebuildAt not set")
+	}
+	if st.LastCoreRebuildRecipe != "abc123def456" {
+		t.Fatalf("LastCoreRebuildRecipe = %q", st.LastCoreRebuildRecipe)
 	}
 	if st.LastPatchAt.IsZero() {
 		t.Fatal("MarkCoreRebuilt must preserve LastPatchAt")

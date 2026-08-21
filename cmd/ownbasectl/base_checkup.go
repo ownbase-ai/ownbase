@@ -493,6 +493,8 @@ func checkupFindings(base string, body []byte, snap release.Snapshot) []checkupF
 			scanning, _ := vulns["scanning"].(bool)
 			lastPatchAt, _ := vulns["last_patch_at"].(string)
 			lastCoreRebuildAt, _ := vulns["last_core_rebuild_at"].(string)
+			lastCoreRebuildRecipe, _ := vulns["last_core_rebuild_recipe"].(string)
+			coreRecipe, _ := vulns["core_recipe"].(string)
 
 			switch {
 			case !trivyInstalled:
@@ -603,8 +605,7 @@ func checkupFindings(base string, body []byte, snap release.Snapshot) []checkupF
 				if strings.HasPrefix(svc, "ownbase-core-") {
 					// Honest core-image findings: the button's number must be
 					// what the button changes (decisions.md). Rebuild uses the
-					// Dockerfile embedded in the running daemon — it cannot
-					// exceed that recipe.
+					// Dockerfile embedded in the running daemon.
 					imgRef, _ := img["image"].(string)
 					// Pre-rebuild counts (scan still older than last rebuild)
 					// must not drive a Rebuild row — same as post-patch.
@@ -624,11 +625,12 @@ func checkupFindings(base string, body []byte, snap release.Snapshot) []checkupF
 						})
 						continue
 					}
-					// Rebuild already ran and a newer scan still shows fixable
-					// CVEs → Rebuild is a proven no-op. Offer self-update only
-					// when a newer OwnBase exists (and the CLI is not itself
-					// behind — same CLI-first rule as versionFindings).
-					if coreRebuildProvenIneffective(scannedAt, lastCoreRebuildAt) {
+					// Same recipe already rebuilt and measured: prefer a newer
+					// OwnBase when available. Otherwise cool down briefly so a
+					// second click is not an instant no-op — but re-offer
+					// Rebuild after the cooldown (floating Go/alpine can move)
+					// or immediately when the daemon recipe changed (self-update).
+					if coreSameRecipeAlreadyMeasured(scannedAt, lastCoreRebuildAt, lastCoreRebuildRecipe, coreRecipe) {
 						if coreNewerOwnBaseAvailable(s, snap) && !cliBehindLatest(snap) {
 							findings = preferSelfUpdateFinding(findings, checkupFinding{
 								Summary: fmt.Sprintf("%d CVE(s) remain in core image %q after rebuild — a newer OwnBase may carry a fixed recipe", n, svc),
@@ -640,10 +642,13 @@ func checkupFindings(base string, body []byte, snap release.Snapshot) []checkupF
 									Confirm: "Replaces the OwnBase daemon with the latest signed release (~10s restart). Then rebuild Caddy so the new recipe is applied.",
 								},
 							})
+							continue
 						}
-						// Daemon already current (or CLI-first): Security-tab
-						// reading only — nothing Overview can finish.
-						continue
+						if coreRebuildInCooldown(lastCoreRebuildAt) {
+							// Recent same-recipe rebuild already measured —
+							// nothing finishable until cooldown or a recipe change.
+							continue
+						}
 					}
 					findings = append(findings, checkupFinding{
 						Summary: fmt.Sprintf("%d CVE(s) with a patch in core image %q", n, svc),
@@ -893,16 +898,35 @@ func coreNeedsSelfUpdate(status map[string]any, imageRef string) bool {
 	return true
 }
 
-// coreRebuildProvenIneffective is true when a rebuild finished and a scan
-// strictly after that stamp still reports fixable core CVEs. Rebuild would
-// re-run the same recipe and cannot move the number.
-func coreRebuildProvenIneffective(scannedAt, lastCoreRebuildAt string) bool {
-	if lastCoreRebuildAt == "" {
+// coreRebuildCooldown is how long Overview withholds Rebuild after a same-recipe
+// rebuild whose post-scan still showed fixable CVEs. Long enough to stop an
+// instant second click; short enough that a later floating Go/alpine move is
+// still one button away. Recipe changes (self-update) bypass this entirely.
+const coreRebuildCooldown = 24 * time.Hour
+
+// coreSameRecipeAlreadyMeasured is true when the running daemon's recipe is
+// the one last rebuilt, and a scan at-or-after that rebuild is available.
+// A different core_recipe (self-update) means Rebuild can apply a new recipe
+// immediately even if last_core_rebuild_at is recent.
+func coreSameRecipeAlreadyMeasured(scannedAt, lastCoreRebuildAt, lastRecipe, currentRecipe string) bool {
+	if lastCoreRebuildAt == "" || scannedAt == "" {
 		return false
 	}
-	// scanOlderThan is true when scanned < stamp. Ineffective means the
-	// opposite: scanned is at-or-after the rebuild.
-	return !scanOlderThan(scannedAt, lastCoreRebuildAt) && scannedAt != ""
+	if lastRecipe == "" || currentRecipe == "" || lastRecipe != currentRecipe {
+		return false
+	}
+	// scanOlderThan is true when scanned < stamp. Measured means the opposite.
+	return !scanOlderThan(scannedAt, lastCoreRebuildAt)
+}
+
+// coreRebuildInCooldown reports whether lastCoreRebuildAt is within the
+// same-recipe cooldown window.
+func coreRebuildInCooldown(lastCoreRebuildAt string) bool {
+	t, err := parseStatusTime(lastCoreRebuildAt)
+	if err != nil {
+		return false
+	}
+	return time.Since(t) < coreRebuildCooldown
 }
 
 // coreNewerOwnBaseAvailable reports whether the release manifest lists a

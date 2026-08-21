@@ -133,4 +133,13 @@ type VulnStatus struct {
 	// Durable via security.json. When ScannedAt is older than this, core-image
 	// CVE counts are pre-rebuild and must not drive a "Rebuild Caddy" finding.
 	LastCoreRebuildAt time.Time `json:"last_core_rebuild_at,omitempty"`
+
+	// LastCoreRebuildRecipe is the embedded Dockerfile hash stamped at the
+	// last successful rebuild. Compared to CoreRecipe to detect self-update
+	// (new recipe → Rebuild is available immediately).
+	LastCoreRebuildRecipe string `json:"last_core_rebuild_recipe,omitempty"`
+
+	// CoreRecipe is the short hash of the Dockerfile embedded in the running
+	// daemon. Set by the status server, not by GatherVulns.
+	CoreRecipe string `json:"core_recipe,omitempty"`
 }

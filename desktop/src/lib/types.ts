@@ -406,6 +406,10 @@ export interface VulnStatus {
   last_patch_at?: string;
   /** When POST /upgrade last finished; core-image counts older than this are pre-rebuild. */
   last_core_rebuild_at?: string;
+  /** Dockerfile hash stamped at last rebuild. */
+  last_core_rebuild_recipe?: string;
+  /** Dockerfile hash embedded in the running daemon. */
+  core_recipe?: string;
 }
 
 /** internal/vulnscan.VulnSummary */

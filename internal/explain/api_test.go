@@ -445,6 +445,7 @@ func TestAPI_Upgrade_StampsLastCoreRebuildAt(t *testing.T) {
 	explain.MountAPI(mux, explain.APIConfig{
 		StatusSrv:         srv,
 		SecurityStatePath: statePath,
+		CoreRecipe:        func() string { return "testhash12ab" },
 		UpgradeCore: func(w io.Writer) error {
 			upgraded = true
 			fmt.Fprintln(w, "built")
@@ -471,9 +472,15 @@ func TestAPI_Upgrade_StampsLastCoreRebuildAt(t *testing.T) {
 	if st.LastCoreRebuildAt.IsZero() {
 		t.Fatal("last_core_rebuild_at not stamped on disk")
 	}
+	if st.LastCoreRebuildRecipe != "testhash12ab" {
+		t.Fatalf("last_core_rebuild_recipe = %q, want testhash12ab", st.LastCoreRebuildRecipe)
+	}
 	got := srv.Get()
 	if got.Security.Vulns.LastCoreRebuildAt.IsZero() {
 		t.Fatal("last_core_rebuild_at not stamped on StatusServer")
+	}
+	if got.Security.Vulns.LastCoreRebuildRecipe != "testhash12ab" {
+		t.Fatalf("StatusServer recipe = %q", got.Security.Vulns.LastCoreRebuildRecipe)
 	}
 }
 
