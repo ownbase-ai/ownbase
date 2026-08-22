@@ -45,8 +45,16 @@ for arch in amd64 arm64; do
       exit 1
     fi
     echo "==> s3://$RELEASES_BUCKET/daemon/${TAG}/$f"
-    aws s3 cp "$src" "s3://${RELEASES_BUCKET}/daemon/${TAG}/${f}" "${endpoint_flag[@]}"
-    aws s3 cp "$src" "s3://${RELEASES_BUCKET}/daemon/latest/${f}" "${endpoint_flag[@]}"
+    # Versioned objects are immutable — long cache is fine.
+    aws s3 cp "$src" "s3://${RELEASES_BUCKET}/daemon/${TAG}/${f}" \
+      --cache-control "public, max-age=31536000, immutable" \
+      "${endpoint_flag[@]}"
+    # /daemon/latest/ is a moving pointer. Keep CDN TTL short so a just-cut
+    # release is not shadowed by a stale edge object (self-update prefers the
+    # versioned path via latest.json, but install.sh still hits latest/).
+    aws s3 cp "$src" "s3://${RELEASES_BUCKET}/daemon/latest/${f}" \
+      --cache-control "public, max-age=60" \
+      "${endpoint_flag[@]}"
   done
 done
 

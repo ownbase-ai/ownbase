@@ -8,6 +8,7 @@ package selfupdate
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -119,9 +120,22 @@ func Apply(ctx context.Context, opts Options) (Result, error) {
 	if version == "" {
 		version = "latest"
 	}
-	// A pin that already matches is a no-op — except "latest", which always
-	// re-pulls so a Base can catch up without knowing the newest tag.
-	if version != "latest" && opts.CurrentVersion != "" && opts.CurrentVersion == version {
+	base := opts.releaseBase()
+
+	// "latest" is a moving pointer under CDN cache. Resolve it through
+	// latest.json (max-age=300) to a concrete tag, then fetch the immutable
+	// versioned object. That is what keeps a Base from installing a stale
+	// /daemon/latest/ binary while the manifest already advertises a newer tag.
+	if version == "latest" {
+		tag, err := resolveLatestDaemon(ctx, base)
+		if err != nil {
+			return Result{}, err
+		}
+		opts.logf("==> Latest release is %s", tag)
+		version = tag
+	}
+
+	if opts.CurrentVersion != "" && opts.CurrentVersion == version {
 		opts.logf("==> Already running %s — nothing to do", version)
 		return Result{Updated: false, From: opts.CurrentVersion, To: version}, nil
 	}
@@ -130,14 +144,8 @@ func Apply(ctx context.Context, opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	base := opts.releaseBase()
-	var url, sigURL string
-	if version == "latest" {
-		url = fmt.Sprintf("%s/latest/ownbased-linux-%s", base, arch)
-	} else {
-		url = fmt.Sprintf("%s/%s/ownbased-linux-%s", base, version, arch)
-	}
-	sigURL = url + ".minisig"
+	url := fmt.Sprintf("%s/%s/ownbased-linux-%s", base, version, arch)
+	sigURL := url + ".minisig"
 
 	tmpdir, err := os.MkdirTemp("", "ownbase-selfupdate-*")
 	if err != nil {
@@ -184,6 +192,49 @@ func Apply(ctx context.Context, opts Options) (Result, error) {
 		To:             toVersion,
 		RestartPending: true,
 	}, nil
+}
+
+// resolveLatestDaemon reads {origin}/latest.json and returns components.daemon.version.
+// releaseBase is the …/daemon prefix; the manifest lives one level up.
+func resolveLatestDaemon(ctx context.Context, releaseBase string) (string, error) {
+	origin := strings.TrimRight(releaseBase, "/")
+	if strings.HasSuffix(origin, "/daemon") {
+		origin = strings.TrimSuffix(origin, "/daemon")
+	}
+	url := origin + "/latest.json"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("fetch %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("fetch %s: HTTP %d", url, resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", url, err)
+	}
+	var doc struct {
+		Components map[string]struct {
+			Version string `json:"version"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return "", fmt.Errorf("parse %s: %w", url, err)
+	}
+	tag := strings.TrimSpace(doc.Components["daemon"].Version)
+	if tag == "" {
+		return "", fmt.Errorf("%s: components.daemon.version missing", url)
+	}
+	if !strings.HasPrefix(tag, "v") {
+		return "", fmt.Errorf("%s: components.daemon.version %q is not a release tag", url, tag)
+	}
+	return tag, nil
 }
 
 func download(ctx context.Context, url, dest string) error {
