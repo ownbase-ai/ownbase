@@ -214,3 +214,24 @@ func TestReportNeedsAttention(t *testing.T) {
 		t.Error("skew should need attention")
 	}
 }
+
+func TestSelfUpdateRun_prefersNewerPin(t *testing.T) {
+	// Stale manifest at v0.5.4, CLI already on v0.5.5 → pin to CLI.
+	snap := release.Snapshot{
+		Manifest: release.Manifest{
+			Schema: 1,
+			Components: map[string]release.ComponentVersion{
+				"daemon": {Version: "v0.5.4"},
+			},
+		},
+	}
+	got := selfUpdateRun(snap, "v0.5.5")
+	if got != "self-update --version v0.5.5" {
+		t.Fatalf("got %q", got)
+	}
+	// Manifest newer than pin → keep manifest.
+	got = selfUpdateRun(snap, "v0.5.0")
+	if got != "self-update --version v0.5.4" {
+		t.Fatalf("got %q", got)
+	}
+}

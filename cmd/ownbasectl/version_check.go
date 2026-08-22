@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ownbase/ownbase/internal/release"
+	"github.com/ownbase/ownbase/internal/update"
 )
 
 // fetchReleaseSnapshot loads the release manifest (cached). Soft-fails: an
@@ -234,14 +235,25 @@ func versionFindings(base, daemonVer string, snap release.Snapshot) []checkupFin
 // Prefer an explicit --version tag so the Base fetches the immutable
 // …/daemon/vX.Y.Z/ object. The bare "self-update" form still hits
 // /daemon/latest/, which CloudFront can serve stale after a release.
+//
+// When both the release manifest and pin are known, take the newer tag so a
+// 24h-stale checkup cache cannot pin below a just-upgraded CLI.
 func selfUpdateRun(snap release.Snapshot, pin string) string {
-	if v := strings.TrimSpace(snap.LatestOf(release.ComponentDaemon)); v != "" {
-		return "self-update --version " + v
+	manifest := release.NormalizeTag(snap.LatestOf(release.ComponentDaemon))
+	pinned := release.NormalizeTag(pin)
+	switch {
+	case manifest != "" && pinned != "":
+		if update.CompareVersionTags(pinned, manifest) > 0 {
+			return "self-update --version " + pinned
+		}
+		return "self-update --version " + manifest
+	case manifest != "":
+		return "self-update --version " + manifest
+	case pinned != "":
+		return "self-update --version " + pinned
+	default:
+		return "self-update"
 	}
-	if p := strings.TrimSpace(pin); p != "" && release.IsReleaseTag(p) {
-		return "self-update --version " + p
-	}
-	return "self-update"
 }
 
 // selfUpdateFix is the human CLI line matching selfUpdateRun.
