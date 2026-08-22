@@ -514,13 +514,23 @@ function FindingRow({
       return;
     }
 
+    // self-update may pin a concrete tag ("self-update --version v0.5.5") so
+    // the Base downloads the immutable versioned object instead of CDN-cached
+    // /daemon/latest/, which can lag the release manifest.
+    if (action.run === "self-update" || action.run.startsWith("self-update --version ")) {
+      const ver = action.run.startsWith("self-update --version ")
+        ? action.run.slice("self-update --version ".length).trim() || "latest"
+        : "latest";
+      finishStream(api.selfUpdate(base, onEvent, ver));
+      return;
+    }
+
     const streamers: Record<string, () => { done: Promise<number> }> = {
       "security fix": () => api.securityFix(base, onEvent),
       "security fix --reboot": () => api.securityFix(base, onEvent, { reboot: true }),
       "security reboot": () => api.securityReboot(base, onEvent),
       "security reboot --wait": () => api.securityReboot(base, onEvent, { wait: true }),
       "security install-scanner": () => api.installScanner(base, onEvent),
-      "self-update": () => api.selfUpdate(base, onEvent),
       "upgrade --apply": () => api.upgradeApply(base, onEvent),
     };
     const start = streamers[action.run];

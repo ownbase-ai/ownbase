@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ownbase/ownbase/internal/release"
+	"github.com/ownbase/ownbase/internal/update"
 )
 
 // fetchReleaseSnapshot loads the release manifest (cached). Soft-fails: an
@@ -197,12 +198,15 @@ func versionFindings(base, daemonVer string, snap release.Snapshot) []checkupFin
 	}
 
 	if skew != nil && skew.Direction == "cli_ahead" {
+		// Pin a concrete tag when we know one (manifest or this CLI). Avoids
+		// the CDN-cached /daemon/latest/ path, which can lag the manifest.
+		run := selfUpdateRun(snap, version)
 		out = append(out, checkupFinding{
 			Summary: skew.Summary,
-			Fix:     skew.Guide,
+			Fix:     selfUpdateFix(base, run),
 			Action: checkupAction{
 				Kind:    actionRun,
-				Run:     "self-update",
+				Run:     run,
 				Label:   "Update OwnBase",
 				Confirm: "Replaces the OwnBase daemon with the latest signed release (~10s restart).",
 			},
@@ -211,12 +215,13 @@ func versionFindings(base, daemonVer string, snap release.Snapshot) []checkupFin
 	}
 
 	if daemon.Status == release.StatusBehind {
+		run := selfUpdateRun(snap, daemon.Latest)
 		out = append(out, checkupFinding{
 			Summary: fmt.Sprintf("OwnBase daemon %s is behind latest %s", daemon.Current, daemon.Latest),
-			Fix:     "ownbasectl self-update " + base,
+			Fix:     selfUpdateFix(base, run),
 			Action: checkupAction{
 				Kind:    actionRun,
-				Run:     "self-update",
+				Run:     run,
 				Label:   "Update OwnBase",
 				Confirm: "Replaces the OwnBase daemon with the latest signed release (~10s restart).",
 			},
@@ -224,4 +229,37 @@ func versionFindings(base, daemonVer string, snap release.Snapshot) []checkupFin
 	}
 
 	return out
+}
+
+// selfUpdateRun is the action.Run token for installing a newer daemon.
+// Prefer an explicit --version tag so the Base fetches the immutable
+// …/daemon/vX.Y.Z/ object. The bare "self-update" form still hits
+// /daemon/latest/, which CloudFront can serve stale after a release.
+//
+// When both the release manifest and pin are known, take the newer tag so a
+// 24h-stale checkup cache cannot pin below a just-upgraded CLI.
+func selfUpdateRun(snap release.Snapshot, pin string) string {
+	manifest := release.NormalizeTag(snap.LatestOf(release.ComponentDaemon))
+	pinned := release.NormalizeTag(pin)
+	switch {
+	case manifest != "" && pinned != "":
+		if update.CompareVersionTags(pinned, manifest) > 0 {
+			return "self-update --version " + pinned
+		}
+		return "self-update --version " + manifest
+	case manifest != "":
+		return "self-update --version " + manifest
+	case pinned != "":
+		return "self-update --version " + pinned
+	default:
+		return "self-update"
+	}
+}
+
+// selfUpdateFix is the human CLI line matching selfUpdateRun.
+func selfUpdateFix(base, run string) string {
+	if strings.HasPrefix(run, "self-update --version ") {
+		return "ownbasectl self-update " + base + " --version " + strings.TrimPrefix(run, "self-update --version ")
+	}
+	return "ownbasectl self-update " + base
 }

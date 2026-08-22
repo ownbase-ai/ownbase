@@ -817,7 +817,7 @@ func TestCheckupFindings_CoreOldDaemonNeedsSelfUpdate(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding, got %d: %+v", len(findings), findings)
 	}
-	if findings[0].Action.Run != "self-update" {
+	if !isSelfUpdateRun(findings[0].Action.Run) {
 		t.Errorf("old daemon should offer self-update, got %+v", findings[0].Action)
 	}
 }
@@ -882,7 +882,7 @@ func TestCheckupFindings_CoreSameRecipeCooldownSuppresses(t *testing.T) {
 	}`)
 	findings := checkupFindings("mybase", body, release.Snapshot{})
 	for _, f := range findings {
-		if strings.Contains(f.Summary, "core image") || f.Action.Run == "upgrade --apply" || f.Action.Run == "self-update" {
+		if strings.Contains(f.Summary, "core image") || f.Action.Run == "upgrade --apply" || isSelfUpdateRun(f.Action.Run) {
 			t.Fatalf("same-recipe cooldown must not offer a run action, got %+v", f)
 		}
 	}
@@ -992,7 +992,7 @@ func TestCheckupFindings_CoreSameRecipeOffersSelfUpdateWhenNewer(t *testing.T) {
 	findings := checkupFindings("mybase", body, snap)
 	var selfUpdate *checkupFinding
 	for i := range findings {
-		if findings[i].Action.Run == "self-update" {
+		if isSelfUpdateRun(findings[i].Action.Run) {
 			if selfUpdate != nil {
 				t.Fatalf("duplicate self-update findings: %+v", findings)
 			}

@@ -22,8 +22,11 @@ func TestVersionFindings_DevCLIStillFlagsDaemonBehind(t *testing.T) {
 	got := versionFindings("mybase", "v0.1.0", snap)
 	foundDaemon := false
 	for _, f := range got {
-		if strings.Contains(f.Summary, "daemon") && f.Action.Run == "self-update" {
+		if strings.Contains(f.Summary, "daemon") && isSelfUpdateRun(f.Action.Run) {
 			foundDaemon = true
+			if f.Action.Run != "self-update --version v9.9.9" {
+				t.Errorf("want pinned latest, got Run=%q", f.Action.Run)
+			}
 		}
 		if strings.Contains(f.Summary, "ownbasectl") {
 			t.Errorf("dev CLI must not produce CLI finding: %+v", f)
@@ -43,7 +46,8 @@ func TestVersionFindings_SkewCLIAhead(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("got %d findings: %+v", len(got), got)
 	}
-	if got[0].Action.Run != "self-update" {
+	// Empty manifest → pin to this CLI's tag so /daemon/latest/ is not used.
+	if got[0].Action.Run != "self-update --version v0.5.0" {
 		t.Errorf("action = %+v", got[0].Action)
 	}
 	if !strings.Contains(got[0].Summary, "behind your CLI") {
@@ -118,7 +122,7 @@ func TestVersionFindings_CLIBehindAndCLIAheadSkew_StillCLIFirst(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("got %d findings: %+v", len(got), got)
 	}
-	if got[0].Action.Run == "self-update" {
+	if isSelfUpdateRun(got[0].Action.Run) {
 		t.Fatalf("must not self-update while CLI is behind latest: %+v", got)
 	}
 }
@@ -142,7 +146,7 @@ func TestVersionFindings_CLICurrentDaemonBehind(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("got %d findings (want 1): %+v", len(got), got)
 	}
-	if got[0].Action.Run != "self-update" {
+	if got[0].Action.Run != "self-update --version v0.5.0" {
 		t.Errorf("action = %+v", got[0].Action)
 	}
 }
@@ -208,5 +212,66 @@ func TestReportNeedsAttention(t *testing.T) {
 		Skew: &release.Skew{Direction: "cli_ahead"},
 	}) {
 		t.Error("skew should need attention")
+	}
+}
+
+func TestSelfUpdateRun_prefersNewerPin(t *testing.T) {
+	// Stale manifest at v0.5.4, CLI already on v0.5.5 → pin to CLI.
+	snap := release.Snapshot{
+		Manifest: release.Manifest{
+			Schema: 1,
+			Components: map[string]release.ComponentVersion{
+				"daemon": {Version: "v0.5.4"},
+			},
+		},
+	}
+	got := selfUpdateRun(snap, "v0.5.5")
+	if got != "self-update --version v0.5.5" {
+		t.Fatalf("got %q", got)
+	}
+	// Manifest newer than pin → keep manifest.
+	got = selfUpdateRun(snap, "v0.5.0")
+	if got != "self-update --version v0.5.4" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestPreferSelfUpdateFinding_keepsNewerPin(t *testing.T) {
+	// versionFindings already pinned CLI v0.5.5; CVE path must not drop it
+	// to a stale manifest-only v0.5.4.
+	existing := []checkupFinding{{
+		Summary: "Base daemon v0.5.1 is behind your CLI v0.5.5",
+		Fix:     "ownbasectl self-update mybase --version v0.5.5",
+		Action: checkupAction{
+			Kind:  actionRun,
+			Run:   "self-update --version v0.5.5",
+			Label: "Update OwnBase",
+		},
+	}}
+	cve := checkupFinding{
+		Summary: `3 CVE(s) remain in core image "ownbase-core-caddy" after rebuild`,
+		Fix:     "ownbasectl self-update mybase --version v0.5.4",
+		Action: checkupAction{
+			Kind:    actionRun,
+			Run:     "self-update --version v0.5.4",
+			Label:   "Update OwnBase",
+			Confirm: "Then rebuild Caddy.",
+		},
+	}
+	got := preferSelfUpdateFinding(existing, cve)
+	if len(got) != 1 {
+		t.Fatalf("len=%d", len(got))
+	}
+	if got[0].Action.Run != "self-update --version v0.5.5" {
+		t.Fatalf("Run=%q, want pinned CLI tag", got[0].Action.Run)
+	}
+	if !strings.Contains(got[0].Summary, "CVE") {
+		t.Fatalf("summary should be CVE copy: %q", got[0].Summary)
+	}
+	if got[0].Action.Confirm != "Then rebuild Caddy." {
+		t.Fatalf("confirm=%q", got[0].Action.Confirm)
+	}
+	if got[0].Fix != "ownbasectl self-update mybase --version v0.5.5" {
+		t.Fatalf("Fix=%q", got[0].Fix)
 	}
 }

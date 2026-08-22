@@ -70,6 +70,14 @@ const RUN_ACTIONS: RunCase[] = [
     cmd: "cli_stream",
   },
   {
+    run: "self-update --version v0.5.5",
+    label: "Update OwnBase",
+    match: ["self-update", "demo"],
+    flags: ["--version", "v0.5.5"],
+    confirm: "Replaces the OwnBase daemon",
+    cmd: "cli_stream",
+  },
+  {
     run: "upgrade --apply",
     label: "Apply upgrade",
     match: ["upgrade", "demo"],
