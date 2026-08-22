@@ -19,7 +19,7 @@
         "minHeight": 620,
         "titleBarStyle": "Transparent",
         "hiddenTitle": true,
-        "theme": "Dark"
+        "theme": "Light"
       }
     ],
     "security": {
