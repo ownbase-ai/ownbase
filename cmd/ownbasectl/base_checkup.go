@@ -1027,9 +1027,10 @@ func backupEscrowDriftFindings(base string, sec map[string]any) []checkupFinding
 			Summary: "Backup password is on the Base but missing from the vault escrow",
 			Fix:     "ownbasectl backup rekey " + base + " --generate",
 			Action: checkupAction{
-				Kind:  actionRun,
-				Run:   "ownbasectl backup rekey " + base + " --generate",
-				Label: "Rekey backups",
+				Kind:    actionRun,
+				Run:     "backup rekey --generate",
+				Label:   "Rekey backups",
+				Confirm: "Rotate the restic repository password?\n\nA new password will be generated. Save it immediately — it is a root recovery secret.",
 			},
 		})
 	case baseFP != "" && vc.Password != "" && backup.CredFingerprint(vc.Password) != baseFP:
@@ -1037,9 +1038,10 @@ func backupEscrowDriftFindings(base string, sec map[string]any) []checkupFinding
 			Summary: "Vault restic password does not match the Base (restore would fail)",
 			Fix:     "ownbasectl backup rekey " + base + " --generate",
 			Action: checkupAction{
-				Kind:  actionRun,
-				Run:   "ownbasectl backup rekey " + base + " --generate",
-				Label: "Rekey backups",
+				Kind:    actionRun,
+				Run:     "backup rekey --generate",
+				Label:   "Rekey backups",
+				Confirm: "Rotate the restic repository password?\n\nA new password will be generated. Save it immediately — it is a root recovery secret.",
 			},
 		})
 	}
@@ -1089,9 +1091,10 @@ func appendOnlyPruneStaleFinding(base string, sec map[string]any) (checkupFindin
 		Summary: "Append-only backups have not been pruned recently",
 		Fix:     "ownbasectl backup prune " + base,
 		Action: checkupAction{
-			Kind:  actionRun,
-			Run:   "ownbasectl backup prune " + base,
-			Label: "Prune backups",
+			Kind:    actionRun,
+			Run:     "backup prune",
+			Label:   "Prune backups",
+			Confirm: "Run restic forget+prune on this Base's backup repository?\n\nUnder append-only mode this is the only way old snapshots are removed.",
 		},
 	}, true
 }

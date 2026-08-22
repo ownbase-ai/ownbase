@@ -77,6 +77,21 @@ const RUN_ACTIONS: RunCase[] = [
     confirm: "Apply core upgrade?",
     cmd: "cli_stream",
   },
+  {
+    run: "backup prune",
+    label: "Prune backups",
+    match: ["backup", "prune", "demo"],
+    confirm: "Run restic forget+prune",
+    cmd: "cli_run",
+  },
+  {
+    run: "backup rekey --generate",
+    label: "Rekey backups",
+    match: ["backup", "rekey", "demo"],
+    flags: ["--generate"],
+    confirm: "Rotate the restic repository password",
+    cmd: "cli_run",
+  },
 ];
 
 test.describe("FindingRow action dispatch", () => {
