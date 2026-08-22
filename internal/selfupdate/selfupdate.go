@@ -197,10 +197,7 @@ func Apply(ctx context.Context, opts Options) (Result, error) {
 // resolveLatestDaemon reads {origin}/latest.json and returns components.daemon.version.
 // releaseBase is the …/daemon prefix; the manifest lives one level up.
 func resolveLatestDaemon(ctx context.Context, releaseBase string) (string, error) {
-	origin := strings.TrimRight(releaseBase, "/")
-	if strings.HasSuffix(origin, "/daemon") {
-		origin = strings.TrimSuffix(origin, "/daemon")
-	}
+	origin := strings.TrimSuffix(strings.TrimRight(releaseBase, "/"), "/daemon")
 	url := origin + "/latest.json"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
