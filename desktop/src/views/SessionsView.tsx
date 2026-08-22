@@ -129,7 +129,7 @@ function SessionButton({
       onClick={onClick}
       className={cx(
         "w-full rounded-lg px-3 py-2.5 text-left transition-colors",
-        active ? "bg-surface-sunken" : "hover:bg-surface",
+        active ? "bg-surface-sunken" : "hover:bg-surface-sunken",
       )}
     >
       <div className="flex items-center justify-between gap-2">

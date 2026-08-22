@@ -208,7 +208,7 @@ function Header({
         </p>
       </div>
       <Button variant="secondary" busy={state.refreshing} onClick={state.reload}>
-        <RefreshCw className="h-3.5 w-3.5" aria-hidden />
+        {!state.refreshing && <RefreshCw className="h-3.5 w-3.5" aria-hidden />}
         Refresh
       </Button>
     </header>
@@ -1142,7 +1142,7 @@ function RemoveBase({
 
           <div className="flex flex-wrap gap-3">
             <Button variant="danger" busy={busy} disabled={!ready} onClick={() => void remove()}>
-              <Trash2 className="h-3.5 w-3.5" aria-hidden />
+              {!busy && <Trash2 className="h-3.5 w-3.5" aria-hidden />}
               {base.kind === "unregistered-vm"
                 ? "Destroy VM"
                 : destroyVM && isLocalVM

@@ -419,7 +419,7 @@ function PathOption({
     <button
       type="button"
       onClick={onClick}
-      className="w-full rounded-xl border border-line bg-surface p-5 text-left transition-colors hover:border-accent/40 hover:bg-surface"
+      className="w-full rounded-xl border border-line bg-surface p-5 text-left transition-colors hover:border-accent/40 hover:bg-accent-soft"
     >
       <h3 className="text-base font-medium text-fg">{title}</h3>
       <p className="mt-1.5 text-sm leading-relaxed text-fg-subtle">{description}</p>
