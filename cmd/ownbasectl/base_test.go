@@ -417,6 +417,14 @@ func TestCheckupFindings_AppendOnlyNeverPrunedAgesFromFirstBackup(t *testing.T) 
 			if f.Action.Kind != actionRun {
 				t.Errorf("expected run action, got %+v", f.Action)
 			}
+			// Run is a short token the desktop dispatches on — never the full
+			// CLI line with binary name or base (see checkupAction.Run docs).
+			if f.Action.Run != "backup prune" {
+				t.Errorf("Run = %q, want %q", f.Action.Run, "backup prune")
+			}
+			if f.Action.Confirm == "" {
+				t.Error("prune run action must set Confirm")
+			}
 		}
 	}
 	if !found {
