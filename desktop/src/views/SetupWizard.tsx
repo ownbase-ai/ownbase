@@ -127,8 +127,8 @@ export function SetupWizard({
     <div className="h-full min-h-0 overflow-y-auto">
       <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-8 py-10">
       <header>
-        <h1 className="text-lg font-medium text-zinc-100">Set up a Base</h1>
-        <p className="mt-1 text-sm leading-relaxed text-zinc-500">{modeBlurb}</p>
+        <h1 className="text-lg font-medium text-fg">Set up a Base</h1>
+        <p className="mt-1 text-sm leading-relaxed text-fg-subtle">{modeBlurb}</p>
       </header>
 
       {step !== "path" && <Progress steps={stepsFor(mode)} step={step} />}
@@ -336,15 +336,15 @@ function Progress({
           <span
             className={cx(
               "flex items-center gap-1.5 rounded-full px-2.5 py-1",
-              i < index && "text-emerald-400",
-              i === index && "bg-zinc-800 text-zinc-100",
-              i > index && "text-zinc-600",
+              i < index && "text-accent",
+              i === index && "bg-surface-sunken text-fg",
+              i > index && "text-fg-faint",
             )}
           >
             <span className="font-mono">{i < index ? "✓" : i + 1}</span>
             {s.label}
           </span>
-          {i < steps.length - 1 && <span className="text-zinc-700">→</span>}
+          {i < steps.length - 1 && <span className="text-fg-faint">→</span>}
         </li>
       ))}
     </ol>
@@ -419,10 +419,10 @@ function PathOption({
     <button
       type="button"
       onClick={onClick}
-      className="w-full rounded-xl border border-zinc-800 bg-zinc-900/60 p-5 text-left transition-colors hover:border-emerald-500/40 hover:bg-zinc-900"
+      className="w-full rounded-xl border border-line bg-surface p-5 text-left transition-colors hover:border-accent/40 hover:bg-accent-soft"
     >
-      <h3 className="text-base font-medium text-zinc-100">{title}</h3>
-      <p className="mt-1.5 text-sm leading-relaxed text-zinc-500">{description}</p>
+      <h3 className="text-base font-medium text-fg">{title}</h3>
+      <p className="mt-1.5 text-sm leading-relaxed text-fg-subtle">{description}</p>
     </button>
   );
 }
@@ -459,8 +459,8 @@ function NameStep({
 
   return (
     <Card>
-      <h2 className="text-base font-medium text-zinc-100">Name this Base</h2>
-      <p className="mt-1.5 text-sm leading-relaxed text-zinc-500">
+      <h2 className="text-base font-medium text-fg">Name this Base</h2>
+      <p className="mt-1.5 text-sm leading-relaxed text-fg-subtle">
         The name is how you refer to the machine from now on, here and in
         commands like <CommandLine>ownbasectl status {trimmed || "mybase"}</CommandLine>.
         It stays on your computer — the server never learns it.
@@ -573,8 +573,8 @@ function KeyStep({
 
   return (
     <Card>
-      <h2 className="text-base font-medium text-zinc-100">Your key for this Base</h2>
-      <p className="mt-1.5 text-sm leading-relaxed text-zinc-500">
+      <h2 className="text-base font-medium text-fg">Your key for this Base</h2>
+      <p className="mt-1.5 text-sm leading-relaxed text-fg-subtle">
         The private half is in your vault and will never be written to disk. When
         something needs to prove it is you, the credential agent signs for it. Each
         Base gets its own key, so retiring one Base revokes exactly one credential.
@@ -610,11 +610,11 @@ function KeyStep({
             <Badge tone={badge.tone}>{badge.label}</Badge>
             {!local && <CopyButton value={result.public_key} label="Copy public key" />}
           </div>
-          <pre className="selectable mt-3 max-h-32 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-zinc-800 bg-zinc-950 p-3 font-mono text-xs leading-relaxed text-zinc-300">
+          <pre className="selectable mt-3 max-h-32 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-line bg-canvas p-3 font-mono text-xs leading-relaxed text-fg-muted">
             {result.public_key}
           </pre>
           {!local && (
-            <p className="mt-3 text-sm leading-relaxed text-zinc-500">
+            <p className="mt-3 text-sm leading-relaxed text-fg-subtle">
               You will paste this into your provider&apos;s <em>SSH key</em> field in a
               moment. Copy it now.
             </p>
@@ -697,10 +697,10 @@ function AdoptKeyStep({
 
   return (
     <Card>
-      <h2 className="text-base font-medium text-zinc-100">The key this server already trusts</h2>
-      <p className="mt-1.5 text-sm leading-relaxed text-zinc-500">
+      <h2 className="text-base font-medium text-fg">The key this server already trusts</h2>
+      <p className="mt-1.5 text-sm leading-relaxed text-fg-subtle">
         This has to be the private key already in that server's{" "}
-        <code className="font-mono text-zinc-400">authorized_keys</code> — there is
+        <code className="font-mono text-fg-muted">authorized_keys</code> — there is
         nothing to generate here, because a server that already exists has no way to
         learn about a brand new key. The file is only read to copy it into your
         vault; ownbasectl does that directly, so the key itself never passes through
@@ -712,8 +712,8 @@ function AdoptKeyStep({
           {path ? "Choose a different file" : "Choose private key file…"}
         </Button>
         {path && (
-          <div className="mt-3 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
-            <span className="selectable break-all font-mono text-xs text-zinc-300">{path}</span>
+          <div className="mt-3 rounded-lg border border-line bg-canvas p-3">
+            <span className="selectable break-all font-mono text-xs text-fg-muted">{path}</span>
           </div>
         )}
       </div>
@@ -762,22 +762,22 @@ function ServerStep({
 
   return (
     <Card>
-      <h2 className="text-base font-medium text-zinc-100">
+      <h2 className="text-base font-medium text-fg">
         {restore ? "Point at the fresh server" : "Create the server"}
       </h2>
-      <p className="mt-1.5 text-sm leading-relaxed text-zinc-500">
+      <p className="mt-1.5 text-sm leading-relaxed text-fg-subtle">
         {restore
           ? "A fresh Ubuntu machine with your owner key authorized. OwnBase will install in rebuild mode and restore from the restic repository before reconciling."
           : "This is the one step OwnBase cannot do for you — providers require a human with a payment method. Any provider works; OwnBase has no provider integration and needs none."}
       </p>
 
-      <ul className="mt-4 space-y-2.5 text-sm leading-relaxed text-zinc-300">
+      <ul className="mt-4 space-y-2.5 text-sm leading-relaxed text-fg-muted">
         <Requirement>
-          <strong className="font-medium text-zinc-100">Ubuntu 24.04</strong> (22.04
+          <strong className="font-medium text-fg">Ubuntu 24.04</strong> (22.04
           also works).
         </Requirement>
         <Requirement>
-          <strong className="font-medium text-zinc-100">
+          <strong className="font-medium text-fg">
             At least 2 GB RAM and 20 GB disk.
           </strong>{" "}
           Services are cheap at rest; what sets the floor is that each one is built
@@ -785,7 +785,7 @@ function ServerStep({
           produces.
         </Requirement>
         <Requirement>
-          <strong className="font-medium text-zinc-100">
+          <strong className="font-medium text-fg">
             Your public key pasted into the provider's “SSH key” field
           </strong>{" "}
           as you create the machine. Most providers cannot add one afterwards without
@@ -797,7 +797,7 @@ function ServerStep({
           )}
         </Requirement>
         <Requirement>
-          <strong className="font-medium text-zinc-100">Reachable as root over SSH</strong>
+          <strong className="font-medium text-fg">Reachable as root over SSH</strong>
           , which is the default on nearly every provider image.
         </Requirement>
       </ul>
@@ -825,13 +825,13 @@ function ServerStep({
         <button
           type="button"
           onClick={() => setShowOptions((v) => !v)}
-          className="text-sm text-zinc-500 hover:text-zinc-300"
+          className="text-sm text-fg-subtle hover:text-fg-muted"
         >
           {showOptions ? "Hide" : "Show"} the two things people sometimes change
         </button>
 
         {showOptions && (
-          <div className="space-y-4 rounded-lg border border-zinc-800 p-4">
+          <div className="space-y-4 rounded-lg border border-line p-4">
             <Field
               label="SSH user"
               hint="Only change this if your provider's image does not allow root."
@@ -902,20 +902,20 @@ function AdoptServerStep({
 
   return (
     <Card>
-      <h2 className="text-base font-medium text-zinc-100">Where is it?</h2>
-      <p className="mt-1.5 text-sm leading-relaxed text-zinc-500">
+      <h2 className="text-base font-medium text-fg">Where is it?</h2>
+      <p className="mt-1.5 text-sm leading-relaxed text-fg-subtle">
         Nothing is installed here. The next step only verifies the connection and,
         once that works, saves it — a mistyped host costs you nothing.
       </p>
 
-      <ul className="mt-4 space-y-2.5 text-sm leading-relaxed text-zinc-300">
+      <ul className="mt-4 space-y-2.5 text-sm leading-relaxed text-fg-muted">
         <Requirement>
-          <strong className="font-medium text-zinc-100">OwnBase already installed and running</strong>{" "}
+          <strong className="font-medium text-fg">OwnBase already installed and running</strong>{" "}
           on it, however that happened.
         </Requirement>
         <Requirement>
-          <strong className="font-medium text-zinc-100">Reachable over SSH</strong> with
-          the key you just picked already in its <code className="font-mono text-zinc-400">authorized_keys</code>.
+          <strong className="font-medium text-fg">Reachable over SSH</strong> with
+          the key you just picked already in its <code className="font-mono text-fg-muted">authorized_keys</code>.
         </Requirement>
       </ul>
 
@@ -939,13 +939,13 @@ function AdoptServerStep({
         <button
           type="button"
           onClick={() => setShowOptions((v) => !v)}
-          className="text-sm text-zinc-500 hover:text-zinc-300"
+          className="text-sm text-fg-subtle hover:text-fg-muted"
         >
           {showOptions ? "Hide" : "Show"} advanced options
         </button>
 
         {showOptions && (
-          <div className="space-y-4 rounded-lg border border-zinc-800 p-4">
+          <div className="space-y-4 rounded-lg border border-line p-4">
             <Field
               label="SSH user"
               hint="Root by default; use whatever this server already expects."
@@ -996,7 +996,7 @@ function AdoptServerStep({
 function Requirement({ children }: { children: React.ReactNode }) {
   return (
     <li className="flex gap-2.5">
-      <span aria-hidden className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-zinc-600" />
+      <span aria-hidden className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-fg-faint" />
       <span>{children}</span>
     </li>
   );
@@ -1096,8 +1096,8 @@ function RestoreCredsStep({
 
   return (
     <Card>
-      <h2 className="text-base font-medium text-zinc-100">Backup credentials</h2>
-      <p className="mt-1.5 text-sm leading-relaxed text-zinc-500">
+      <h2 className="text-base font-medium text-fg">Backup credentials</h2>
+      <p className="mt-1.5 text-sm leading-relaxed text-fg-subtle">
         Repo URL and restic password for <span className="font-mono">{base}</span>.
         Leave blank to use the copy stored in your vault from a previous backup
         setup on this computer. Credentials travel over stdin, never in argv.
@@ -1177,7 +1177,7 @@ function RestoreCredsStep({
             </Field>
           </div>
         )}
-        <label className="flex cursor-pointer items-start gap-3 text-sm text-zinc-300">
+        <label className="flex cursor-pointer items-start gap-3 text-sm text-fg-muted">
           <input
             type="checkbox"
             className="mt-1"
@@ -1186,7 +1186,7 @@ function RestoreCredsStep({
           />
           <span>
             Force restore even if the latest snapshot was never verified restorable
-            <span className="mt-0.5 block text-xs text-zinc-500">
+            <span className="mt-0.5 block text-xs text-fg-subtle">
               Prefer a verified snapshot. Only check this if you know why the drill
               never passed.
             </span>
@@ -1316,7 +1316,7 @@ function RestoreStep({
 
   return (
     <Card>
-      <h2 className="text-base font-medium text-zinc-100">
+      <h2 className="text-base font-medium text-fg">
         {running
           ? "Restoring from backup"
           : error === "Cancelled."
@@ -1325,7 +1325,7 @@ function RestoreStep({
               ? "Restore failed"
               : "Restored"}
       </h2>
-      <p className="mt-1.5 text-sm leading-relaxed text-zinc-500">
+      <p className="mt-1.5 text-sm leading-relaxed text-fg-subtle">
         Fresh machine, rebuild install, restic restore, then normal reconcile. This
         takes several minutes.
       </p>
@@ -1335,9 +1335,9 @@ function RestoreStep({
             key={p.label}
             className={cx(
               "flex items-center gap-2",
-              i < reached && "text-emerald-400",
-              i === reached && running && "text-zinc-100",
-              i > reached && "text-zinc-600",
+              i < reached && "text-accent",
+              i === reached && running && "text-fg",
+              i > reached && "text-fg-faint",
             )}
           >
             <span className="font-mono text-xs w-4">
@@ -1480,7 +1480,7 @@ function InstallStep({
 
   return (
     <Card>
-      <h2 className="text-base font-medium text-zinc-100">
+      <h2 className="text-base font-medium text-fg">
         {running
           ? local
             ? "Creating the local VM"
@@ -1489,7 +1489,7 @@ function InstallStep({
             ? "Install failed"
             : "Installed"}
       </h2>
-      <p className="mt-1.5 text-sm leading-relaxed text-zinc-500">
+      <p className="mt-1.5 text-sm leading-relaxed text-fg-subtle">
         {local
           ? "Unattended from here. Multipass launches an Ubuntu VM, OwnBase installs inside it, and the Base is registered in your vault. First launch may download an image."
           : "Unattended from here. The daemon is installed and signature-verified, the host is hardened, and the Base is registered in your vault. The last phase is the daemon doing its first pass — Podman, the firewall, fail2ban, automatic security updates — which is why this waits rather than claiming to be done early."}
@@ -1502,12 +1502,12 @@ function InstallStep({
               aria-hidden
               className={cx(
                 "w-4 shrink-0 text-center font-mono text-xs",
-                i < reached ? "text-emerald-400" : "text-zinc-600",
+                i < reached ? "text-accent" : "text-fg-faint",
               )}
             >
               {i < reached ? "✓" : i === reached && running ? "•" : "·"}
             </span>
-            <span className={i <= reached ? "text-zinc-200" : "text-zinc-500"}>
+            <span className={i <= reached ? "text-fg" : "text-fg-subtle"}>
               {phase.label}
             </span>
           </li>
@@ -1521,7 +1521,7 @@ function InstallStep({
       )}
 
       <div className="mt-5">
-        <p className="mb-2 text-xs uppercase tracking-wide text-zinc-500">Output</p>
+        <p className="mb-2 text-xs uppercase tracking-wide text-fg-subtle">Output</p>
         <LogView lines={lines} className="max-h-64" />
       </div>
 
@@ -1632,10 +1632,10 @@ function RegisterStep({
 
   return (
     <Card>
-      <h2 className="text-base font-medium text-zinc-100">
+      <h2 className="text-base font-medium text-fg">
         {running ? "Verifying and registering" : error ? "Could not register" : "Registered"}
       </h2>
-      <p className="mt-1.5 text-sm leading-relaxed text-zinc-500">
+      <p className="mt-1.5 text-sm leading-relaxed text-fg-subtle">
         The SSH connection is verified first — nothing is saved to your vault
         unless that works, so a mistyped host or an unauthorized key costs you
         nothing.
@@ -1648,7 +1648,7 @@ function RegisterStep({
       )}
 
       <div className="mt-5">
-        <p className="mb-2 text-xs uppercase tracking-wide text-zinc-500">Output</p>
+        <p className="mb-2 text-xs uppercase tracking-wide text-fg-subtle">Output</p>
         <LogView lines={lines} className="max-h-64" />
       </div>
 
@@ -1695,14 +1695,14 @@ function DoneStep({ base, mode, onOpen }: { base: string; mode: Mode; onOpen: ()
 
   return (
     <Card>
-      <h2 className="text-base font-medium text-zinc-100">
+      <h2 className="text-base font-medium text-fg">
         {restored
           ? `${base} was restored`
           : isCreate(mode)
             ? `${base} is up and hardened`
             : `${base} is registered`}
       </h2>
-      <p className="mt-1.5 text-sm leading-relaxed text-zinc-500">
+      <p className="mt-1.5 text-sm leading-relaxed text-fg-subtle">
         {restored
           ? "The snapshot is back on a fresh machine and the daemon is reconciling. Confirm services and run a restore drill when you are ready."
           : mode === "create-local"
@@ -1715,10 +1715,10 @@ function DoneStep({ base, mode, onOpen }: { base: string; mode: Mode; onOpen: ()
       </p>
 
       {!restored && (
-        <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-950/40 p-4">
-          <h3 className="text-sm font-medium text-zinc-100">Config repo</h3>
+        <div className="mt-4 rounded-lg border border-line bg-surface-sunken p-4">
+          <h3 className="text-sm font-medium text-fg">Config repo</h3>
           {configDone ? (
-            <p className="mt-2 text-sm text-emerald-300">
+            <p className="mt-2 text-sm text-good-fg">
               Config source set. Open the Base to set up backups when you are ready.
             </p>
           ) : (
@@ -1730,7 +1730,7 @@ function DoneStep({ base, mode, onOpen }: { base: string; mode: Mode; onOpen: ()
       )}
 
       {!restored && (
-        <p className="mt-4 text-xs leading-relaxed text-zinc-500">
+        <p className="mt-4 text-xs leading-relaxed text-fg-subtle">
           Backups are next — until you turn them on, this Base has no proven way
           back from a lost disk. You can do that from the Base&apos;s Backups tab.
         </p>

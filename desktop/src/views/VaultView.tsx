@@ -49,8 +49,8 @@ export function VaultView({
     <div className="h-full min-h-0 overflow-y-auto">
       <div className="mx-auto w-full max-w-3xl space-y-5 px-8 py-8">
         <header>
-          <h1 className="text-lg font-medium text-zinc-100">Vault</h1>
-          <p className="mt-1 text-sm leading-relaxed text-zinc-500">
+          <h1 className="text-lg font-medium text-fg">Vault</h1>
+          <p className="mt-1 text-sm leading-relaxed text-fg-subtle">
             One encrypted file holds every credential that reaches your Bases. You chose
             where it lives; nothing but your master password opens it.
           </p>
@@ -101,9 +101,9 @@ export function VaultView({
         >
           <Row label="Running">
             {status?.running ? (
-              <span className="text-emerald-300">yes (pid {status.pid})</span>
+              <span className="text-good-fg">yes (pid {status.pid})</span>
             ) : (
-              <span className="text-zinc-500">no</span>
+              <span className="text-fg-subtle">no</span>
             )}
           </Row>
           {status?.ssh_agent_socket && (
@@ -112,7 +112,7 @@ export function VaultView({
             </Row>
           )}
           {status?.version && <Row label="Version">{status.version}</Row>}
-          <p className="mt-3 text-xs leading-relaxed text-zinc-500">
+          <p className="mt-3 text-xs leading-relaxed text-fg-subtle">
             Private keys never leave the agent and are never written to disk. When
             something needs to authenticate, it asks the agent for a signature — which
             is also why a coding agent can reach your Bases without ever being handed a
@@ -125,16 +125,16 @@ export function VaultView({
           subtitle="One per Base, so retiring a Base revokes exactly one credential."
         >
           {withKeys.length === 0 ? (
-            <p className="text-sm text-zinc-500">No keys yet.</p>
+            <p className="text-sm text-fg-subtle">No keys yet.</p>
           ) : (
-            <ul className="divide-y divide-zinc-800">
+            <ul className="divide-y divide-line">
               {withKeys.map((base) => (
                 <li
                   key={base.name}
                   className="flex items-center justify-between gap-3 py-2.5 text-sm first:pt-0 last:pb-0"
                 >
-                  <span className="text-zinc-200">{base.name}</span>
-                  <span className="text-xs text-zinc-500">
+                  <span className="text-fg">{base.name}</span>
+                  <span className="text-xs text-fg-subtle">
                     {base.host ? base.host : "no machine yet"}
                     {base.has_token ? " · API token stored" : ""}
                   </span>
@@ -159,13 +159,13 @@ export function VaultView({
           title="If OwnBase disappeared tomorrow"
           subtitle="The escape hatch is not a promise, it is the file format."
         >
-          <p className="text-sm leading-relaxed text-zinc-400">
+          <p className="text-sm leading-relaxed text-fg-muted">
             The vault is a standard KDBX 4 database — the KeePass format. KeePassXC and
             every other KeePass client can open it with your master password, read the
             hosts and tokens, and export the private keys. Nothing here depends on this
             app, or on us.
           </p>
-          <p className="mt-3 text-xs leading-relaxed text-zinc-500">
+          <p className="mt-3 text-xs leading-relaxed text-fg-subtle">
             Back the file up. It holds the only copy of the keys that reach your Bases,
             and there is no recovery: lose both it and your master password and no one
             can get in, which is the same property that makes it safe to keep in cloud
@@ -215,7 +215,7 @@ function RecoveryStringPanel() {
       }
     >
       {error && (
-        <p className="text-sm text-zinc-500">
+        <p className="text-sm text-fg-subtle">
           {error.includes("local file")
             ? "This vault is a local file — there is no recovery string. Back up the file itself."
             : error}
@@ -228,7 +228,7 @@ function RecoveryStringPanel() {
               <span className="font-mono text-xs">{location}</span>
             </Row>
           )}
-          <p className="selectable break-all font-mono text-xs text-zinc-300">{value}</p>
+          <p className="selectable break-all font-mono text-xs text-fg-muted">{value}</p>
           <CopyButton value={value} label="Copy recovery string" />
         </div>
       )}
@@ -261,22 +261,22 @@ function AboutPanel({
         ) : undefined
       }
     >
-      {error && <p className="mb-3 text-xs text-red-300">{error}</p>}
+      {error && <p className="mb-3 text-xs text-bad-fg">{error}</p>}
       {components.length === 0 && !error ? (
-        <p className="text-sm text-zinc-500">Checking versions…</p>
+        <p className="text-sm text-fg-subtle">Checking versions…</p>
       ) : (
-        <ul className="divide-y divide-zinc-800">
+        <ul className="divide-y divide-line">
           {components.map((c) => (
             <VersionRow key={c.name} component={c} />
           ))}
         </ul>
       )}
       {check?.manifest?.error && (
-        <p className="mt-3 text-xs leading-relaxed text-zinc-500">
+        <p className="mt-3 text-xs leading-relaxed text-fg-subtle">
           Could not reach the release channel: {check.manifest.error}
         </p>
       )}
-      <p className="mt-3 text-xs leading-relaxed text-zinc-500">
+      <p className="mt-3 text-xs leading-relaxed text-fg-subtle">
         Every action in this app is a call to the CLI bundled beside it. Base
         daemon updates show on each Base&apos;s Overview when a checkup finds one.
       </p>
@@ -294,14 +294,14 @@ function VersionRow({ component }: { component: VersionComponent }) {
   return (
     <li className="flex flex-col gap-1.5 py-2.5 first:pt-0 last:pb-0">
       <div className="flex items-center justify-between gap-3 text-sm">
-        <span className="text-zinc-200">{label}</span>
+        <span className="text-fg">{label}</span>
         <span className="flex items-center gap-2">
-          <span className="font-mono text-xs text-zinc-400">{component.current}</span>
+          <span className="font-mono text-xs text-fg-muted">{component.current}</span>
           <VersionBadge status={component.status} />
         </span>
       </div>
       {component.status === "behind" && component.latest && (
-        <p className="text-xs text-zinc-500">Latest {component.latest}</p>
+        <p className="text-xs text-fg-subtle">Latest {component.latest}</p>
       )}
       {component.guide && (
         <div className="flex flex-wrap items-center gap-2">
@@ -370,12 +370,12 @@ function ChangePassword() {
       }
     >
       {done && !open && (
-        <p className="text-sm text-emerald-300">
+        <p className="text-sm text-good-fg">
           Changed. Every machine that syncs this file will need the new password.
         </p>
       )}
       {!open && !done && (
-        <p className="text-sm leading-relaxed text-zinc-500">
+        <p className="text-sm leading-relaxed text-fg-subtle">
           You can also do this from a terminal with{" "}
           <CommandLine>ownbasectl vault passwd</CommandLine>.
         </p>

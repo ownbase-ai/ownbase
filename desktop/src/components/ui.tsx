@@ -20,12 +20,12 @@ interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
 
 const buttonVariants: Record<ButtonVariant, string> = {
   primary:
-    "bg-emerald-500 text-emerald-950 hover:bg-emerald-400 disabled:bg-emerald-500/40 disabled:text-emerald-950/50",
+    "bg-accent text-white hover:bg-accent-hover disabled:bg-accent/40 disabled:text-white/70",
   secondary:
-    "bg-zinc-800 text-zinc-100 hover:bg-zinc-700 border border-zinc-700 disabled:text-zinc-500",
-  ghost: "text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100 disabled:text-zinc-600",
+    "bg-surface text-accent border border-accent-line hover:bg-accent-soft disabled:text-accent/40 disabled:border-accent-line/50",
+  ghost: "text-fg-muted hover:bg-surface-sunken hover:text-fg disabled:text-fg-faint",
   danger:
-    "bg-red-500/10 text-red-300 border border-red-500/30 hover:bg-red-500/20 disabled:text-red-300/40",
+    "bg-surface text-bad-fg border border-bad-line hover:bg-bad-soft disabled:text-bad-fg/40",
 };
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
@@ -90,14 +90,14 @@ interface FieldProps {
 export function Field({ label, hint, error, children }: FieldProps) {
   return (
     <label className="block space-y-1.5">
-      <span className="text-xs font-medium uppercase tracking-wide text-zinc-400">
+      <span className="text-xs font-medium uppercase tracking-wide text-fg-subtle">
         {label}
       </span>
       {children}
       {error ? (
-        <span className="block text-sm text-red-400">{error}</span>
+        <span className="block text-sm text-bad-fg">{error}</span>
       ) : hint ? (
-        <span className="block text-sm leading-snug text-zinc-500">{hint}</span>
+        <span className="block text-sm leading-snug text-fg-subtle">{hint}</span>
       ) : null}
     </label>
   );
@@ -109,9 +109,9 @@ export const Input = forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTML
       <input
         ref={ref}
         className={cx(
-          "w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2",
-          "text-sm text-zinc-100 placeholder:text-zinc-600",
-          "focus:border-emerald-500/60 focus:outline-none focus:ring-1 focus:ring-emerald-500/40",
+          "w-full rounded-lg border border-line-strong bg-surface px-3 py-2",
+          "text-sm text-fg placeholder:text-fg-faint",
+          "focus:border-accent/60 focus:outline-none focus:ring-1 focus:ring-accent/40",
           className,
         )}
         {...rest}
@@ -134,7 +134,7 @@ export function Card({
   return (
     <div
       className={cx(
-        "rounded-xl border border-zinc-800 bg-zinc-900/60 p-5",
+        "rounded-xl border border-line bg-surface p-5",
         className,
       )}
     >
@@ -147,11 +147,11 @@ export function Card({
 export type Tone = "good" | "warn" | "bad" | "unknown" | "info";
 
 const toneDot: Record<Tone, string> = {
-  good: "bg-emerald-400",
-  warn: "bg-amber-400",
-  bad: "bg-red-400",
-  unknown: "bg-zinc-600",
-  info: "bg-sky-400",
+  good: "bg-good",
+  warn: "bg-warn",
+  bad: "bg-bad",
+  unknown: "bg-fg-faint",
+  info: "bg-info",
 };
 
 export function Dot({ tone, className }: { tone: Tone; className?: string }) {
@@ -164,11 +164,11 @@ export function Dot({ tone, className }: { tone: Tone; className?: string }) {
 }
 
 const badgeTone: Record<Tone, string> = {
-  good: "bg-emerald-500/10 text-emerald-300 border-emerald-500/25",
-  warn: "bg-amber-500/10 text-amber-300 border-amber-500/25",
-  bad: "bg-red-500/10 text-red-300 border-red-500/25",
-  unknown: "bg-zinc-700/30 text-zinc-400 border-zinc-700",
-  info: "bg-sky-500/10 text-sky-300 border-sky-500/25",
+  good: "bg-good-soft text-good-fg border-good-line",
+  warn: "bg-warn-soft text-warn-fg border-warn-line",
+  bad: "bg-bad-soft text-bad-fg border-bad-line",
+  unknown: "bg-surface-sunken text-fg-subtle border-line",
+  info: "bg-info-soft text-info-fg border-info-line",
 };
 
 export function Badge({
@@ -205,10 +205,10 @@ export function ErrorNote({
   onRetry?: () => void;
 }) {
   return (
-    <div className="rounded-xl border border-red-500/30 bg-red-500/5 p-4">
-      <p className="text-sm font-medium text-red-300">{title}</p>
+    <div className="rounded-xl border border-bad-line bg-bad-soft p-4">
+      <p className="text-sm font-medium text-bad-fg">{title}</p>
       {detail && (
-        <pre className="selectable mt-2 whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-red-200/80">
+        <pre className="selectable mt-2 whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-bad-fg/80">
           {detail}
         </pre>
       )}
@@ -229,10 +229,10 @@ export function EmptyState({
   children?: ReactNode;
 }) {
   return (
-    <div className="rounded-xl border border-dashed border-zinc-800 p-10 text-center">
-      <p className="text-sm font-medium text-zinc-300">{title}</p>
+    <div className="rounded-xl border border-dashed border-line p-10 text-center">
+      <p className="text-sm font-medium text-fg">{title}</p>
       {children && (
-        <div className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-zinc-500">
+        <div className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-fg-subtle">
           {children}
         </div>
       )}
@@ -248,7 +248,7 @@ export function CommandLine({ children }: { children: ReactNode }) {
     // scrollbar and squeeze every panel beside it. `anywhere` rather than
     // `break-all` because it breaks at spaces and slashes first and only splits a
     // word when there is no other option, so `ownbasectl` stays readable.
-    <code className="selectable rounded-md bg-zinc-800/80 px-1.5 py-0.5 font-mono text-[0.8125rem] text-zinc-200 [overflow-wrap:anywhere]">
+    <code className="selectable rounded-md bg-surface-sunken px-1.5 py-0.5 font-mono text-[0.8125rem] text-fg [overflow-wrap:anywhere]">
       {children}
     </code>
   );
@@ -273,12 +273,12 @@ export function Panel({
   className?: string;
 }) {
   return (
-    <section className={cx("rounded-xl border border-zinc-800 bg-zinc-900/40", className)}>
-      <header className="flex items-start justify-between gap-4 border-b border-zinc-800 px-5 py-3.5">
+    <section className={cx("rounded-xl border border-line bg-surface", className)}>
+      <header className="flex items-start justify-between gap-4 border-b border-line px-5 py-3.5">
         <div>
-          <h2 className="text-sm font-medium text-zinc-200">{title}</h2>
+          <h2 className="text-base font-semibold text-fg">{title}</h2>
           {subtitle && (
-            <p className="mt-0.5 text-xs leading-relaxed text-zinc-500">{subtitle}</p>
+            <p className="mt-0.5 text-xs leading-relaxed text-fg-subtle">{subtitle}</p>
           )}
         </div>
         {action && <div className="shrink-0">{action}</div>}
@@ -300,9 +300,9 @@ export function Row({
 }) {
   return (
     <div className="flex items-baseline justify-between gap-6 py-1.5">
-      <span className="shrink-0 text-sm text-zinc-500">{label}</span>
+      <span className="shrink-0 text-sm text-fg-subtle">{label}</span>
       <span
-        className="selectable min-w-0 break-words text-right text-sm text-zinc-200"
+        className="selectable min-w-0 break-words text-right text-sm text-fg"
         title={title}
       >
         {children}
@@ -329,7 +329,7 @@ export function Tabs<T extends string>({
   onChange: (id: T) => void;
 }) {
   return (
-    <div role="tablist" className="flex gap-1 border-b border-zinc-800">
+    <div role="tablist" className="flex gap-1 border-b border-line">
       {tabs.map((tab) => (
         <button
           key={tab.id}
@@ -339,8 +339,8 @@ export function Tabs<T extends string>({
           className={cx(
             "-mb-px flex items-center gap-2 border-b-2 px-3 py-2 text-sm transition-colors",
             tab.id === active
-              ? "border-emerald-500 text-zinc-100"
-              : "border-transparent text-zinc-500 hover:text-zinc-300",
+              ? "border-accent text-accent font-medium"
+              : "border-transparent text-fg-subtle hover:text-fg",
           )}
         >
           {tab.label}
@@ -387,7 +387,7 @@ export function LogView({
       onScroll={onScroll}
       className={cx(
         "selectable overflow-auto whitespace-pre-wrap break-words rounded-lg",
-        "border border-zinc-800 bg-zinc-950 p-3 font-mono text-xs leading-relaxed text-zinc-400",
+        "border border-line bg-surface-sunken p-3 font-mono text-xs leading-relaxed text-fg-muted",
         className,
       )}
     >
@@ -398,5 +398,5 @@ export function LogView({
 
 /** The "we asked but the Base has not answered yet" state, used a lot here. */
 export function Unavailable({ children }: { children: ReactNode }) {
-  return <p className="text-sm leading-relaxed text-zinc-500">{children}</p>;
+  return <p className="text-sm leading-relaxed text-fg-subtle">{children}</p>;
 }

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 
+import wordmark from "../assets/wordmark.png";
 import { Button, Card, ErrorNote, Field, Input } from "../components/ui";
 import * as api from "../lib/api";
 import type { Vault } from "../lib/useVault";
@@ -17,7 +18,7 @@ export function UnlockView({ vault }: { vault: Vault }) {
   const [mode, setMode] = useState<"default" | "recover">("default");
 
   return (
-    <div className="flex h-full items-center justify-center bg-zinc-950 p-8">
+    <div className="flex h-full items-center justify-center bg-canvas p-8">
       <div className="w-full max-w-md animate-fade-in">
         <Wordmark />
         {mode === "recover" ? (
@@ -38,8 +39,13 @@ export function UnlockView({ vault }: { vault: Vault }) {
 function Wordmark() {
   return (
     <div className="mb-8 text-center">
-      <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">OwnBase</h1>
-      <p className="mt-1 text-sm text-zinc-500">Build faster with AI. Own everything.</p>
+      <img
+        src={wordmark}
+        alt="OwnBase"
+        className="mx-auto h-9 w-auto max-w-[14rem] object-contain"
+        draggable={false}
+      />
+      <p className="mt-2 text-sm text-fg-subtle">Build faster with AI. Own everything.</p>
     </div>
   );
 }
@@ -76,8 +82,8 @@ function UnlockVault({
 
   return (
     <Card>
-      <h2 className="text-base font-medium text-zinc-100">Unlock your vault</h2>
-      <p className="mt-1.5 text-sm leading-relaxed text-zinc-500">
+      <h2 className="text-base font-medium text-fg">Unlock your vault</h2>
+      <p className="mt-1.5 text-sm leading-relaxed text-fg-subtle">
         Your master password decrypts the keys and tokens that reach your Bases. It
         is held in memory by the credential agent and never written anywhere.
       </p>
@@ -102,14 +108,14 @@ function UnlockVault({
       </form>
 
       {vault.status?.vault_path && (
-        <p className="selectable mt-4 break-all font-mono text-xs text-zinc-600">
+        <p className="selectable mt-4 break-all font-mono text-xs text-fg-faint">
           {vault.status.vault_path}
         </p>
       )}
       <button
         type="button"
         onClick={onRecover}
-        className="mt-4 text-xs text-zinc-500 underline-offset-2 hover:text-zinc-300 hover:underline"
+        className="mt-4 text-xs text-fg-subtle underline-offset-2 hover:text-fg-muted hover:underline"
       >
         Restore from recovery string…
       </button>
@@ -147,10 +153,10 @@ function RecoverVault({
 
   return (
     <Card>
-      <h2 className="text-base font-medium text-zinc-100">
+      <h2 className="text-base font-medium text-fg">
         Restore from recovery string
       </h2>
-      <p className="mt-1.5 text-sm leading-relaxed text-zinc-500">
+      <p className="mt-1.5 text-sm leading-relaxed text-fg-subtle">
         Paste the recovery string printed when the vault was created (or from Vault
         → Recovery string), then your master password. This machine will point at
         the same remote vault and unlock it.
@@ -242,8 +248,8 @@ function CreateVault({
 
   return (
     <Card>
-      <h2 className="text-base font-medium text-zinc-100">Create your vault</h2>
-      <p className="mt-1.5 text-sm leading-relaxed text-zinc-500">
+      <h2 className="text-base font-medium text-fg">Create your vault</h2>
+      <p className="mt-1.5 text-sm leading-relaxed text-fg-subtle">
         One encrypted file holds the SSH keys and API tokens for every Base you
         own. You choose where it lives, and nothing but your master password can
         open it.
@@ -301,7 +307,7 @@ function CreateVault({
         </Button>
       </form>
 
-      <p className="mt-4 text-xs leading-relaxed text-zinc-600">
+      <p className="mt-4 text-xs leading-relaxed text-fg-faint">
         Already have a vault on another machine? Point this at the same file and
         OwnBase will use it instead of creating a new one. For a remote vault,
         use the recovery string instead.
@@ -309,7 +315,7 @@ function CreateVault({
       <button
         type="button"
         onClick={onRecover}
-        className="mt-3 text-xs text-zinc-500 underline-offset-2 hover:text-zinc-300 hover:underline"
+        className="mt-3 text-xs text-fg-subtle underline-offset-2 hover:text-fg-muted hover:underline"
       >
         Restore from recovery string…
       </button>

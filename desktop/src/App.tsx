@@ -27,22 +27,22 @@ export function App() {
 
   if (vault.phase === "loading") {
     return (
-      <div className="flex h-full items-center justify-center bg-zinc-950">
-        <Spinner className="h-5 w-5 text-zinc-600" />
+      <div className="flex h-full items-center justify-center bg-canvas">
+        <Spinner className="h-5 w-5 text-fg-faint" />
       </div>
     );
   }
 
   if (vault.phase === "broken") {
     return (
-      <div className="flex h-full items-center justify-center bg-zinc-950 p-8">
+      <div className="flex h-full items-center justify-center bg-canvas p-8">
         <div className="w-full max-w-lg">
           <ErrorNote
             title="OwnBase could not run its command-line tool"
             detail={vault.error}
             onRetry={() => void vault.refresh()}
           />
-          <p className="mt-4 text-sm leading-relaxed text-zinc-500">
+          <p className="mt-4 text-sm leading-relaxed text-fg-subtle">
             The app bundles <code className="font-mono">ownbasectl</code> and does
             everything through it, so this is a problem with the install rather
             than with any of your Bases — they are unaffected.
@@ -80,7 +80,7 @@ function Shell({ vault }: { vault: Vault }) {
     route.view === "base" ? (list.find((b) => b.name === route.name) ?? null) : null;
 
   return (
-    <div className="flex h-full bg-zinc-950">
+    <div className="flex h-full bg-canvas">
       <Sidebar
         bases={list}
         loading={bases.loading}
@@ -139,7 +139,7 @@ function Shell({ vault }: { vault: Vault }) {
           />
         ) : (
           <div className="flex h-full items-center justify-center">
-            <Spinner className="text-zinc-700" />
+            <Spinner className="text-fg-faint" />
           </div>
         )}
       </main>
