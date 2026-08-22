@@ -49,7 +49,7 @@ export function ServicePanel({
         }
       >
         {adding && (
-          <div className="mb-4 border-b border-zinc-800 pb-4">
+          <div className="mb-4 border-b border-line pb-4">
             <ServiceEditForm
               base={base}
               mode="add"
@@ -67,7 +67,7 @@ export function ServicePanel({
             repo.
           </Unavailable>
         ) : (
-          <ul className="divide-y divide-zinc-800">
+          <ul className="divide-y divide-line">
             {services.map((service) => (
               <ServiceRow
                 key={service.name}
@@ -86,14 +86,14 @@ export function ServicePanel({
 
       {jobs.length > 0 && (
         <Panel title="Scheduled jobs" subtitle="Timers, and how their last run went.">
-          <ul className="divide-y divide-zinc-800">
+          <ul className="divide-y divide-line">
             {jobs.map((job) => (
               <li key={job.name} className="py-3 first:pt-0 last:pb-0">
                 <div className="flex items-center justify-between gap-3">
-                  <span className="text-sm text-zinc-200">{job.name}</span>
-                  <span className="font-mono text-xs text-zinc-500">{job.schedule}</span>
+                  <span className="text-sm text-fg">{job.name}</span>
+                  <span className="font-mono text-xs text-fg-subtle">{job.schedule}</span>
                 </div>
-                <p className="mt-1 text-xs text-zinc-500">reuses {job.service}</p>
+                <p className="mt-1 text-xs text-fg-subtle">reuses {job.service}</p>
               </li>
             ))}
           </ul>
@@ -133,29 +133,29 @@ function ServiceRow({
         <button
           type="button"
           onClick={onToggle}
-          className="flex min-w-0 items-center gap-2 text-left text-sm text-zinc-200 hover:text-zinc-50"
+          className="flex min-w-0 items-center gap-2 text-left text-sm text-fg hover:text-fg"
         >
           <span
             className={cx(
               "inline-block h-1.5 w-1.5 rounded-full",
-              tone === "good" && "bg-emerald-400",
-              tone === "warn" && "bg-amber-400",
-              tone === "bad" && "bg-red-400",
+              tone === "good" && "bg-good",
+              tone === "warn" && "bg-warn",
+              tone === "bad" && "bg-bad",
             )}
           />
           {service.name}
         </button>
         <span className="flex items-center gap-3 text-xs">
           {service.ref && (
-            <span className="font-mono text-zinc-500" title={service.ref}>
+            <span className="font-mono text-fg-subtle" title={service.ref}>
               @{shortRef(service.ref)}
             </span>
           )}
           <span
             className={cx(
-              tone === "good" && "text-emerald-300",
-              tone === "warn" && "text-amber-300",
-              tone === "bad" && "text-red-300",
+              tone === "good" && "text-good-fg",
+              tone === "warn" && "text-warn-fg",
+              tone === "bad" && "text-bad-fg",
             )}
           >
             {state}
@@ -166,7 +166,7 @@ function ServiceRow({
         </span>
       </div>
       {(domains.length > 0 || service.repo) && (
-        <div className="mt-1 space-y-0.5 pl-4 text-xs text-zinc-500">
+        <div className="mt-1 space-y-0.5 pl-4 text-xs text-fg-subtle">
           {domains.map((domain) => (
             <p key={domain} className="selectable font-mono">
               https://{domain}
@@ -311,27 +311,27 @@ function ServiceSecrets({ base, service }: { base: string; service: string }) {
   }
 
   return (
-    <div className="space-y-3 rounded-md border border-zinc-800 bg-zinc-950/40 p-3">
-      <p className="text-xs leading-relaxed text-zinc-500">
+    <div className="space-y-3 rounded-md border border-line bg-surface-sunken p-3">
+      <p className="text-xs leading-relaxed text-fg-subtle">
         Age-encrypted on the Base. Values are never shown until you reveal one.
         RESTIC_PASSWORD on service backup must go through Backup → Rekey.
       </p>
       {state.loading ? (
         <Spinner />
       ) : keys.length === 0 ? (
-        <p className="text-xs text-zinc-500">No secrets yet.</p>
+        <p className="text-xs text-fg-subtle">No secrets yet.</p>
       ) : (
-        <ul className="divide-y divide-zinc-800">
+        <ul className="divide-y divide-line">
           {keys.map((key) => (
             <li
               key={key}
               className="flex flex-wrap items-center justify-between gap-2 py-2 text-xs first:pt-0 last:pb-0"
             >
-              <span className="font-mono text-zinc-300">{key}</span>
+              <span className="font-mono text-fg-muted">{key}</span>
               <span className="flex items-center gap-2">
                 {revealed[key] !== undefined && (
                   <>
-                    <span className="selectable max-w-xs truncate font-mono text-zinc-400">
+                    <span className="selectable max-w-xs truncate font-mono text-fg-muted">
                       {revealed[key]}
                     </span>
                     <CopyButton value={revealed[key]} label="Copy" />
@@ -356,7 +356,7 @@ function ServiceSecrets({ base, service }: { base: string; service: string }) {
           ))}
         </ul>
       )}
-      <form onSubmit={add} className="flex flex-wrap items-end gap-2 border-t border-zinc-800 pt-3">
+      <form onSubmit={add} className="flex flex-wrap items-end gap-2 border-t border-line pt-3">
         <Field label="Key">
           <Input
             value={newKey}
@@ -383,8 +383,8 @@ function ServiceSecrets({ base, service }: { base: string; service: string }) {
           Set
         </Button>
       </form>
-      {error && <p className="text-xs text-red-300">{error}</p>}
-      {note && <p className="text-xs text-amber-300">{note}</p>}
+      {error && <p className="text-xs text-bad-fg">{error}</p>}
+      {note && <p className="text-xs text-warn-fg">{note}</p>}
     </div>
   );
 }
@@ -462,7 +462,7 @@ function ServiceEditForm({
   }
 
   return (
-    <div className="space-y-3 rounded-md border border-zinc-800 bg-zinc-950/40 p-3">
+    <div className="space-y-3 rounded-md border border-line bg-surface-sunken p-3">
       {mode === "add" && (
         <Field label="Service name">
           <Input
@@ -544,7 +544,7 @@ function ServiceEditForm({
       {preview && (
         <DiffPreview diff={preview.diff} commitMessage={preview.commit_message} />
       )}
-      {error && <p className="text-xs text-red-300">{error}</p>}
+      {error && <p className="text-xs text-bad-fg">{error}</p>}
     </div>
   );
 }
@@ -597,8 +597,8 @@ function ServiceRemoveForm({
   }
 
   return (
-    <div className="space-y-3 rounded-md border border-red-500/20 bg-red-500/5 p-3">
-      <p className="text-xs leading-relaxed text-zinc-400">
+    <div className="space-y-3 rounded-md border border-bad-line bg-bad-soft p-3">
+      <p className="text-xs leading-relaxed text-fg-muted">
         Removes {service} from ownbase.yaml. Data volumes are not deleted by this
         alone — type the service name to confirm.
       </p>
@@ -634,7 +634,7 @@ function ServiceRemoveForm({
       {preview && (
         <DiffPreview diff={preview.diff} commitMessage={preview.commit_message} />
       )}
-      {error && <p className="text-xs text-red-300">{error}</p>}
+      {error && <p className="text-xs text-bad-fg">{error}</p>}
     </div>
   );
 }
@@ -658,9 +658,9 @@ function ConfigYAMLPanel({ base }: { base: string }) {
         (state.loading ? (
           <Spinner />
         ) : state.error ? (
-          <p className="text-xs text-red-300">{state.error}</p>
+          <p className="text-xs text-bad-fg">{state.error}</p>
         ) : (
-          <pre className="selectable max-h-80 overflow-auto rounded-md border border-zinc-800 bg-zinc-950/60 p-3 font-mono text-[11px] leading-relaxed text-zinc-300">
+          <pre className="selectable max-h-80 overflow-auto rounded-md border border-line bg-surface-sunken p-3 font-mono text-[11px] leading-relaxed text-fg-muted">
             {state.data}
           </pre>
         ))}

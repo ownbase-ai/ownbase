@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import { RefreshCw, Shield, Trash2 } from "lucide-react";
 
 import { CopyButton } from "../components/CopyButton";
 import {
@@ -72,7 +73,7 @@ export function BaseDetail({
         daemonVersion={status?.version}
       />
 
-      <div className="border-b border-zinc-800 px-8">
+      <div className="border-b border-line px-8">
         <Tabs<Tab>
           active={tab}
           onChange={setTab}
@@ -94,7 +95,7 @@ export function BaseDetail({
 
       <div className="min-h-0 flex-1 overflow-y-auto px-8 py-6">
         {state.loading ? (
-          <div className="flex items-center gap-3 text-sm text-zinc-500">
+          <div className="flex items-center gap-3 text-sm text-fg-subtle">
             <Spinner /> Asking {base.name} how it is doing…
           </div>
         ) : state.error || !status ? (
@@ -192,19 +193,22 @@ function Header({
     <header className="flex items-start justify-between gap-6 px-8 pb-4 pt-8">
       <div className="min-w-0">
         <div className="flex items-center gap-3">
-          <h1 className="truncate text-lg font-medium text-zinc-100">{base.name}</h1>
+          <h1 className="truncate text-2xl font-semibold tracking-tight text-fg">
+            {base.name}
+          </h1>
           <Badge tone={verdict.tone}>
             <Dot tone={verdict.tone} />
             {verdict.text}
           </Badge>
         </div>
-        <p className="selectable mt-1 truncate font-mono text-xs text-zinc-500">
+        <p className="selectable mt-1 truncate font-mono text-xs text-fg-subtle">
           {base.ssh_user}@{base.host}
           {base.ssh_port && base.ssh_port !== 22 ? `:${base.ssh_port}` : ""}
           {daemonVersion ? ` · ownbased ${daemonVersion}` : ""}
         </p>
       </div>
       <Button variant="secondary" busy={state.refreshing} onClick={state.reload}>
+        <RefreshCw className="h-3.5 w-3.5" aria-hidden />
         Refresh
       </Button>
     </header>
@@ -222,7 +226,7 @@ function NotReachableYet({
   const unregistered = base.kind === "unregistered-vm";
   return (
     <div className="flex h-full flex-col px-8 py-8">
-      <h1 className="text-lg font-medium text-zinc-100">{base.name}</h1>
+      <h1 className="text-2xl font-semibold tracking-tight text-fg">{base.name}</h1>
       <div className="mt-6 space-y-8">
         {unregistered ? (
           <EmptyState title="A local VM with this name, but no Base">
@@ -269,7 +273,7 @@ function UnreachableNote({
         detail={detail}
         onRetry={onRetry}
       />
-      <p className="text-sm leading-relaxed text-zinc-500">
+      <p className="text-sm leading-relaxed text-fg-subtle">
         The app reaches a Base exactly the way the CLI does — an SSH tunnel to the
         daemon's loopback API — so this is the machine or the network, not the app.
         If it was just created it may still be hardening. To look at the machine
@@ -349,14 +353,14 @@ function Overview({
               <span className="font-mono text-xs">
                 {status.config?.repo_url || base.config_repo_url}
                 {(status.config?.ref || base.config_ref) && (
-                  <span className="text-zinc-500">
+                  <span className="text-fg-subtle">
                     {" "}
                     ({status.config?.ref || base.config_ref})
                   </span>
                 )}
               </span>
             ) : (
-              <span className="text-zinc-500">not set up yet</span>
+              <span className="text-fg-subtle">not set up yet</span>
             )}
           </Row>
           <Row label="Status read" title={absolute(status.generated_at)}>
@@ -367,14 +371,14 @@ function Overview({
         <Panel title="At a glance">
           <Row label="Services running">
             {services.length === 0 ? (
-              <span className="text-zinc-500">none deployed</span>
+              <span className="text-fg-subtle">none deployed</span>
             ) : (
               `${running} of ${services.length}`
             )}
           </Row>
           {unhealthy > 0 && (
             <Row label="Unhealthy">
-              <span className="text-amber-300">{unhealthy}</span>
+              <span className="text-warn-fg">{unhealthy}</span>
             </Row>
           )}
           <Row label="Last backup" title={absolute(status.security.last_backup)}>
@@ -382,9 +386,9 @@ function Overview({
           </Row>
           <Row label="Provably restorable">
             {status.security.backup_restorable ? (
-              <span className="text-emerald-300">yes</span>
+              <span className="text-good-fg">yes</span>
             ) : (
-              <span className="text-amber-300">not yet verified</span>
+              <span className="text-warn-fg">not yet verified</span>
             )}
           </Row>
           {status.security.disk_used_percent ? (
@@ -492,9 +496,12 @@ function FindingRow({
   }
 
   return (
-    <li className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-3.5 py-3">
+    <li className="rounded-lg border border-line bg-surface px-3.5 py-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <span className="text-sm text-amber-100/90">{finding.summary}</span>
+        <span className="flex min-w-0 items-start gap-2.5 text-sm text-fg">
+          <Shield className="mt-0.5 h-4 w-4 shrink-0 text-accent" aria-hidden />
+          <span>{finding.summary}</span>
+        </span>
         <span className="flex items-center gap-2">
           {action.kind === "run" && (
             <Button busy={busy} disabled={busy} onClick={runAction}>
@@ -515,12 +522,12 @@ function FindingRow({
             </Button>
           )}
           {action.kind === "manual" && (
-            <span className="text-xs text-zinc-500">{finding.fix}</span>
+            <span className="text-xs text-fg-subtle">{finding.fix}</span>
           )}
         </span>
       </div>
       {action.kind === "form" && formOpen && action.form === "backup-setup" && (
-        <div className="mt-3 border-t border-amber-500/10 pt-3">
+        <div className="mt-3 border-t border-line pt-3">
           <BackupSetupForm
             base={base}
             onDone={() => {
@@ -531,7 +538,7 @@ function FindingRow({
         </div>
       )}
       {action.kind === "form" && formOpen && action.form === "config-setup" && (
-        <div className="mt-3 border-t border-amber-500/10 pt-3">
+        <div className="mt-3 border-t border-line pt-3">
           <ConfigSetupForm
             base={base}
             onDone={() => {
@@ -542,7 +549,7 @@ function FindingRow({
         </div>
       )}
       {action.kind === "form" && formOpen && action.form === "deploy" && action.service && (
-        <div className="mt-3 border-t border-amber-500/10 pt-3">
+        <div className="mt-3 border-t border-line pt-3">
           <DeployForm
             base={base}
             service={action.service}
@@ -555,7 +562,7 @@ function FindingRow({
         </div>
       )}
       {error && (
-        <p className="mt-2 text-xs leading-relaxed text-red-300">{error}</p>
+        <p className="mt-2 text-xs leading-relaxed text-bad-fg">{error}</p>
       )}
       {lines && lines.length > 0 && (
         <LogView lines={lines} className="mt-3 max-h-48 w-full" />
@@ -634,7 +641,7 @@ export function ConfigSetupForm({
 
   return (
     <div className="space-y-3">
-      <p className="text-xs leading-relaxed text-zinc-500">
+      <p className="text-xs leading-relaxed text-fg-subtle">
         What runs on this Base is decided in a git repo you own. The Base clones
         it read-only; you commit changes from this computer.
       </p>
@@ -656,7 +663,7 @@ export function ConfigSetupForm({
           disabled={busy !== null || done}
         />
       </Field>
-      <label className="flex cursor-pointer items-start gap-3 text-sm text-zinc-300">
+      <label className="flex cursor-pointer items-start gap-3 text-sm text-fg-muted">
         <input
           type="checkbox"
           className="mt-1"
@@ -666,18 +673,18 @@ export function ConfigSetupForm({
         />
         <span>
           Seed a starter ownbase.yaml if the repo is empty
-          <span className="mt-0.5 block text-xs text-zinc-500">
+          <span className="mt-0.5 block text-xs text-fg-subtle">
             Postgres with point-in-time recovery. Safe to uncheck if the repo
             already has a config.
           </span>
         </span>
       </label>
 
-      <div className="space-y-2 rounded-md border border-zinc-800 bg-zinc-950/40 p-3">
-        <p className="text-xs font-medium text-zinc-300">
+      <div className="space-y-2 rounded-md border border-line bg-surface-sunken p-3">
+        <p className="text-xs font-medium text-fg-muted">
           1. Register the Base&apos;s deploy key on the repo
         </p>
-        <p className="text-xs leading-relaxed text-zinc-500">
+        <p className="text-xs leading-relaxed text-fg-subtle">
           Read-only. The Base uses this key to clone — different from the owner
           key you use to SSH in.
         </p>
@@ -692,7 +699,7 @@ export function ConfigSetupForm({
           </Button>
         ) : (
           <div className="space-y-2">
-            <p className="selectable break-all font-mono text-[11px] text-zinc-300">
+            <p className="selectable break-all font-mono text-[11px] text-fg-muted">
               {publicKey}
             </p>
             <CopyButton value={publicKey} label="Copy public key" />
@@ -709,9 +716,9 @@ export function ConfigSetupForm({
           {done ? "Configured" : "Point Base at this repo"}
         </Button>
       </div>
-      {error && <p className="text-xs text-red-300">{error}</p>}
+      {error && <p className="text-xs text-bad-fg">{error}</p>}
       {done && (
-        <p className="text-xs text-emerald-300">
+        <p className="text-xs text-good-fg">
           Config source set. The Base is pulling and reconciling.
         </p>
       )}
@@ -808,8 +815,8 @@ function DeployForm({
       {preview && (
         <DiffPreview diff={preview.diff} commitMessage={preview.commit_message} />
       )}
-      {error && <p className="text-xs text-red-300">{error}</p>}
-      {result && <p className="text-xs text-emerald-300">{result}</p>}
+      {error && <p className="text-xs text-bad-fg">{error}</p>}
+      {result && <p className="text-xs text-good-fg">{result}</p>}
     </div>
   );
 }
@@ -983,7 +990,7 @@ function BackupSetupForm({
       {preview && (
         <DiffPreview diff={preview.diff} commitMessage={preview.commit_message} />
       )}
-      {error && <p className="text-xs text-red-300">{error}</p>}
+      {error && <p className="text-xs text-bad-fg">{error}</p>}
       {result && (
         <LogView lines={result.split("\n")} className="max-h-48 w-full" />
       )}
@@ -1044,16 +1051,16 @@ function RemoveBase({
     <Panel title={title}>
       {!open ? (
         <div className="space-y-3">
-          <p className="text-sm leading-relaxed text-zinc-500">
+          <p className="text-sm leading-relaxed text-fg-subtle">
             {base.kind === "unregistered-vm" ? (
               <>
-                Deletes the Multipass VM named <strong className="text-zinc-300">{base.name}</strong>.
+                Deletes the Multipass VM named <strong className="text-fg-muted">{base.name}</strong>.
                 There is no OwnBase profile for it.
               </>
             ) : (
               <>
                 Removes the vault profile and owner key for{" "}
-                <strong className="text-zinc-300">{base.name}</strong> from this computer.
+                <strong className="text-fg-muted">{base.name}</strong> from this computer.
                 It does not uninstall OwnBase on the machine, delete the config repo,
                 or destroy a cloud server — only what this laptop knows.
               </>
@@ -1073,7 +1080,7 @@ function RemoveBase({
         </div>
       ) : (
         <div className="space-y-4">
-          <p className="text-sm leading-relaxed text-zinc-400">
+          <p className="text-sm leading-relaxed text-fg-muted">
             {hasProfile && (
               <>
                 This deletes the only client copy of the owner SSH key. Export anything
@@ -1100,7 +1107,7 @@ function RemoveBase({
           </p>
 
           {isLocalVM && hasProfile && (
-            <label className="flex cursor-pointer items-start gap-3 text-sm text-zinc-300">
+            <label className="flex cursor-pointer items-start gap-3 text-sm text-fg-muted">
               <input
                 type="checkbox"
                 className="mt-1"
@@ -1109,7 +1116,7 @@ function RemoveBase({
               />
               <span>
                 Also destroy the local Multipass VM
-                <span className="mt-0.5 block text-xs text-zinc-500">
+                <span className="mt-0.5 block text-xs text-fg-subtle">
                   All data on the VM is lost. Leave unchecked to only forget the profile.
                 </span>
               </span>
@@ -1135,6 +1142,7 @@ function RemoveBase({
 
           <div className="flex flex-wrap gap-3">
             <Button variant="danger" busy={busy} disabled={!ready} onClick={() => void remove()}>
+              <Trash2 className="h-3.5 w-3.5" aria-hidden />
               {base.kind === "unregistered-vm"
                 ? "Destroy VM"
                 : destroyVM && isLocalVM
@@ -1191,13 +1199,13 @@ function Security({
           subtitle="Applied packages need a reboot to take effect — usually a new kernel. A CVE rescan runs automatically on boot."
           action={<RebootAction base={base.name} onChanged={onChanged} />}
         >
-          <p className="text-sm leading-relaxed text-zinc-400">
+          <p className="text-sm leading-relaxed text-fg-muted">
             Until the machine restarts, the CVE scan can report clean while the
             still-running kernel is the vulnerable one. Every service will drop
             for about 30–60 seconds.
           </p>
           {reboot_packages && reboot_packages.length > 0 && (
-            <p className="selectable mt-2 font-mono text-xs leading-relaxed text-zinc-500">
+            <p className="selectable mt-2 font-mono text-xs leading-relaxed text-fg-subtle">
               {reboot_packages.join("  ")}
             </p>
           )}
@@ -1219,26 +1227,26 @@ function Security({
           <>
             <Row label="Firewall">
               {exposure.firewall_active ? (
-                <span className="text-emerald-300">active</span>
+                <span className="text-good-fg">active</span>
               ) : (
-                <span className="text-red-300">not active</span>
+                <span className="text-bad-fg">not active</span>
               )}
             </Row>
             <Row label="Unexpected open ports">
               {exposure.unexpected_count === 0 ? (
-                <span className="text-emerald-300">none</span>
+                <span className="text-good-fg">none</span>
               ) : (
-                <span className="text-amber-300">{exposure.unexpected_count}</span>
+                <span className="text-warn-fg">{exposure.unexpected_count}</span>
               )}
             </Row>
             {exposure.listeners && exposure.listeners.length > 0 && (
-              <ul className="mt-3 divide-y divide-zinc-800 border-t border-zinc-800">
+              <ul className="mt-3 divide-y divide-line border-t border-line">
                 {exposure.listeners.map((l) => (
                   <li
                     key={`${l.proto}-${l.bind}-${l.port}`}
                     className="flex items-center justify-between gap-3 py-2 text-xs"
                   >
-                    <span className="selectable font-mono text-zinc-300">
+                    <span className="selectable font-mono text-fg-muted">
                       {l.bind}:{l.port}/{l.proto}
                       {l.process ? ` ${l.process}` : ""}
                     </span>
@@ -1255,7 +1263,7 @@ function Security({
                 ))}
               </ul>
             )}
-            <p className="mt-3 text-xs leading-relaxed text-zinc-500">
+            <p className="mt-3 text-xs leading-relaxed text-fg-subtle">
               This is the on-machine view. It cannot see a firewall your provider
               runs in front of the machine, or a kernel hiding a socket from it.
             </p>
@@ -1274,32 +1282,32 @@ function Security({
           <>
             <Row label="Brute-force protection">
               {!access.fail2ban_available ? (
-                <span className="text-zinc-500">unknown</span>
+                <span className="text-fg-subtle">unknown</span>
               ) : access.fail2ban_active ? (
-                <span className="text-emerald-300">active</span>
+                <span className="text-good-fg">active</span>
               ) : (
-                <span className="text-amber-300">not active</span>
+                <span className="text-warn-fg">not active</span>
               )}
             </Row>
             <Row label="Failed attempts">{access.failed_attempts}</Row>
             <Row label="Currently banned">{access.banned_ips?.length ?? 0}</Row>
             {access.banned_ips && access.banned_ips.length > 0 && (
-              <p className="selectable mt-2 font-mono text-xs leading-relaxed text-zinc-500">
+              <p className="selectable mt-2 font-mono text-xs leading-relaxed text-fg-subtle">
                 {access.banned_ips.join("  ")}
               </p>
             )}
             {access.recent_logins && access.recent_logins.length > 0 && (
-              <ul className="mt-3 divide-y divide-zinc-800 border-t border-zinc-800">
+              <ul className="mt-3 divide-y divide-line border-t border-line">
                 {access.recent_logins.map((login, i) => (
                   <li
                     key={`${login.time}-${i}`}
                     className="flex items-center justify-between gap-3 py-2 text-xs"
                   >
-                    <span className="selectable font-mono text-zinc-300">
+                    <span className="selectable font-mono text-fg-muted">
                       {login.user}@{login.source_ip}
                       {login.method ? ` (${login.method})` : ""}
                     </span>
-                    <span className="text-zinc-500" title={absolute(login.time)}>
+                    <span className="text-fg-subtle" title={absolute(login.time)}>
                       {ago(login.time)}
                     </span>
                   </li>
@@ -1351,7 +1359,7 @@ function Security({
             {vulns.images?.map((image) =>
               image.scan_failed ? (
                 <Row key={image.service} label={image.service} title={image.image}>
-                  <span className="text-amber-300">
+                  <span className="text-warn-fg">
                     scan failed{image.scan_error ? ` — ${image.scan_error}` : ""}
                   </span>
                 </Row>
@@ -1364,7 +1372,7 @@ function Security({
                 />
               ),
             )}
-            <p className="mt-3 text-xs leading-relaxed text-zinc-500">
+            <p className="mt-3 text-xs leading-relaxed text-fg-subtle">
               A CVE with no published patch clears when Ubuntu (or the image
               upstream) ships one — there is nothing to run in the meantime.
               Host packages with a patch, core-image CVEs, and service updates
@@ -1386,14 +1394,14 @@ function Security({
         ) : (
           <>
             <Row label="Files changed outside the daemon">
-              <span className="text-red-300">{drift_count ?? 0}</span>
+              <span className="text-bad-fg">{drift_count ?? 0}</span>
             </Row>
             {drift_files && (
-              <p className="selectable mt-2 font-mono text-xs leading-relaxed text-zinc-400">
+              <p className="selectable mt-2 font-mono text-xs leading-relaxed text-fg-muted">
                 {drift_files.join("\n")}
               </p>
             )}
-            <p className="mt-3 text-xs leading-relaxed text-zinc-500">
+            <p className="mt-3 text-xs leading-relaxed text-fg-subtle">
               Any difference is a signal worth understanding. The daemon is the
               only writer of generated files — a drift means something else
               changed them.
@@ -1407,7 +1415,7 @@ function Security({
 
 function Severities({ summary }: { summary: VulnSummary }) {
   const total = summary.critical + summary.high + summary.medium + summary.low;
-  if (total === 0) return <span className="text-emerald-300">none found</span>;
+  if (total === 0) return <span className="text-good-fg">none found</span>;
   const fixable =
     (summary.fixable_critical ?? 0) + (summary.fixable_high ?? 0);
   const unfixed =
@@ -1416,13 +1424,13 @@ function Severities({ summary }: { summary: VulnSummary }) {
     <span className="inline-flex flex-wrap items-center gap-2">
       {summary.critical > 0 && <Badge tone="bad">{summary.critical} critical</Badge>}
       {summary.high > 0 && <Badge tone="warn">{summary.high} high</Badge>}
-      <span className="text-xs text-zinc-500">
+      <span className="text-xs text-fg-subtle">
         {summary.medium + summary.low} lower
         {summary.critical + summary.high > 0 && (
           <>
             {" · "}
             {fixable > 0 ? (
-              <span className="text-amber-300">{fixable} with a patch</span>
+              <span className="text-warn-fg">{fixable} with a patch</span>
             ) : (
               "none with a patch"
             )}
@@ -1453,20 +1461,20 @@ function VulnTarget({
   const hasTop = top.length > 0;
 
   return (
-    <div className="border-b border-zinc-800 py-2 last:border-b-0">
+    <div className="border-b border-line py-2 last:border-b-0">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <button
           type="button"
           className={cx(
-            "flex min-w-0 items-center gap-2 text-left text-sm text-zinc-200",
-            hasTop && "cursor-pointer hover:text-zinc-50",
+            "flex min-w-0 items-center gap-2 text-left text-sm text-fg",
+            hasTop && "cursor-pointer hover:text-fg",
           )}
           onClick={() => hasTop && setOpen((v) => !v)}
           disabled={!hasTop}
           title={title}
         >
           {hasTop && (
-            <span className="font-mono text-xs text-zinc-500">{open ? "▾" : "▸"}</span>
+            <span className="font-mono text-xs text-fg-subtle">{open ? "▾" : "▸"}</span>
           )}
           <span className="truncate">{label}</span>
         </button>
@@ -1476,12 +1484,12 @@ function VulnTarget({
         <div className="mt-2">
           <VulnList findings={top} />
           {top.length >= 20 && (
-            <p className="mt-1 text-xs text-zinc-500">
+            <p className="mt-1 text-xs text-fg-subtle">
               Showing the 20 most severe. Medium and low are counted above but not listed.
             </p>
           )}
           {fixHint && (
-            <p className="mt-2 text-xs text-zinc-500">{fixHint}</p>
+            <p className="mt-2 text-xs text-fg-subtle">{fixHint}</p>
           )}
         </div>
       )}
@@ -1495,16 +1503,16 @@ function VulnList({
   findings: NonNullable<VulnSummary["top"]>;
 }) {
   return (
-    <ul className="divide-y divide-zinc-800 border-t border-zinc-800">
+    <ul className="divide-y divide-line border-t border-line">
       {findings.map((finding) => (
         <li key={`${finding.vuln_id}-${finding.package}`} className="py-2 text-xs">
           <div className="flex items-center justify-between gap-3">
-            <span className="selectable font-mono text-zinc-300">{finding.vuln_id}</span>
+            <span className="selectable font-mono text-fg-muted">{finding.vuln_id}</span>
             <Badge tone={finding.severity.toUpperCase() === "CRITICAL" ? "bad" : "warn"}>
               {finding.severity.toLowerCase()}
             </Badge>
           </div>
-          <p className="mt-0.5 text-zinc-500">
+          <p className="mt-0.5 text-fg-subtle">
             {finding.package}
             {finding.version ? ` ${finding.version}` : ""}
             {finding.fixed_in
@@ -1548,7 +1556,7 @@ function RescanAction({
       <Button variant="secondary" busy={busy || !!scanning} disabled={!!scanning} onClick={() => void rescan()}>
         {scanning ? "Scanning…" : "Rescan"}
       </Button>
-      {msg && <p className="max-w-xs text-right text-xs text-zinc-500">{msg}</p>}
+      {msg && <p className="max-w-xs text-right text-xs text-fg-subtle">{msg}</p>}
     </div>
   );
 }
@@ -1606,9 +1614,9 @@ function RebootAction({ base, onChanged }: { base: string; onChanged: () => void
       <Button variant="danger" busy={busy} onClick={reboot}>
         {phase === "rebooting" ? "Waiting for Base…" : phase === "back" ? "Back" : "Reboot now"}
       </Button>
-      {error && <p className="max-w-xs text-right text-xs text-red-300">{error}</p>}
+      {error && <p className="max-w-xs text-right text-xs text-bad-fg">{error}</p>}
       {phase === "back" && (
-        <p className="max-w-xs text-right text-xs text-zinc-400">
+        <p className="max-w-xs text-right text-xs text-fg-muted">
           Base is back. A CVE rescan is running — counts refresh in a few minutes.
         </p>
       )}
@@ -1647,7 +1655,7 @@ function Backups({
       >
         {!configured ? (
           <div className="space-y-4">
-            <p className="text-sm leading-relaxed text-zinc-400">
+            <p className="text-sm leading-relaxed text-fg-muted">
               No snapshot has ever been taken, so there is no way back from a lost
               disk. Backups go to an encrypted off-machine repository you own
               (S3, B2, or SFTP).
@@ -1668,15 +1676,15 @@ function Backups({
             </Row>
             <Row label="Provably restorable">
               {backup_restorable ? (
-                <span className="text-emerald-300">yes</span>
+                <span className="text-good-fg">yes</span>
               ) : (
-                <span className="text-amber-300">not yet verified</span>
+                <span className="text-warn-fg">not yet verified</span>
               )}
             </Row>
             <Row label="Last restore drill" title={absolute(last_verified)}>
               {ago(last_verified)}
             </Row>
-            <p className="mt-3 text-xs leading-relaxed text-zinc-500">
+            <p className="mt-3 text-xs leading-relaxed text-fg-subtle">
               The drill is the part that matters: the Base restores its newest
               snapshot into an isolated directory, checks it, and when Postgres is in
               the backup starts a real database from it and waits for recovery. Until
@@ -1790,16 +1798,16 @@ function BackupLifecycle({ base }: { base: string }) {
         </Button>
       </div>
       {generatedPw && (
-        <div className="mt-3 space-y-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
-          <p className="text-xs font-medium text-amber-200">
+        <div className="mt-3 space-y-2 rounded-md border border-warn-line bg-warn-soft p-3">
+          <p className="text-xs font-medium text-warn-fg">
             Save this restic password now — it is not recoverable from OwnBase later.
           </p>
-          <p className="selectable break-all font-mono text-sm text-zinc-100">{generatedPw}</p>
+          <p className="selectable break-all font-mono text-sm text-fg">{generatedPw}</p>
           <CopyButton value={generatedPw} label="Copy password" />
         </div>
       )}
       {showKit && kit && (
-        <div className="mt-3 space-y-2 rounded-md border border-zinc-800 bg-zinc-950/40 p-3 text-xs">
+        <div className="mt-3 space-y-2 rounded-md border border-line bg-surface-sunken p-3 text-xs">
           <Row label="Repo">
             <span className="selectable font-mono">{kit.repo}</span>
           </Row>
@@ -1818,10 +1826,10 @@ function BackupLifecycle({ base }: { base: string }) {
               label="Copy kit"
             />
           </div>
-          {kit.note && <p className="text-zinc-500">{kit.note}</p>}
+          {kit.note && <p className="text-fg-subtle">{kit.note}</p>}
         </div>
       )}
-      {error && <p className="mt-2 text-xs text-red-300">{error}</p>}
+      {error && <p className="mt-2 text-xs text-bad-fg">{error}</p>}
       {lines && <LogView lines={lines} className="mt-3 max-h-40 w-full" />}
     </Panel>
   );
@@ -1890,7 +1898,7 @@ function DBRecovery({ base }: { base: string }) {
       {state.loading ? (
         <Spinner />
       ) : state.error ? (
-        <p className="text-xs text-zinc-500">
+        <p className="text-xs text-fg-subtle">
           No Postgres recovery window available ({state.error}).
         </p>
       ) : s ? (
@@ -1910,7 +1918,7 @@ function DBRecovery({ base }: { base: string }) {
         </div>
       ) : null}
 
-      <div className="space-y-3 border-t border-zinc-800 pt-3">
+      <div className="space-y-3 border-t border-line pt-3">
         <Field
           label="Recover to"
           hint='UTC timestamp, e.g. 2026-07-25 14:00:00+00. Empty = everything the repository holds.'
@@ -1922,7 +1930,7 @@ function DBRecovery({ base }: { base: string }) {
             spellCheck={false}
           />
         </Field>
-        <div className="flex flex-wrap gap-4 text-sm text-zinc-300">
+        <div className="flex flex-wrap gap-4 text-sm text-fg-muted">
           <label className="flex items-center gap-2">
             <input
               type="radio"
@@ -1957,8 +1965,8 @@ function DBRecovery({ base }: { base: string }) {
         >
           {into === "production" ? "Restore over production" : "Restore to scratch"}
         </Button>
-        {error && <p className="text-xs text-red-300">{error}</p>}
-        {result && <p className="text-xs text-emerald-300">{result}</p>}
+        {error && <p className="text-xs text-bad-fg">{error}</p>}
+        {result && <p className="text-xs text-good-fg">{result}</p>}
       </div>
     </Panel>
   );
@@ -2029,12 +2037,12 @@ function BackupActions({ base, onChanged }: { base: string; onChanged: () => voi
         </Button>
       </div>
       {busy === "verify" && (
-        <p className="text-xs text-zinc-500">
+        <p className="text-xs text-fg-subtle">
           This takes minutes — it is a real restore.
         </p>
       )}
       {error && (
-        <p className="max-w-md text-right text-xs leading-relaxed text-red-300">
+        <p className="max-w-md text-right text-xs leading-relaxed text-bad-fg">
           {error}
         </p>
       )}
@@ -2082,16 +2090,16 @@ function Updates({
             its own schedule and reports what it finds here.
           </Unavailable>
         ) : (
-          <ul className="divide-y divide-zinc-800">
+          <ul className="divide-y divide-line">
             {drift.map((d) => (
               <li key={d.service} className="py-3 first:pt-0 last:pb-0">
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                  <span className="flex items-center gap-2 text-sm text-zinc-200">
+                  <span className="flex items-center gap-2 text-sm text-fg">
                     <Dot tone={d.up_to_date ? "good" : "warn"} />
                     {d.service}
                   </span>
                   <span className="flex items-center gap-3">
-                    <span className="font-mono text-xs text-zinc-500" title={d.ref}>
+                    <span className="font-mono text-xs text-fg-subtle" title={d.ref}>
                       @{shortRef(d.ref)}
                     </span>
                     {!d.up_to_date && (
@@ -2106,7 +2114,7 @@ function Updates({
                     )}
                   </span>
                 </div>
-                <p className="mt-1 pl-4 text-xs text-zinc-500">
+                <p className="mt-1 pl-4 text-xs text-fg-subtle">
                   {driftStatusLine(d)}
                 </p>
                 {openFor === d.service && (
@@ -2205,14 +2213,14 @@ function CoreUpgrade({ base, onChanged }: { base: string; onChanged: () => void 
       }
     >
       {check ? (
-        <ul className="divide-y divide-zinc-800 text-xs">
+        <ul className="divide-y divide-line text-xs">
           {check.packages.map((pkg) => (
             <li
               key={pkg.name}
               className="flex flex-wrap items-center justify-between gap-2 py-2 first:pt-0 last:pb-0"
             >
-              <span className="font-mono text-zinc-300">{pkg.name}</span>
-              <span className="text-zinc-500">
+              <span className="font-mono text-fg-muted">{pkg.name}</span>
+              <span className="text-fg-subtle">
                 {pkg.running ? "running" : "stopped"} · {pkg.image}
                 {pkg.digest ? `@${pkg.digest.slice(0, 12)}` : " (no digest pinned)"}
               </span>
@@ -2220,9 +2228,9 @@ function CoreUpgrade({ base, onChanged }: { base: string; onChanged: () => void 
           ))}
         </ul>
       ) : (
-        <p className="text-xs text-zinc-500">Not checked yet this session.</p>
+        <p className="text-xs text-fg-subtle">Not checked yet this session.</p>
       )}
-      {error && <p className="mt-2 text-xs text-red-300">{error}</p>}
+      {error && <p className="mt-2 text-xs text-bad-fg">{error}</p>}
       {lines && <LogView lines={lines} className="mt-3 max-h-40 w-full" />}
     </Panel>
   );
@@ -2243,7 +2251,7 @@ function Activity({ status }: { status: BaseStatus }) {
       {actions.length === 0 ? (
         <Unavailable>Nothing recorded yet.</Unavailable>
       ) : (
-        <ul className="divide-y divide-zinc-800">
+        <ul className="divide-y divide-line">
           {actions.map((action, i) => (
             <li
               key={`${action.time}-${i}`}
@@ -2251,14 +2259,14 @@ function Activity({ status }: { status: BaseStatus }) {
             >
               <span className="flex min-w-0 items-center gap-2">
                 <Dot tone={action.outcome === "applied" ? "good" : "bad"} />
-                <span className="font-mono text-zinc-300">{action.action}</span>
+                <span className="font-mono text-fg-muted">{action.action}</span>
                 {action.target && (
-                  <span className="selectable truncate text-zinc-500">
+                  <span className="selectable truncate text-fg-subtle">
                     {action.target}
                   </span>
                 )}
               </span>
-              <span className="text-zinc-500" title={absolute(action.time)}>
+              <span className="text-fg-subtle" title={absolute(action.time)}>
                 {ago(action.time)}
               </span>
             </li>
@@ -2266,7 +2274,7 @@ function Activity({ status }: { status: BaseStatus }) {
         </ul>
       )}
       {status.audit.total_seen > actions.length && (
-        <p className="mt-3 text-xs text-zinc-500">
+        <p className="mt-3 text-xs text-fg-subtle">
           Showing the most recent {actions.length} of {status.audit.total_seen}.
         </p>
       )}

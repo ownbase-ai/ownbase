@@ -30,7 +30,7 @@ export function Sidebar({
   updatesBehind?: number;
 }) {
   return (
-    <nav className="flex w-60 shrink-0 flex-col border-r border-zinc-800 bg-zinc-950">
+    <aside className="flex w-60 shrink-0 flex-col border-r border-line bg-surface-muted">
       {/* Clears the transparent title bar, which the window draws over. */}
       <div className="h-11 shrink-0" />
 
@@ -45,14 +45,14 @@ export function Sidebar({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
+      <nav className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
         <Group label="Bases">
           {loading && bases.length === 0 ? (
             <div className="px-2 py-2">
-              <Spinner className="text-zinc-600" />
+              <Spinner className="text-fg-faint" />
             </div>
           ) : bases.length === 0 ? (
-            <p className="px-2 py-1.5 text-xs leading-relaxed text-zinc-600">
+            <p className="px-2 py-1.5 text-xs leading-relaxed text-fg-faint">
               None yet.
             </p>
           ) : (
@@ -71,10 +71,10 @@ export function Sidebar({
             active={route.view === "wizard"}
             onClick={() => onNavigate({ view: "wizard" })}
           >
-            <span aria-hidden className="w-2 text-center text-zinc-500">
+            <span aria-hidden className="w-2 text-center text-fg-subtle">
               +
             </span>
-            <span className="text-zinc-400">Set up a Base</span>
+            <span className="text-fg-muted">Set up a Base</span>
           </Item>
         </Group>
 
@@ -100,10 +100,15 @@ export function Sidebar({
             </span>
           </Item>
         </Group>
-      </div>
+      </nav>
 
-      <VaultFooter vault={vault} onLock={onLock} updatesBehind={updatesBehind} />
-    </nav>
+      <VaultFooter
+        vault={vault}
+        onLock={onLock}
+        updatesBehind={updatesBehind}
+        onOpenVault={() => onNavigate({ view: "vault" })}
+      />
+    </aside>
   );
 }
 
@@ -125,7 +130,7 @@ function baseTone(base: BaseSummary): Tone {
 function Group({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="mb-4">
-      <p className="px-2 pb-1 text-[0.6875rem] font-medium uppercase tracking-wider text-zinc-600">
+      <p className="px-2 pb-1 text-[0.6875rem] font-medium uppercase tracking-wider text-fg-faint">
         {label}
       </p>
       <ul className="space-y-0.5">{children}</ul>
@@ -148,7 +153,9 @@ function Item({
         onClick={onClick}
         className={cx(
           "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
-          active ? "bg-zinc-800 text-zinc-100" : "text-zinc-300 hover:bg-zinc-900",
+          active
+            ? "bg-accent-soft text-fg font-medium"
+            : "text-fg-muted hover:bg-surface-sunken hover:text-fg",
         )}
       >
         {children}
@@ -161,34 +168,46 @@ function VaultFooter({
   vault,
   onLock,
   updatesBehind,
+  onOpenVault,
 }: {
   vault: VaultStatus | null;
   onLock: () => void;
   updatesBehind: number;
+  onOpenVault: () => void;
 }) {
   return (
-    <div className="shrink-0 border-t border-zinc-800 px-3 py-3">
-      <div className="flex items-center justify-between gap-2">
-        <Badge tone="good">
-          <Dot tone="good" />
-          Unlocked
-        </Badge>
-        <Button variant="ghost" className="px-2 py-1 text-xs" onClick={onLock}>
-          Lock
-        </Button>
+    <div className="shrink-0 px-3 pb-3">
+      <div className="rounded-xl border border-line bg-surface px-3 py-3">
+        <div className="flex items-center justify-between gap-2">
+          <Badge tone="good">
+            <Dot tone="good" />
+            Unlocked
+          </Badge>
+          <Button variant="ghost" className="px-2 py-1 text-xs" onClick={onLock}>
+            Lock
+          </Button>
+        </div>
+        {updatesBehind > 0 && (
+          <p className="mt-1.5 px-0.5 text-[0.6875rem] leading-relaxed text-warn-fg">
+            {updatesBehind === 1
+              ? "1 OwnBase update available — "
+              : `${updatesBehind} OwnBase updates available — `}
+            <button
+              type="button"
+              onClick={onOpenVault}
+              className="font-medium text-accent hover:text-accent-hover"
+            >
+              open Vault
+            </button>
+            .
+          </p>
+        )}
+        {vault?.locks_at && (
+          <p className="mt-1.5 px-0.5 text-[0.6875rem] leading-relaxed text-fg-faint">
+            Locks {until(vault.locks_at)} unless something uses it.
+          </p>
+        )}
       </div>
-      {updatesBehind > 0 && (
-        <p className="mt-1.5 px-0.5 text-[0.6875rem] leading-relaxed text-amber-200/80">
-          {updatesBehind === 1
-            ? "1 OwnBase update available — open Vault."
-            : `${updatesBehind} OwnBase updates available — open Vault.`}
-        </p>
-      )}
-      {vault?.locks_at && (
-        <p className="mt-1.5 px-0.5 text-[0.6875rem] leading-relaxed text-zinc-600">
-          Locks {until(vault.locks_at)} unless something uses it.
-        </p>
-      )}
     </div>
   );
 }

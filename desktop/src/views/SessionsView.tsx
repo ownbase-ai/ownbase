@@ -39,11 +39,11 @@ export function SessionsView({ baseFilter }: { baseFilter?: string }) {
 
   return (
     <div className="flex h-full min-h-0">
-      <div className="flex w-80 shrink-0 flex-col border-r border-zinc-800">
+      <div className="flex w-80 shrink-0 flex-col border-r border-line">
         <header className="flex items-center justify-between gap-3 px-5 pb-3 pt-8">
           <div>
-            <h1 className="text-base font-medium text-zinc-100">Sessions</h1>
-            <p className="mt-0.5 text-xs text-zinc-500">
+            <h1 className="text-base font-medium text-fg">Sessions</h1>
+            <p className="mt-0.5 text-xs text-fg-subtle">
               {baseFilter ? baseFilter : "Every Base"}, newest first
             </p>
           </div>
@@ -55,10 +55,10 @@ export function SessionsView({ baseFilter }: { baseFilter?: string }) {
         <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4">
           {sessions.loading ? (
             <div className="px-3 py-4">
-              <Spinner className="text-zinc-600" />
+              <Spinner className="text-fg-faint" />
             </div>
           ) : list.length === 0 ? (
-            <p className="px-3 py-4 text-sm leading-relaxed text-zinc-500">
+            <p className="px-3 py-4 text-sm leading-relaxed text-fg-subtle">
               No sessions recorded yet. Open one with{" "}
               <CommandLine>ownbasectl ssh {baseFilter ?? "<name>"}</CommandLine>.
             </p>
@@ -95,7 +95,7 @@ export function SessionsView({ baseFilter }: { baseFilter?: string }) {
               <p>
                 Every shell OwnBase opened on a Base is recorded in{" "}
                 <a
-                  className="text-zinc-400 underline decoration-zinc-700 underline-offset-2"
+                  className="text-fg-muted underline decoration-line-strong underline-offset-2"
                   href="https://docs.asciinema.org/manual/asciicast/v2/"
                   target="_blank"
                   rel="noreferrer"
@@ -129,21 +129,21 @@ function SessionButton({
       onClick={onClick}
       className={cx(
         "w-full rounded-lg px-3 py-2.5 text-left transition-colors",
-        active ? "bg-zinc-800" : "hover:bg-zinc-900",
+        active ? "bg-surface-sunken" : "hover:bg-surface",
       )}
     >
       <div className="flex items-center justify-between gap-2">
         <span className="flex min-w-0 items-center gap-2">
           <Dot tone={tone} />
-          <span className="truncate text-sm text-zinc-200">
+          <span className="truncate text-sm text-fg">
             {session.command || "interactive shell"}
           </span>
         </span>
-        <span className="shrink-0 text-xs text-zinc-500" title={absolute(session.started_at)}>
+        <span className="shrink-0 text-xs text-fg-subtle" title={absolute(session.started_at)}>
           {ago(session.started_at)}
         </span>
       </div>
-      <p className="mt-0.5 pl-4 text-xs text-zinc-500">
+      <p className="mt-0.5 pl-4 text-xs text-fg-subtle">
         {session.base}
         {session.invoker && session.invoker !== "cli" ? ` · by ${session.invoker}` : ""}
       </p>
@@ -184,12 +184,12 @@ function SessionDetail({ session }: { session: SessionMeta }) {
     <div className="space-y-5 p-8">
       <header>
         <div className="flex flex-wrap items-center gap-3">
-          <h2 className="text-base font-medium text-zinc-100">
+          <h2 className="text-base font-medium text-fg">
             {session.command || "Interactive shell"}
           </h2>
           <Badge tone={outcomeTone(session)}>{outcomeLabel(session)}</Badge>
         </div>
-        <p className="selectable mt-1 font-mono text-xs text-zinc-500">{session.id}</p>
+        <p className="selectable mt-1 font-mono text-xs text-fg-subtle">{session.id}</p>
       </header>
 
       {/* One column. This pane is already narrowed by the sidebar and the session
@@ -215,13 +215,13 @@ function SessionDetail({ session }: { session: SessionMeta }) {
         </Row>
         {session.error && (
           <Row label="Error">
-            <span className="text-red-300">{session.error}</span>
+            <span className="text-bad-fg">{session.error}</span>
           </Row>
         )}
         <Row label="File">
           <span className="font-mono text-xs">{session.cast_path}</span>
         </Row>
-        <p className="mt-3 border-t border-zinc-800 pt-3 text-xs leading-relaxed text-zinc-500">
+        <p className="mt-3 border-t border-line pt-3 text-xs leading-relaxed text-fg-subtle">
           Replay it outside OwnBase with <CommandLine>asciinema play</CommandLine> and
           that path — it is asciicast v2, an open format, and the file is yours. Mode
           600, because a session can contain anything typed at a prompt.
@@ -244,7 +244,7 @@ function SessionDetail({ session }: { session: SessionMeta }) {
       </div>
 
       {content.loading ? (
-        <div className="flex items-center gap-3 text-sm text-zinc-500">
+        <div className="flex items-center gap-3 text-sm text-fg-subtle">
           <Spinner /> Reading the recording…
         </div>
       ) : content.error || content.data === null ? (
@@ -256,7 +256,7 @@ function SessionDetail({ session }: { session: SessionMeta }) {
       ) : mode === "replay" ? (
         <CastPlayer id={session.id} cast={content.data} />
       ) : (
-        <pre className="selectable max-h-[32rem] overflow-auto whitespace-pre-wrap break-words rounded-lg border border-zinc-800 bg-zinc-950 p-4 font-mono text-xs leading-relaxed text-zinc-300">
+        <pre className="selectable max-h-[32rem] overflow-auto whitespace-pre-wrap break-words rounded-lg border border-line bg-canvas p-4 font-mono text-xs leading-relaxed text-fg-muted">
           {content.data.trim() || "The session produced no output."}
         </pre>
       )}

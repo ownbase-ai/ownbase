@@ -43,5 +43,7 @@ export function CastPlayer({
     return () => player.dispose();
   }, [cast, id]);
 
-  return <div ref={host} className="overflow-hidden rounded-lg bg-black" />;
+  return (
+    <div ref={host} className="overflow-hidden rounded-lg border border-line bg-black" />
+  );
 }
