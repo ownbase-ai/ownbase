@@ -501,7 +501,9 @@ function FindingRow({
           if (r.generated_password) setGeneratedPw(r.generated_password);
           setLines(["Rekey completed."]);
           setBusy(false);
-          onChanged();
+          // A successful rekey clears the escrow finding. Refreshing now would
+          // unmount this row and drop the password before it can be copied.
+          if (!r.generated_password) onChanged();
         })
         .catch((err: unknown) => {
           const e = err as Error & { generated_password?: string };
@@ -602,7 +604,20 @@ function FindingRow({
             Save this restic password now — it is not recoverable from OwnBase later.
           </p>
           <p className="selectable break-all font-mono text-sm text-fg">{generatedPw}</p>
-          <CopyButton value={generatedPw} label="Copy password" />
+          <div className="flex flex-wrap items-center gap-2">
+            <CopyButton value={generatedPw} label="Copy password" />
+            <Button
+              variant="secondary"
+              className="text-xs"
+              onClick={() => {
+                setGeneratedPw(null);
+                setLines(null);
+                onChanged();
+              }}
+            >
+              I've saved it
+            </Button>
+          </div>
         </div>
       )}
       {error && (
