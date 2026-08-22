@@ -613,12 +613,13 @@ func checkupFindings(base string, body []byte, snap release.Snapshot) []checkupF
 						continue
 					}
 					if coreNeedsSelfUpdate(s, imgRef) {
+						run := selfUpdateRun(snap, "")
 						findings = append(findings, checkupFinding{
 							Summary: fmt.Sprintf("%d CVE(s) with a patch in core image %q — daemon must self-update first", n, svc),
-							Fix:     "ownbasectl self-update " + base,
+							Fix:     selfUpdateFix(base, run),
 							Action: checkupAction{
 								Kind:    actionRun,
-								Run:     "self-update",
+								Run:     run,
 								Label:   "Update OwnBase",
 								Confirm: "Replaces the OwnBase daemon with the latest signed release (~10s restart). Then use Rebuild Caddy (or upgrade --apply) so the hardened image is built.",
 							},
@@ -632,12 +633,13 @@ func checkupFindings(base string, body []byte, snap release.Snapshot) []checkupF
 					// or immediately when the daemon recipe changed (self-update).
 					if coreSameRecipeAlreadyMeasured(scannedAt, lastCoreRebuildAt, lastCoreRebuildRecipe, coreRecipe) {
 						if coreNewerOwnBaseAvailable(s, snap) && !cliBehindLatest(snap) {
+							run := selfUpdateRun(snap, "")
 							findings = preferSelfUpdateFinding(findings, checkupFinding{
 								Summary: fmt.Sprintf("%d CVE(s) remain in core image %q after rebuild — a newer OwnBase may carry a fixed recipe", n, svc),
-								Fix:     "ownbasectl self-update " + base,
+								Fix:     selfUpdateFix(base, run),
 								Action: checkupAction{
 									Kind:    actionRun,
-									Run:     "self-update",
+									Run:     run,
 									Label:   "Update OwnBase",
 									Confirm: "Replaces the OwnBase daemon with the latest signed release (~10s restart). Then rebuild Caddy so the new recipe is applied.",
 								},
@@ -949,7 +951,7 @@ func cliBehindLatest(snap release.Snapshot) bool {
 // Avoids two "Update OwnBase" buttons when versionFindings already emitted one.
 func preferSelfUpdateFinding(findings []checkupFinding, f checkupFinding) []checkupFinding {
 	for i := range findings {
-		if findings[i].Action.Run == "self-update" {
+		if isSelfUpdateRun(findings[i].Action.Run) {
 			findings[i].Summary = f.Summary
 			findings[i].Fix = f.Fix
 			findings[i].Action = f.Action
@@ -957,6 +959,12 @@ func preferSelfUpdateFinding(findings []checkupFinding, f checkupFinding) []chec
 		}
 	}
 	return append(findings, f)
+}
+
+// isSelfUpdateRun reports whether run is a self-update action token
+// ("self-update" or "self-update --version vX.Y.Z").
+func isSelfUpdateRun(run string) bool {
+	return run == "self-update" || strings.HasPrefix(run, "self-update --version ")
 }
 
 // scanIsStale reports whether a scanned_at timestamp is older than

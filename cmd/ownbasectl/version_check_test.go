@@ -22,8 +22,11 @@ func TestVersionFindings_DevCLIStillFlagsDaemonBehind(t *testing.T) {
 	got := versionFindings("mybase", "v0.1.0", snap)
 	foundDaemon := false
 	for _, f := range got {
-		if strings.Contains(f.Summary, "daemon") && f.Action.Run == "self-update" {
+		if strings.Contains(f.Summary, "daemon") && isSelfUpdateRun(f.Action.Run) {
 			foundDaemon = true
+			if f.Action.Run != "self-update --version v9.9.9" {
+				t.Errorf("want pinned latest, got Run=%q", f.Action.Run)
+			}
 		}
 		if strings.Contains(f.Summary, "ownbasectl") {
 			t.Errorf("dev CLI must not produce CLI finding: %+v", f)
@@ -43,7 +46,8 @@ func TestVersionFindings_SkewCLIAhead(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("got %d findings: %+v", len(got), got)
 	}
-	if got[0].Action.Run != "self-update" {
+	// Empty manifest → pin to this CLI's tag so /daemon/latest/ is not used.
+	if got[0].Action.Run != "self-update --version v0.5.0" {
 		t.Errorf("action = %+v", got[0].Action)
 	}
 	if !strings.Contains(got[0].Summary, "behind your CLI") {
@@ -118,7 +122,7 @@ func TestVersionFindings_CLIBehindAndCLIAheadSkew_StillCLIFirst(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("got %d findings: %+v", len(got), got)
 	}
-	if got[0].Action.Run == "self-update" {
+	if isSelfUpdateRun(got[0].Action.Run) {
 		t.Fatalf("must not self-update while CLI is behind latest: %+v", got)
 	}
 }
@@ -142,7 +146,7 @@ func TestVersionFindings_CLICurrentDaemonBehind(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("got %d findings (want 1): %+v", len(got), got)
 	}
-	if got[0].Action.Run != "self-update" {
+	if got[0].Action.Run != "self-update --version v0.5.0" {
 		t.Errorf("action = %+v", got[0].Action)
 	}
 }

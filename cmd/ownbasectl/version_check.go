@@ -197,12 +197,15 @@ func versionFindings(base, daemonVer string, snap release.Snapshot) []checkupFin
 	}
 
 	if skew != nil && skew.Direction == "cli_ahead" {
+		// Pin a concrete tag when we know one (manifest or this CLI). Avoids
+		// the CDN-cached /daemon/latest/ path, which can lag the manifest.
+		run := selfUpdateRun(snap, version)
 		out = append(out, checkupFinding{
 			Summary: skew.Summary,
-			Fix:     skew.Guide,
+			Fix:     selfUpdateFix(base, run),
 			Action: checkupAction{
 				Kind:    actionRun,
-				Run:     "self-update",
+				Run:     run,
 				Label:   "Update OwnBase",
 				Confirm: "Replaces the OwnBase daemon with the latest signed release (~10s restart).",
 			},
@@ -211,12 +214,13 @@ func versionFindings(base, daemonVer string, snap release.Snapshot) []checkupFin
 	}
 
 	if daemon.Status == release.StatusBehind {
+		run := selfUpdateRun(snap, daemon.Latest)
 		out = append(out, checkupFinding{
 			Summary: fmt.Sprintf("OwnBase daemon %s is behind latest %s", daemon.Current, daemon.Latest),
-			Fix:     "ownbasectl self-update " + base,
+			Fix:     selfUpdateFix(base, run),
 			Action: checkupAction{
 				Kind:    actionRun,
-				Run:     "self-update",
+				Run:     run,
 				Label:   "Update OwnBase",
 				Confirm: "Replaces the OwnBase daemon with the latest signed release (~10s restart).",
 			},
@@ -224,4 +228,26 @@ func versionFindings(base, daemonVer string, snap release.Snapshot) []checkupFin
 	}
 
 	return out
+}
+
+// selfUpdateRun is the action.Run token for installing a newer daemon.
+// Prefer an explicit --version tag so the Base fetches the immutable
+// …/daemon/vX.Y.Z/ object. The bare "self-update" form still hits
+// /daemon/latest/, which CloudFront can serve stale after a release.
+func selfUpdateRun(snap release.Snapshot, pin string) string {
+	if v := strings.TrimSpace(snap.LatestOf(release.ComponentDaemon)); v != "" {
+		return "self-update --version " + v
+	}
+	if p := strings.TrimSpace(pin); p != "" && release.IsReleaseTag(p) {
+		return "self-update --version " + p
+	}
+	return "self-update"
+}
+
+// selfUpdateFix is the human CLI line matching selfUpdateRun.
+func selfUpdateFix(base, run string) string {
+	if strings.HasPrefix(run, "self-update --version ") {
+		return "ownbasectl self-update " + base + " --version " + strings.TrimPrefix(run, "self-update --version ")
+	}
+	return "ownbasectl self-update " + base
 }
