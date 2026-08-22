@@ -235,3 +235,43 @@ func TestSelfUpdateRun_prefersNewerPin(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestPreferSelfUpdateFinding_keepsNewerPin(t *testing.T) {
+	// versionFindings already pinned CLI v0.5.5; CVE path must not drop it
+	// to a stale manifest-only v0.5.4.
+	existing := []checkupFinding{{
+		Summary: "Base daemon v0.5.1 is behind your CLI v0.5.5",
+		Fix:     "ownbasectl self-update mybase --version v0.5.5",
+		Action: checkupAction{
+			Kind:  actionRun,
+			Run:   "self-update --version v0.5.5",
+			Label: "Update OwnBase",
+		},
+	}}
+	cve := checkupFinding{
+		Summary: `3 CVE(s) remain in core image "ownbase-core-caddy" after rebuild`,
+		Fix:     "ownbasectl self-update mybase --version v0.5.4",
+		Action: checkupAction{
+			Kind:    actionRun,
+			Run:     "self-update --version v0.5.4",
+			Label:   "Update OwnBase",
+			Confirm: "Then rebuild Caddy.",
+		},
+	}
+	got := preferSelfUpdateFinding(existing, cve)
+	if len(got) != 1 {
+		t.Fatalf("len=%d", len(got))
+	}
+	if got[0].Action.Run != "self-update --version v0.5.5" {
+		t.Fatalf("Run=%q, want pinned CLI tag", got[0].Action.Run)
+	}
+	if !strings.Contains(got[0].Summary, "CVE") {
+		t.Fatalf("summary should be CVE copy: %q", got[0].Summary)
+	}
+	if got[0].Action.Confirm != "Then rebuild Caddy." {
+		t.Fatalf("confirm=%q", got[0].Action.Confirm)
+	}
+	if got[0].Fix != "ownbasectl self-update mybase --version v0.5.5" {
+		t.Fatalf("Fix=%q", got[0].Fix)
+	}
+}

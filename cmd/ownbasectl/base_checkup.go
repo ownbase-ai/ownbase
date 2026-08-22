@@ -19,6 +19,7 @@ import (
 
 	"github.com/ownbase/ownbase/internal/backup"
 	"github.com/ownbase/ownbase/internal/release"
+	"github.com/ownbase/ownbase/internal/update"
 )
 
 func newCheckupCmd() *cobra.Command {
@@ -613,7 +614,8 @@ func checkupFindings(base string, body []byte, snap release.Snapshot) []checkupF
 						continue
 					}
 					if coreNeedsSelfUpdate(s, imgRef) {
-						run := selfUpdateRun(snap, "")
+						// Pin with this CLI's tag too — same rule as versionFindings.
+						run := selfUpdateRun(snap, version)
 						findings = append(findings, checkupFinding{
 							Summary: fmt.Sprintf("%d CVE(s) with a patch in core image %q — daemon must self-update first", n, svc),
 							Fix:     selfUpdateFix(base, run),
@@ -633,7 +635,7 @@ func checkupFindings(base string, body []byte, snap release.Snapshot) []checkupF
 					// or immediately when the daemon recipe changed (self-update).
 					if coreSameRecipeAlreadyMeasured(scannedAt, lastCoreRebuildAt, lastCoreRebuildRecipe, coreRecipe) {
 						if coreNewerOwnBaseAvailable(s, snap) && !cliBehindLatest(snap) {
-							run := selfUpdateRun(snap, "")
+							run := selfUpdateRun(snap, version)
 							findings = preferSelfUpdateFinding(findings, checkupFinding{
 								Summary: fmt.Sprintf("%d CVE(s) remain in core image %q after rebuild — a newer OwnBase may carry a fixed recipe", n, svc),
 								Fix:     selfUpdateFix(base, run),
@@ -949,16 +951,80 @@ func cliBehindLatest(snap release.Snapshot) bool {
 // preferSelfUpdateFinding upgrades an existing self-update finding's summary
 // to the more specific CVE-motivated copy, or appends when none exists yet.
 // Avoids two "Update OwnBase" buttons when versionFindings already emitted one.
+//
+// The existing Action.Run pin is kept (or raised) rather than replaced: a
+// versionFindings row may already pin the CLI tag over a stale manifest, and
+// overwriting it with a manifest-only run would reintroduce CDN lag.
 func preferSelfUpdateFinding(findings []checkupFinding, f checkupFinding) []checkupFinding {
 	for i := range findings {
-		if isSelfUpdateRun(findings[i].Action.Run) {
-			findings[i].Summary = f.Summary
-			findings[i].Fix = f.Fix
-			findings[i].Action = f.Action
-			return findings
+		if !isSelfUpdateRun(findings[i].Action.Run) {
+			continue
 		}
+		findings[i].Summary = f.Summary
+		merged := preferSelfUpdateRunToken(findings[i].Action.Run, f.Action.Run)
+		findings[i].Action.Run = merged
+		// Rewrite Fix to match the merged pin; base name is already in either Fix.
+		if base := baseFromSelfUpdateFix(findings[i].Fix); base != "" {
+			findings[i].Fix = selfUpdateFix(base, merged)
+		} else if base := baseFromSelfUpdateFix(f.Fix); base != "" {
+			findings[i].Fix = selfUpdateFix(base, merged)
+		} else {
+			findings[i].Fix = f.Fix
+		}
+		if f.Action.Confirm != "" {
+			findings[i].Action.Confirm = f.Action.Confirm
+		}
+		if f.Action.Label != "" {
+			findings[i].Action.Label = f.Action.Label
+		}
+		return findings
 	}
 	return append(findings, f)
+}
+
+// preferSelfUpdateRunToken returns the self-update run with the newer pin.
+func preferSelfUpdateRunToken(a, b string) string {
+	ta := tagFromSelfUpdateRun(a)
+	tb := tagFromSelfUpdateRun(b)
+	switch {
+	case ta != "" && tb != "":
+		if update.CompareVersionTags(tb, ta) > 0 {
+			return "self-update --version " + tb
+		}
+		return "self-update --version " + ta
+	case ta != "":
+		return "self-update --version " + ta
+	case tb != "":
+		return "self-update --version " + tb
+	default:
+		// Prefer whichever is a bare self-update; identical otherwise.
+		if a != "" {
+			return a
+		}
+		return b
+	}
+}
+
+func tagFromSelfUpdateRun(run string) string {
+	const p = "self-update --version "
+	if !strings.HasPrefix(run, p) {
+		return ""
+	}
+	return release.NormalizeTag(strings.TrimSpace(strings.TrimPrefix(run, p)))
+}
+
+// baseFromSelfUpdateFix pulls the Base name out of
+// "ownbasectl self-update <base>[ --version vX.Y.Z]".
+func baseFromSelfUpdateFix(fix string) string {
+	const p = "ownbasectl self-update "
+	if !strings.HasPrefix(fix, p) {
+		return ""
+	}
+	rest := strings.TrimSpace(strings.TrimPrefix(fix, p))
+	if i := strings.IndexByte(rest, ' '); i >= 0 {
+		return rest[:i]
+	}
+	return rest
 }
 
 // isSelfUpdateRun reports whether run is a self-update action token
