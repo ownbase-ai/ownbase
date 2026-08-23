@@ -25,7 +25,8 @@ const tools: Tool[] = [
   },
   { name: "OpenCode", glyph: "⌘" },
   { name: "Gemini CLI", siKey: "siGooglegemini" },
-  { name: "Aider", glyph: "{ }" },
+  // No space — a fixed 18px icon slot wraps "{ }" onto two lines.
+  { name: "Aider", glyph: "{}" },
 ];
 
 function brandSvg(key: keyof typeof si): string | null {
@@ -42,21 +43,42 @@ function svgFromPath(path: string): string {
 
 <section class="border-y border-line bg-surface-muted/60">
   <div
-    class="container-content flex flex-col gap-4 py-6 sm:flex-row sm:items-center sm:gap-16 lg:gap-24"
+    class="container-content flex flex-col gap-4 py-6 sm:flex-row sm:items-center sm:gap-10"
   >
     <p class="shrink-0 text-xs font-semibold uppercase tracking-wider text-fg-faint">
       Works with
     </p>
-    <ul class="flex min-w-0 flex-1 flex-wrap items-center justify-between gap-y-3 sm:pr-4 lg:pr-8">
+    {/*
+      Full width on one row: justify-between spreads items evenly.
+      When it wraps (< xl): 3-col (2-col on xs) grid. Fixed-width icon slot
+      keeps labels vertically aligned within each column.
+    */}
+    <ul
+      class="grid min-w-0 flex-1 grid-cols-2 gap-x-8 gap-y-3 pl-3 sm:grid-cols-3 sm:pl-0 xl:flex xl:flex-nowrap xl:items-center xl:justify-between xl:gap-0 xl:pl-6 xl:pr-8"
+    >
       {
         tools.map((t) => {
           const svg = t.siKey ? brandSvg(t.siKey) : t.path ? svgFromPath(t.path) : null;
+          // OpenCode's ⌘ reads small at the default mono size — bump it.
+          const glyphClass =
+            t.name === "OpenCode"
+              ? "text-base leading-none text-fg"
+              : "text-xs text-fg-subtle";
           return (
             <li class="inline-flex items-center gap-2 text-sm font-medium text-fg-muted">
               {svg ? (
-                <span class="text-fg" set:html={svg} />
+                <span
+                  class="inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center text-fg"
+                  set:html={svg}
+                />
               ) : (
-                <span class="font-mono text-xs text-fg-subtle" aria-hidden="true">
+                <span
+                  class:list={[
+                    "inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center whitespace-nowrap font-mono",
+                    glyphClass,
+                  ]}
+                  aria-hidden="true"
+                >
                   {t.glyph}
                 </span>
               )}

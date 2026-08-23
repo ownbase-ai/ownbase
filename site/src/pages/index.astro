@@ -92,7 +92,7 @@ const agentPoints = [
         </p>
         <p class="mt-5 text-sm leading-relaxed text-fg-subtle">
           <span class="inline rounded-md bg-accent-soft px-1.5 py-0.5 text-accent-fg">
-            No SaaS lock-in. No platform tax. No software subscriptions.
+            No SaaS lock-in. No software subscriptions.
           </span>
         </p>
       </div>
@@ -222,16 +222,25 @@ const agentPoints = [
       {
         features.map((f) => (
           <div>
-            <div class="flex h-11 w-11 items-center justify-center rounded-xl bg-accent text-white">
-              <Icon name={f.icon} size={22} strokeWidth={1.75} aria-hidden="true" />
+            {/*
+              Icon beside title when the quad collapses (< lg). On the 4-up
+              desktop row, icon stacks above title as in the design.
+            */}
+            <div class="flex items-center gap-3 lg:flex-col lg:items-start lg:gap-0">
+              <div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-accent text-white">
+                <Icon name={f.icon} size={22} strokeWidth={1.75} aria-hidden="true" />
+              </div>
+              <h3 class="text-xl font-semibold text-fg sm:text-2xl lg:mt-4 lg:text-lg">
+                {f.title}
+              </h3>
             </div>
-            <h3 class="mt-4 text-base font-semibold text-fg">{f.title}</h3>
-            <ul class="mt-3 space-y-2">
+            {/* pl matches icon (44px) + gap (12px) so bullets hang under the title when side-by-side */}
+            <ul class="mt-4 space-y-2.5 pl-14 lg:pl-0">
               {f.bullets.map((b) => (
-                <li class="flex items-start gap-2 text-sm text-fg-muted">
+                <li class="flex items-start gap-2 text-base text-fg-muted sm:text-lg lg:text-sm">
                   <Icon
                     name="circle-check"
-                    size={16}
+                    size={18}
                     strokeWidth={2}
                     class="mt-0.5 shrink-0 text-accent"
                     aria-hidden="true"
@@ -322,7 +331,7 @@ const agentPoints = [
             </div>
           </div>
 
-          <ul class="mt-3 space-y-1.5 font-sans lg:hidden">
+          <ul class="mt-3 space-y-1.5 pl-10 font-sans lg:hidden">
             <li class="flex items-start gap-2 text-xs text-fg-muted">
               <span class="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-accent"></span>
               <span><span class="font-mono text-accent-fg">ref</span> — pinned commit, built from source.</span>
