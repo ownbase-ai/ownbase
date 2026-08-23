@@ -26,7 +26,11 @@ From the repo root:
 make site          # dev server
 make site-build    # production build
 make site-check    # typecheck + build (what CI runs)
+make site-publish  # build + upload to ownbase.ai
 ```
+
+`site-publish` defaults to `SITE_BUCKET=ownbase-ai` and `AWS_PROFILE=personal`.
+Override either as an env var.
 
 ## Layout
 
@@ -54,9 +58,17 @@ Regenerate both together if the lockup changes.
 
 ## Deploy
 
-Pushes to `main` that touch `site/**` or `shared/**` run
+**Local (usual while iterating):**
+
+```bash
+make site-publish
+```
+
+Uses AWS profile `personal` and bucket `ownbase-ai` by default.
+
+**CI:** pushes to `main` that touch `site/**` or `shared/**` run
 [`.github/workflows/site.yml`](../.github/workflows/site.yml), which builds
-and uploads `dist/` via
+and uploads via
 [`.github/scripts/publish-site-bucket.sh`](../.github/scripts/publish-site-bucket.sh).
 
 Secrets (same shape as the releases bucket):
@@ -68,7 +80,8 @@ Secrets (same shape as the releases bucket):
 
 Hashed assets under `_astro/` get `max-age=31536000, immutable`. HTML,
 `llms.txt`, and favicons get `max-age=60`. No CloudFront invalidation —
-a push is live within about a minute.
+a push is live within about a minute. Live stack: CloudFront `EJ8SF4KCUFWJL`
+→ S3 `ownbase-ai`, aliases `ownbase.ai` / `www.ownbase.ai`.
 
 ## Conventions
 
