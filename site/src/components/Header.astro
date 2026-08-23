@@ -1,0 +1,85 @@
+---
+import wordmark from "../assets/wordmark.png";
+
+/**
+ * Nav items are inert for v1 — destinations don't exist yet.
+ * Labels match the user request: Install, Agents, Docs, GitHub.
+ */
+const nav = [
+  { label: "How It Works" },
+  { label: "Agent Harness" },
+  { label: "Docs" },
+  { label: "GitHub" },
+];
+---
+
+<header class="sticky top-0 z-40 border-b border-line/80 bg-canvas/90 backdrop-blur-md">
+  <div class="container-content flex h-16 items-center justify-between gap-4">
+    <a href="/" class="flex items-center gap-2" aria-label="OwnBase home">
+      <img
+        src={wordmark.src}
+        alt="OwnBase"
+        width={wordmark.width}
+        height={wordmark.height}
+        class="h-7 w-auto"
+      />
+    </a>
+
+    <nav class="hidden items-center gap-1 md:flex" aria-label="Primary">
+      {
+        nav.map((item) => (
+          <span
+            class="cursor-default rounded-md px-3 py-1.5 text-sm font-medium text-fg-muted"
+            aria-disabled="true"
+          >
+            {item.label}
+          </span>
+        ))
+      }
+    </nav>
+
+    <button
+      type="button"
+      class="inline-flex h-9 w-9 items-center justify-center rounded-md text-fg-muted hover:bg-surface-sunken hover:text-fg md:hidden"
+      aria-label="Open menu"
+      aria-expanded="false"
+      aria-controls="mobile-nav"
+      data-menu-toggle
+    >
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+        <path d="M4 7h16M4 12h16M4 17h16" data-menu-icon="open"></path>
+        <path d="M6 6l12 12M18 6L6 18" data-menu-icon="close" class="hidden"></path>
+      </svg>
+    </button>
+  </div>
+
+  <div id="mobile-nav" class="hidden border-t border-line md:hidden" data-menu-panel>
+    <nav class="container-content flex flex-col py-3" aria-label="Mobile">
+      {
+        nav.map((item) => (
+          <span
+            class="cursor-default rounded-md px-2 py-2.5 text-sm font-medium text-fg-muted"
+            aria-disabled="true"
+          >
+            {item.label}
+          </span>
+        ))
+      }
+    </nav>
+  </div>
+</header>
+
+<script>
+  const toggle = document.querySelector<HTMLButtonElement>("[data-menu-toggle]");
+  const panel = document.querySelector<HTMLElement>("[data-menu-panel]");
+  const openIcon = document.querySelector<SVGElement>('[data-menu-icon="open"]');
+  const closeIcon = document.querySelector<SVGElement>('[data-menu-icon="close"]');
+
+  toggle?.addEventListener("click", () => {
+    const open = panel?.classList.toggle("hidden") === false;
+    toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    toggle.setAttribute("aria-label", open ? "Close menu" : "Open menu");
+    openIcon?.classList.toggle("hidden", open);
+    closeIcon?.classList.toggle("hidden", !open);
+  });
+</script>

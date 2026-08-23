@@ -1,0 +1,24 @@
+{
+  "name": "ownbase-site",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "ownbase.ai — marketing site for OwnBase.",
+  "license": "MIT",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro check && astro build",
+    "preview": "astro preview",
+    "check": "astro check"
+  },
+  "dependencies": {
+    "@astrojs/check": "^0.9.4",
+    "@astrojs/tailwind": "^5.1.5",
+    "@fontsource-variable/playfair-display": "^5.2.5",
+    "astro": "^5.7.10",
+    "lucide-static": "^0.511.0",
+    "simple-icons": "^14.12.3",
+    "tailwindcss": "3.4.17",
+    "typescript": "^5.7.2"
+  }
+}

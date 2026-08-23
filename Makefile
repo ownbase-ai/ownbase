@@ -1,5 +1,6 @@
 .PHONY: all build build-linux test test-vm test-integration sync-vm smoke-test connect-vm lint fmt fmt-fix vet tidy clean \
-        app app-build app-check app-sidecar app-e2e app-e2e-real
+        app app-build app-check app-sidecar app-e2e app-e2e-real \
+        site site-build site-check
 
 VM      ?= ownbase-test
 VM_NAME ?= ownbase-fresh
@@ -118,6 +119,24 @@ app-e2e:
 # (optionally) a Multipass Base. Local only — not wired into CI.
 app-e2e-real:
 	cd $(DESKTOP) && npm run e2e:real
+
+# ---------------------------------------------------------------------------
+# Marketing site (site/)
+# ---------------------------------------------------------------------------
+# Static Astro build for ownbase.ai. Shares design tokens with the desktop
+# app via shared/theme/preset.mjs — a token change touches both.
+
+SITE := site
+
+site:
+	cd $(SITE) && npm run dev
+
+site-build:
+	cd $(SITE) && npm run build
+
+# What the CI site job runs: typecheck + production build.
+site-check:
+	cd $(SITE) && npm run build
 
 # ---------------------------------------------------------------------------
 # Code quality

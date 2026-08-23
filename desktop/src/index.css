@@ -2,57 +2,13 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Brand tokens (colors, mono stack, fade-in) live in
+   shared/theme/preset.mjs and are injected by the Tailwind preset.
+   Everything below is app-only chrome that must not leak into the
+   marketing site. */
+
 @layer base {
   :root {
-    color-scheme: light;
-
-    /* Surfaces */
-    --color-canvas: 255 255 255;
-    --color-surface: 255 255 255;
-    --color-surface-muted: 250 250 250;
-    --color-surface-sunken: 244 245 247;
-
-    /* Lines */
-    --color-line: 229 231 235;
-    --color-line-strong: 212 216 222;
-
-    /* Foreground */
-    --color-fg: 15 23 42;
-    --color-fg-muted: 71 85 105;
-    --color-fg-subtle: 100 116 139;
-    --color-fg-faint: 148 163 184;
-
-    /* Accent — brand blue #004EDF */
-    --color-accent: 0 78 223;
-    --color-accent-hover: 0 64 184;
-    --color-accent-soft: 237 243 255;
-    --color-accent-line: 191 214 255;
-    --color-accent-fg: 0 64 184;
-
-    /* Status: good (green stays green — not the brand accent) */
-    --color-good: 34 197 94;
-    --color-good-soft: 240 253 244;
-    --color-good-line: 187 247 208;
-    --color-good-fg: 22 163 74;
-
-    /* Status: warn */
-    --color-warn: 245 158 11;
-    --color-warn-soft: 255 251 235;
-    --color-warn-line: 253 230 138;
-    --color-warn-fg: 180 83 9;
-
-    /* Status: bad */
-    --color-bad: 239 68 68;
-    --color-bad-soft: 254 242 242;
-    --color-bad-line: 254 202 202;
-    --color-bad-fg: 185 28 28;
-
-    /* Status: info (brand blue) */
-    --color-info: 0 78 223;
-    --color-info-soft: 237 243 255;
-    --color-info-line: 191 214 255;
-    --color-info-fg: 0 64 184;
-
     /* Named here so the asciicast player, which is configured in JS rather than
        through Tailwind, renders transcripts in the same face as the rest of the
        app. */

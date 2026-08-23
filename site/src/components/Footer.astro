@@ -1,0 +1,42 @@
+---
+import wordmark from "../assets/wordmark.png";
+
+const nav = [
+  { label: "How It Works" },
+  { label: "Agent Harness" },
+  { label: "Docs" },
+  { label: "GitHub" },
+];
+---
+
+<footer class="border-t border-line bg-surface">
+  <div
+    class="container-content flex flex-col gap-6 py-10 sm:flex-row sm:items-center sm:justify-between"
+  >
+    <div class="flex flex-col gap-3">
+      <img
+        src={wordmark.src}
+        alt="OwnBase"
+        width={wordmark.width}
+        height={wordmark.height}
+        class="h-6 w-auto self-start"
+      />
+      <p class="max-w-sm text-xs leading-relaxed text-fg-faint">
+        © {new Date().getFullYear()} OwnBase — MIT licensed.
+      </p>
+    </div>
+
+    <nav class="flex flex-wrap items-center gap-x-5 gap-y-2" aria-label="Footer">
+      {
+        nav.map((item) => (
+          <span
+            class="cursor-default text-sm text-fg-muted"
+            aria-disabled="true"
+          >
+            {item.label}
+          </span>
+        ))
+      }
+    </nav>
+  </div>
+</footer>

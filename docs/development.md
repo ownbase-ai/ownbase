@@ -34,6 +34,15 @@ make app             # the app against a dev server, for looking at it
 
 What that guards is the seam: every screen renders `ownbasectl --json`, so a field that moved on the Go side has to fail there rather than in a shipped bundle. If you change the shape of any `--json` output, run it.
 
+The [marketing site](../site/README.md) is Tier-1 too — a static Astro build, no browser opened:
+
+```bash
+make site-check      # astro check + production build
+make site            # dev server on :4321
+```
+
+Design tokens are shared with the desktop app via `shared/theme/preset.mjs`. A token change needs both `make site-check` and `make app-check`.
+
 ### Desktop e2e (Playwright)
 
 The app is a thin window over `ownbasectl`. Tier-A e2e tests drive the React UI in Chromium with the three Tauri IPC commands (`cli_run` / `cli_stream` / `cli_cancel`) mocked in the browser — see `desktop/e2e/`. No native window, no Base, runs in CI on every push.
@@ -90,8 +99,8 @@ Breaking a hard constraint (see [MISSION.md](../MISSION.md)) requires the user's
 
 | Layer | Requirement |
 |---|---|
-| **Local** | Always: `go test ./...` and `golangci-lint run ./...`. If you touched `desktop/` or any `--json` shape: `make app-check` **and** `make app-e2e`. (`app-check` alone does not run Playwright.) |
-| **CI on the PR** | Tier 1 · Desktop app (typecheck, lint, vitest, **Playwright e2e**, build, clippy) · Tier 2 · Tier 2 root — all green |
+| **Local** | Always: `go test ./...` and `golangci-lint run ./...`. If you touched `desktop/` or any `--json` shape: `make app-check` **and** `make app-e2e`. (`app-check` alone does not run Playwright.) If you touched `site/` or `shared/`: `make site-check` (and `make app-check` too when the shared theme changed). |
+| **CI on the PR** | Tier 1 · Desktop app (typecheck, lint, vitest, **Playwright e2e**, build, clippy) · Site (check + build) · Tier 2 · Tier 2 root — all green |
 | **Bugbot** | Every Cursor Bugbot finding is **fixed, or replied to with rationale**. Never silently dismiss. |
 | **Review** | User approved, or they explicitly tell you to merge |
 
