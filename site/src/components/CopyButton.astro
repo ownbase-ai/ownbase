@@ -1,0 +1,54 @@
+---
+/**
+ * Standalone "Copy URL" button used inside the Your Base panel
+ * (where a full CopyUrl card would nest badly).
+ */
+import Icon from "./Icon.astro";
+import { llmsUrl } from "../data/comparison";
+
+type Props = {
+  class?: string;
+};
+
+const { class: className } = Astro.props;
+---
+
+<button
+  type="button"
+  class:list={[
+    "inline-flex w-full items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-accent-hover",
+    className,
+  ]}
+  data-copy-url={llmsUrl}
+>
+  <Icon name="copy" size={16} strokeWidth={2} class="shrink-0" aria-hidden="true" />
+  <span data-copy-label>Copy URL</span>
+</button>
+
+<script>
+  function wireCopy(root: ParentNode = document) {
+    root.querySelectorAll<HTMLButtonElement>("[data-copy-url]").forEach((btn) => {
+      if (btn.dataset.wired === "1") return;
+      btn.dataset.wired = "1";
+      const url = btn.dataset.copyUrl ?? "";
+      const label = btn.querySelector<HTMLElement>("[data-copy-label]");
+      const original = label?.textContent ?? "Copy URL";
+      btn.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(url);
+          if (label) label.textContent = "Copied";
+          btn.classList.add("bg-accent-hover");
+          window.setTimeout(() => {
+            if (label) label.textContent = original;
+            btn.classList.remove("bg-accent-hover");
+          }, 1600);
+        } catch {
+          window.prompt("Copy this URL:", url);
+        }
+      });
+    });
+  }
+
+  wireCopy();
+  document.addEventListener("astro:page-load", () => wireCopy());
+</script>

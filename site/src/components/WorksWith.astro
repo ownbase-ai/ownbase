@@ -1,0 +1,92 @@
+---
+/**
+ * "Works with" strip. Prefer simple-icons where a brand mark exists;
+ * fall back to a hand-drawn mono mark when simple-icons has no slug.
+ */
+import * as si from "simple-icons";
+
+type Tool = {
+  name: string;
+  /** simple-icons export key, e.g. "siAnthropic". */
+  siKey?: keyof typeof si;
+  /** Inline SVG path (viewBox 0 0 24 24) when simple-icons has no entry. */
+  path?: string;
+  /** Last-resort text glyph. */
+  glyph?: string;
+};
+
+const tools: Tool[] = [
+  { name: "Claude Code", siKey: "siAnthropic" },
+  { name: "Codex", siKey: "siOpenai" },
+  // Cursor is not in simple-icons yet — classic pointer mark.
+  {
+    name: "Cursor",
+    path: "M4.5 2.5v17.2c0 .4.5.6.8.3l4.5-4.5c.1-.1.3-.2.5-.2h6.4c.5 0 .7-.6.4-.9L5.4 2.1a.5.5 0 0 0-.9.4z",
+  },
+  { name: "OpenCode", glyph: "⌘" },
+  { name: "Gemini CLI", siKey: "siGooglegemini" },
+  // No space — a fixed 18px icon slot wraps "{ }" onto two lines.
+  { name: "Aider", glyph: "{}" },
+];
+
+function brandSvg(key: keyof typeof si): string | null {
+  const icon = si[key];
+  if (!icon || typeof icon !== "object" || !("path" in icon)) return null;
+  const path = (icon as { path: string }).path;
+  return svgFromPath(path);
+}
+
+function svgFromPath(path: string): string {
+  return `<svg role="img" viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="${path}"/></svg>`;
+}
+---
+
+<section class="border-y border-line bg-surface-muted/60">
+  <div
+    class="container-content flex flex-col gap-4 py-6 sm:flex-row sm:items-center sm:gap-10"
+  >
+    <p class="shrink-0 text-xs font-semibold uppercase tracking-wider text-fg-faint">
+      Works with
+    </p>
+    {/*
+      Full width on one row: justify-between spreads items evenly.
+      When it wraps (< xl): 3-col (2-col on xs) grid. Fixed-width icon slot
+      keeps labels vertically aligned within each column.
+    */}
+    <ul
+      class="grid min-w-0 flex-1 grid-cols-2 gap-x-8 gap-y-3 pl-3 sm:grid-cols-3 sm:pl-0 xl:flex xl:flex-nowrap xl:items-center xl:justify-between xl:gap-0 xl:pl-6 xl:pr-8"
+    >
+      {
+        tools.map((t) => {
+          const svg = t.siKey ? brandSvg(t.siKey) : t.path ? svgFromPath(t.path) : null;
+          // OpenCode's ⌘ reads small at the default mono size — bump it.
+          const glyphClass =
+            t.name === "OpenCode"
+              ? "text-base leading-none text-fg"
+              : "text-xs text-fg-subtle";
+          return (
+            <li class="inline-flex items-center gap-2 text-sm font-medium text-fg-muted">
+              {svg ? (
+                <span
+                  class="inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center text-fg"
+                  set:html={svg}
+                />
+              ) : (
+                <span
+                  class:list={[
+                    "inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center whitespace-nowrap font-mono",
+                    glyphClass,
+                  ]}
+                  aria-hidden="true"
+                >
+                  {t.glyph}
+                </span>
+              )}
+              <span>{t.name}</span>
+            </li>
+          );
+        })
+      }
+    </ul>
+  </div>
+</section>

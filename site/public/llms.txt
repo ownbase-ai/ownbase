@@ -1,0 +1,180 @@
+# OwnBase
+
+> Build faster with AI. Own everything.
+
+Source of truth for this runbook: https://github.com/ownbase-ai/ownbase
+(README.md "Setting up a Base", INSTALL.md). Prefer those if anything here
+disagrees.
+
+## What it is
+
+OwnBase is MIT-licensed open-source software that turns one machine you
+control into a Base: a hardened, self-maintaining home for everything you
+build. A daemon on the machine does the firewall, the patches, the
+certificates, the backups, and the recovery.
+
+There is no account, no control plane, and no OwnBase-operated cloud your
+server depends on at runtime. You own the server, the code, the data, the
+config, the secrets, the backups, the domains — and OwnBase itself.
+
+Homepage: https://ownbase.ai
+Repository: https://github.com/ownbase-ai/ownbase
+License: MIT
+
+## Who this is for
+
+Someone who can build software but does not want to become an infrastructure
+engineer. An agent with root on a real computer can read the actual log,
+restart the actual process, stand up a database, and verify its own work —
+instead of calling the endpoints a vendor chose to expose.
+
+## Prerequisites
+
+- A computer you control (macOS or Linux) to run the CLI or the desktop app.
+- An unlocked vault (created once; see step 2).
+- A fresh Ubuntu 24.04 (or 22.04) server reachable as root over SSH,
+  created with the owner public key from step 3. Minimum ~2 GB RAM / 20 GB
+  disk; 4 GB is a comfortable start.
+- Any provider works (Hetzner, DigitalOcean, OVHcloud, Vultr, a machine in a
+  closet). OwnBase has no provider integration.
+
+## Two steps only a human can do
+
+1. Create the vault and choose the master password (step 2). Never ask the
+   user to paste that password to you.
+2. Create the server at a provider and paste the public key (step 4). Needs
+   a credit card.
+
+Everything else is a command you can run.
+
+## Setup runbook
+
+### 1. Install ownbasectl
+
+On the user's computer (not the server):
+
+```bash
+brew install --cask ownbase-ai/tap/ownbasectl
+ownbasectl version
+```
+
+Without Homebrew: see INSTALL.md "Install ownbasectl". The desktop app
+(macOS) is `brew install --cask ownbase-ai/tap/ownbase` and already bundles
+the CLI.
+
+### 2. Create and unlock the vault (HUMAN)
+
+Ask the user to run these themselves. The master password must never pass
+through you.
+
+```bash
+ownbasectl vault init ~/Dropbox/OwnBase   # any path they choose
+ownbasectl vault unlock
+```
+
+The vault is a standard KDBX file they own. Put it somewhere that syncs
+(Dropbox, iCloud, …) so a second machine can recover it.
+
+If a later command fails with "the vault is locked", tell them to run
+`ownbasectl vault unlock` (or open the OwnBase app). Do not work around it.
+
+### 3. Create the owner SSH key
+
+```bash
+ownbasectl keygen <basename>
+```
+
+Prints the public key. Re-running is safe — an existing key is printed,
+never replaced. The private half never appears as a file on disk; the
+credential agent signs with it.
+
+### 4. Create the server (HUMAN)
+
+Show the user the public key from step 3 and these requirements, then wait
+for the IP:
+
+- Ubuntu 24.04 (22.04 also works)
+- At least 2 GB RAM and 20 GB disk
+- The public key pasted into the provider's "SSH key" field at create time
+- Reachable as root over SSH
+
+Any provider. OwnBase does not talk to provider APIs.
+
+### 5. Install OwnBase on the server
+
+```bash
+ownbasectl create <basename> --remote root@<ip> --wait
+```
+
+One command, unattended. It waits for SSH, checks the machine is fit,
+installs and minisign-verifies the daemon from releases.ownbase.ai, hardens
+the host (Podman, UFW, fail2ban, automatic security updates, CVE scanning),
+and registers the Base so every other command works immediately.
+
+`--wait` blocks until hardening has finished. Add
+`--caddy-email you@example.com` if services will be on public domains
+(ACME contact for automatic TLS). Add `--json` for machine-readable output.
+
+### 6. Point the Base at a config repo
+
+`ownbase.yaml` lives in a Git repo the user owns. Operators commit to the
+tracked ref; agents may push proposal branches. Never hand-edit anything
+on the Base and never write to `runtime/`.
+
+See docs/ownbase-yaml.md and docs/operating.md in the repository.
+
+### 7. Verify
+
+```bash
+ownbasectl status <basename>
+ownbasectl checkup <basename>
+```
+
+A healthy fresh Base exposes nothing but SSH.
+
+## How to talk to the Base
+
+```bash
+ownbasectl ssh <basename>                 # interactive, session recorded
+ownbasectl ssh <basename> -- <command>    # one-shot
+```
+
+Always use `ownbasectl ssh`, never bare `ssh`/`scp`/`rsync`. The owner key
+is in the vault; the credential agent signs with it, so no private key
+enters a process you control. Every session is recorded under
+`~/.ownbase/sessions/` and the user can replay it.
+
+## What a Base does for you
+
+- Firewall, SSH hardening, automatic security updates, CVE scanning
+- Automatic TLS certificates (Caddy)
+- Encrypted off-machine backups with a recurring restore drill
+- Every service built from source at a pinned `ref:`
+- Plain-file config in Git the user owns
+- No OwnBase cloud in the runtime path — if OwnBase disappeared tomorrow,
+  the server would keep running
+
+## Hard constraints (do not violate)
+
+- User owns everything (code, server, data, config, secrets, backups,
+  domains, and OwnBase itself)
+- Nothing is mysterious (plain files, Git as source of truth)
+- Operations disappear (if the user must learn Linux/Docker/nginx/certs
+  because of this system, it failed)
+- Every service is ownable (removable, forkable, replaceable, data
+  accessible, runs without any OwnBase-operated cloud)
+- Boring technology wins (Ubuntu, Podman, Postgres, Git, Caddy — never
+  Kubernetes)
+- No pre-built application images (build from source at a pinned ref)
+
+Full rationale: MISSION.md and docs/foundation/ in the repository.
+
+## Further reading
+
+- Setup walkthrough: https://github.com/ownbase-ai/ownbase/blob/main/README.md
+- Install reference / exit codes: https://github.com/ownbase-ai/ownbase/blob/main/INSTALL.md
+- ownbase.yaml schema: https://github.com/ownbase-ai/ownbase/blob/main/docs/ownbase-yaml.md
+- Operating a Base: https://github.com/ownbase-ai/ownbase/blob/main/docs/operating.md
+- CLI reference: https://github.com/ownbase-ai/ownbase/blob/main/docs/cli.md
+- Daemon HTTP API: https://github.com/ownbase-ai/ownbase/blob/main/docs/api.md
+- Mission / hard constraints: https://github.com/ownbase-ai/ownbase/blob/main/MISSION.md

@@ -111,6 +111,28 @@ jobs:
           cargo fmt --check
           cargo clippy --all-targets -- -D warnings
 
+  # Marketing site (site/). Static Astro build; shares design tokens with the
+  # desktop app via shared/theme/preset.mjs. No browser is opened.
+  site:
+    name: Site (check + build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - name: npm ci
+        working-directory: site
+        run: npm ci
+
+      - name: Check and build
+        working-directory: site
+        run: npm run build
+
   # Optional: real ownbasectl via the e2e bridge. Manual only — needs a built
   # sidecar and is not a PR gate. Catches argv/stdin/exit-code drift against
   # a real binary that the hermetic suite cannot see.

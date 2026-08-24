@@ -1,0 +1,60 @@
+name: Site
+
+# Build and publish the ownbase.ai marketing site on every push to main that
+# touches the site or the shared theme it depends on. Also runnable by hand.
+#
+# Required repository secrets (same shape as the releases bucket):
+#   SITE_BUCKET_NAME              — bucket that fronts ownbase.ai
+#   SITE_BUCKET_ACCESS_KEY_ID
+#   SITE_BUCKET_SECRET_ACCESS_KEY
+#   SITE_BUCKET_ENDPOINT          — optional S3-compatible endpoint
+#
+# No CloudFront invalidation. HTML/llms.txt ship with max-age=60; hashed
+# assets under _astro/ ship immutable. A push is live within about a minute.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "shared/**"
+      - ".github/workflows/site.yml"
+      - ".github/scripts/publish-site-bucket.sh"
+  workflow_dispatch:
+
+jobs:
+  publish:
+    name: Build + publish ownbase.ai
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - name: Install
+        working-directory: site
+        run: npm ci
+
+      - name: Build
+        working-directory: site
+        run: npm run build
+
+      - name: Publish to ownbase.ai origin
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.SITE_BUCKET_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SITE_BUCKET_SECRET_ACCESS_KEY }}
+          SITE_BUCKET: ${{ secrets.SITE_BUCKET_NAME }}
+          SITE_BUCKET_ENDPOINT: ${{ secrets.SITE_BUCKET_ENDPOINT }}
+          SITE_DIST: site/dist
+        run: |
+          set -euo pipefail
+          if [ -z "${SITE_BUCKET:-}" ]; then
+            echo "SITE_BUCKET_NAME secret not set — skipping site publish."
+            exit 0
+          fi
+          chmod +x .github/scripts/publish-site-bucket.sh
+          .github/scripts/publish-site-bucket.sh
